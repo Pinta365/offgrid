@@ -69,8 +69,15 @@ impl TextStream {
     }
 }
 
-/// Decides which streamed text is user-visible content: hides `<think>` reasoning and
-/// everything from a tool-call marker on (those are returned parsed at the end).
+/// Kind of streamed text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PieceKind {
+    Content,
+    Reasoning,
+}
+
+/// Splits streamed text into reply content and `<think>` reasoning, and hides
+/// everything from a tool-call marker on (calls are returned parsed at the end).
 pub(crate) struct StreamFilter {
     marker: Option<&'static str>,
     /// Llama 3 style: a reply starting with `{` is a tool call.
@@ -78,6 +85,7 @@ pub(crate) struct StreamFilter {
     state: FilterState,
     held: String,
     started: bool,
+    reasoning_started: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,31 +101,40 @@ const THINK_CLOSE: &str = "</think>";
 impl StreamFilter {
     pub fn new(marker: Option<&'static str>, json_start: bool, think_open_in_prompt: bool) -> Self {
         let state = if think_open_in_prompt { FilterState::Reasoning } else { FilterState::Content };
-        Self { marker, json_start, state, held: String::new(), started: false }
+        Self { marker, json_start, state, held: String::new(), started: false, reasoning_started: false }
     }
 
-    /// Feed generated text; returns the part that is safe to show as content.
-    pub fn push(&mut self, text: &str) -> String {
+    /// Feed generated text; returns the pieces that are safe to show, in order.
+    pub fn push(&mut self, text: &str) -> Vec<(PieceKind, String)> {
         self.held.push_str(text);
-        let mut out = String::new();
+        let mut out = Vec::new();
         loop {
             match self.state {
                 FilterState::Suppressed => {
                     self.held.clear();
                     return out;
                 }
-                FilterState::Reasoning => match self.held.find(THINK_CLOSE) {
-                    Some(i) => {
-                        self.held.drain(..i + THINK_CLOSE.len());
+                FilterState::Reasoning => {
+                    let (emit, done) = match self.held.find(THINK_CLOSE) {
+                        Some(i) => {
+                            let emit = self.held[..i].to_string();
+                            self.held.drain(..i + THINK_CLOSE.len());
+                            (emit, true)
+                        }
+                        None => {
+                            // Keep a tail that might be the start of "</think>".
+                            let keep = partial_suffix(&self.held, THINK_CLOSE);
+                            let rest = self.held.split_off(self.held.len() - keep);
+                            (std::mem::replace(&mut self.held, rest), false)
+                        }
+                    };
+                    self.emit_reasoning(emit, done, &mut out);
+                    if done {
                         self.state = FilterState::Content;
-                    }
-                    None => {
-                        // Keep a tail that might be the start of "</think>".
-                        let keep = partial_suffix(&self.held, THINK_CLOSE);
-                        self.held.drain(..self.held.len() - keep);
+                    } else {
                         return out;
                     }
-                },
+                }
                 FilterState::Content => {
                     if !self.started {
                         let trimmed = self.held.trim_start();
@@ -136,29 +153,62 @@ impl StreamFilter {
                         self.held = trimmed.to_string();
                         self.started = true;
                     }
-                    if let Some(marker) = self.marker {
-                        if let Some(i) = self.held.find(marker) {
-                            out.push_str(&self.held[..i]);
-                            self.state = FilterState::Suppressed;
-                            continue;
-                        }
-                        let keep = partial_suffix(&self.held, marker);
-                        let rest = self.held.split_off(self.held.len() - keep);
-                        out.push_str(&std::mem::replace(&mut self.held, rest));
+                    let visible = match self.marker {
+                        Some(marker) => match self.held.find(marker) {
+                            Some(i) => {
+                                let v = self.held[..i].to_string();
+                                self.state = FilterState::Suppressed;
+                                v
+                            }
+                            None => {
+                                let keep = partial_suffix(&self.held, marker);
+                                let rest = self.held.split_off(self.held.len() - keep);
+                                std::mem::replace(&mut self.held, rest)
+                            }
+                        },
+                        None => std::mem::take(&mut self.held),
+                    };
+                    if !visible.is_empty() {
+                        out.push((PieceKind::Content, visible));
+                    }
+                    if self.state != FilterState::Suppressed {
                         return out;
                     }
-                    out.push_str(&std::mem::take(&mut self.held));
-                    return out;
                 }
             }
         }
     }
 
-    /// End of generation: release content held back for a marker that never completed.
-    pub fn flush(&mut self) -> String {
+    /// Reasoning is reported without its leading/trailing blank lines (like the final
+    /// `reasoning_content`), so strip whitespace at its start and hold trailing whitespace
+    /// until more reasoning follows.
+    fn emit_reasoning(&mut self, mut text: String, done: bool, out: &mut Vec<(PieceKind, String)>) {
+        if !self.reasoning_started {
+            text = text.trim_start().to_string();
+        }
+        if done {
+            text.truncate(text.trim_end().len());
+        } else {
+            let trimmed = text.trim_end().len();
+            let tail = text.split_off(trimmed);
+            self.held.insert_str(0, &tail);
+        }
+        if !text.is_empty() {
+            self.reasoning_started = true;
+            out.push((PieceKind::Reasoning, text));
+        }
+    }
+
+    /// End of generation: release text held back for a marker that never completed.
+    pub fn flush(&mut self) -> Vec<(PieceKind, String)> {
+        let held = std::mem::take(&mut self.held);
         match self.state {
-            FilterState::Content if self.started => std::mem::take(&mut self.held),
-            _ => String::new(),
+            FilterState::Content if self.started && !held.is_empty() => vec![(PieceKind::Content, held)],
+            FilterState::Reasoning => {
+                let t = held.trim_end().to_string();
+                if t.is_empty() { vec![] } else { vec![(PieceKind::Reasoning, t)] }
+            }
+            _ => Vec::new(),
         }
     }
 }
@@ -215,11 +265,35 @@ mod tests {
         assert!(!stopped);
     }
 
-    fn filter(marker: Option<&'static str>, json: bool, think: bool, chunks: &[&str]) -> String {
+    /// (content, reasoning) as streamed.
+    fn filter2(marker: Option<&'static str>, json: bool, think: bool, chunks: &[&str]) -> (String, String) {
         let mut f = StreamFilter::new(marker, json, think);
-        let mut out: String = chunks.iter().map(|c| f.push(c)).collect();
-        out.push_str(&f.flush());
-        out
+        let (mut content, mut reasoning) = (String::new(), String::new());
+        let mut pieces: Vec<(PieceKind, String)> = chunks.iter().flat_map(|c| f.push(c)).collect();
+        pieces.extend(f.flush());
+        for (kind, text) in pieces {
+            match kind {
+                PieceKind::Content => content.push_str(&text),
+                PieceKind::Reasoning => reasoning.push_str(&text),
+            }
+        }
+        (content, reasoning)
+    }
+
+    fn filter(marker: Option<&'static str>, json: bool, think: bool, chunks: &[&str]) -> String {
+        filter2(marker, json, think, chunks).0
+    }
+
+    #[test]
+    fn filter_streams_reasoning() {
+        let (c, r) = filter2(None, false, false, &["<think>\nStep", " one.\n", "Step two.\n</th", "ink>\n\nDone."]);
+        assert_eq!((c.as_str(), r.as_str()), ("Done.", "Step one.\nStep two."));
+        // Reasoning opened by the prompt, cut off by max_tokens.
+        let (c, r) = filter2(None, false, true, &["thinking about", " it\n\n"]);
+        assert_eq!((c.as_str(), r.as_str()), ("", "thinking about it"));
+        // Reasoning followed by a tool call.
+        let (c, r) = filter2(Some("<tool_call>"), false, false, &["<think>plan</think>Calling.<tool_call>{}</tool_call>"]);
+        assert_eq!((c.as_str(), r.as_str()), ("Calling.", "plan"));
     }
 
     #[test]

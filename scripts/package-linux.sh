@@ -65,15 +65,19 @@ if [ ! -f "$OUT_DIR/out/lib/libllama.so" ]; then
 fi
 echo ">> using aicore-sys output: $OUT_DIR"
 
+echo ">> building aicore-server"
+"${BUILD[@]}" --release -p aicore-server --features dynamic-backends
+
 PKG_NAME="aicore-${VERSION}-linux-x86_64"
 PKG="$ROOT/dist/$PKG_NAME"
 TARBALL="$ROOT/dist/$PKG_NAME.tar.gz"
 
 rm -rf "$PKG"
-mkdir -p "$PKG/lib" "$PKG/include"
+mkdir -p "$PKG/bin" "$PKG/lib" "$PKG/include"
 
 # Core shared libraries: copy under their SONAME names, dereferencing symlinks.
 cp -L "$TARGET_DIR/libaicore.so"              "$PKG/lib/libaicore.so"
+cp -L "$TARGET_DIR/aicore-server"              "$PKG/bin/aicore-server"
 cp -L "$OUT_DIR/out/lib/libllama.so.0"         "$PKG/lib/libllama.so.0"
 cp -L "$OUT_DIR/out/lib/libggml.so.0"          "$PKG/lib/libggml.so.0"
 cp -L "$OUT_DIR/out/lib/libggml-base.so.0"     "$PKG/lib/libggml-base.so.0"
@@ -95,6 +99,10 @@ aicore ${VERSION} — Linux x86_64
 ================================
 
 Contents
+  bin/aicore-server  OpenAI-compatible HTTP server (sidecar). Example:
+                       bin/aicore-server --model model.gguf --port 8080
+                     then point any OpenAI client at http://127.0.0.1:8080/v1
+                     (see --help: --embedding-model, --parallel, --api-key, --ctx).
   include/aicore.h   C API header (JSON in/out, streaming callbacks).
   lib/               libaicore.so plus its llama.cpp/ggml dependencies and all
                      backend modules. Keep this directory together.
@@ -120,6 +128,7 @@ Notes
 EOF
 
 # Strip debug/unneeded symbols.
+strip --strip-unneeded "$PKG/bin/aicore-server"
 for so in "$PKG"/lib/*.so "$PKG"/lib/*.so.*; do
     strip --strip-unneeded "$so"
 done

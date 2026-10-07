@@ -24,6 +24,18 @@
 #define AICORE_ABI_VERSION 1
 
 /**
+ * Event kinds for [`aicore_chat_complete_events`].
+ */
+#define AICORE_EVENT_CONTENT 0
+
+#define AICORE_EVENT_REASONING 1
+
+/**
+ * `text` is the call as JSON: `{"id","type":"function","function":{"name","arguments"}}`.
+ */
+#define AICORE_EVENT_TOOL_CALL 2
+
+/**
  * Opaque chat session handle.
  */
 typedef struct aicore_chat aicore_chat;
@@ -48,6 +60,12 @@ typedef void (*aicore_log_callback)(int32_t level, const char *message, void *us
  * Return `false` to cancel generation.
  */
 typedef bool (*aicore_token_callback)(const char *piece, size_t len, void *user_data);
+
+/**
+ * Streaming event callback: `kind` is an `AICORE_EVENT_*` value; `text` holds `len`
+ * bytes of UTF-8 (also NUL-terminated). Return `false` to cancel generation.
+ */
+typedef bool (*aicore_event_callback)(int32_t kind, const char *text, size_t len, void *user_data);
 
 #ifdef __cplusplus
 extern "C" {
@@ -106,6 +124,13 @@ aicore_chat *aicore_chat_new(const aicore_model *model, const char *params_json,
  * `{"content":"...","finish_reason":"stop"|"length"|"cancelled","usage":{...}}` or NULL on error.
  */
 char *aicore_chat_complete(const aicore_chat *chat, const char *request_json, aicore_token_callback callback, void *user_data, char **error_out);
+
+/**
+ * Like [`aicore_chat_complete`] but streams reasoning and tool calls too:
+ * reply text (`AICORE_EVENT_CONTENT`) and reasoning (`AICORE_EVENT_REASONING`) as they
+ * are generated, then one `AICORE_EVENT_TOOL_CALL` per parsed call.
+ */
+char *aicore_chat_complete_events(const aicore_chat *chat, const char *request_json, aicore_event_callback callback, void *user_data, char **error_out);
 
 /**
  * Raw text completion without chat template. `request_json`:

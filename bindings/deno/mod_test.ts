@@ -4,6 +4,7 @@ import { assert, assertEquals, assertRejects, assertStringIncludes } from "@std/
 import { AiCore, type ChatRequest, dot } from "./mod.ts";
 
 const chatModel = Deno.env.get("AICORE_TEST_MODEL");
+const thinkingModel = Deno.env.get("AICORE_TEST_THINKING_MODEL");
 const embedModel = Deno.env.get("AICORE_TEST_EMBED_MODEL");
 
 const greedy = (content: string, max_tokens: number): ChatRequest => ({
@@ -141,6 +142,38 @@ Deno.test({ name: "chat: tool calling loop", ignore: !chatModel }, async () => {
   assertStringIncludes(response.content, "21");
   assertEquals(messages.map((m) => m.role), ["user", "assistant", "tool", "assistant"]);
   assert(!streamed.includes("<tool_call>"), streamed);
+});
+
+Deno.test({ name: "chat: reasoning streams via onReasoning", ignore: !thinkingModel }, async () => {
+  using core = AiCore.open();
+  using model = await core.loadModel(thinkingModel!);
+  using chat = await model.createChat();
+  const order: string[] = [];
+  let reasoning = "", content = "";
+  const res = await chat.complete(
+    {
+      messages: [{ role: "user", content: "What is 17 + 25? Answer with just the number." }],
+      temperature: 0.6,
+      top_p: 0.95,
+      top_k: 20,
+      seed: 7,
+      max_tokens: 3000,
+    },
+    {
+      onReasoning: (t) => {
+        reasoning += t;
+        if (order.at(-1) !== "r") order.push("r");
+      },
+      onToken: (t) => {
+        content += t;
+        if (order.at(-1) !== "c") order.push("c");
+      },
+    },
+  );
+  assertEquals(order, ["r", "c"]);
+  assertEquals(reasoning, res.reasoning_content);
+  assertEquals(content, res.content);
+  assertStringIncludes(res.content, "42");
 });
 
 Deno.test({ name: "embeddings", ignore: !embedModel }, async () => {

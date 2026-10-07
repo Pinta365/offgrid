@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::batch::Batch;
 use crate::sampling::Sampler;
 use crate::template::{ChatTemplate, RenderArgs, is_jinja};
-use crate::text::{Push, StreamFilter, TextStream};
+use crate::text::{PieceKind, Push, StreamFilter, TextStream};
 use crate::tool_parse::{self, ToolFormat};
 use crate::tools::{GrammarSpec, Tool, ToolCall, ToolChoice, tool_grammar};
 use crate::{Error, Model, Result, SamplingParams};
@@ -57,6 +57,20 @@ pub struct ChatMessage {
     pub name: Option<String>,
 }
 
+fn string_or_seq<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Vec<String>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Stop {
+        One(String),
+        Many(Vec<String>),
+    }
+    Ok(match Option::<Stop>::deserialize(d)? {
+        None => Vec::new(),
+        Some(Stop::One(s)) => vec![s],
+        Some(Stop::Many(v)) => v,
+    })
+}
+
 fn null_as_empty<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<String, D::Error> {
     Ok(Option::<String>::deserialize(d)?.unwrap_or_default())
 }
@@ -93,7 +107,10 @@ impl ChatMessage {
 pub struct ChatRequest {
     pub messages: Vec<ChatMessage>,
     /// Max tokens to generate. `None` = until end-of-generation or the context is full.
+    #[serde(alias = "max_completion_tokens")]
     pub max_tokens: Option<u32>,
+    /// Stop strings (OpenAI accepts a single string or an array).
+    #[serde(deserialize_with = "string_or_seq")]
     pub stop: Vec<String>,
     /// Override the model's chat template: Jinja template text, or a llama.cpp built-in
     /// name such as `chatml`. Default: the model's own (Jinja) template.
@@ -200,6 +217,17 @@ impl ChatResponse {
             ..ChatMessage::assistant(self.content.clone())
         }
     }
+}
+
+/// Streamed output of [`ChatSession::complete_stream`].
+#[derive(Debug, Clone, Copy)]
+pub enum StreamEvent<'a> {
+    /// Reply text.
+    Content(&'a str),
+    /// Reasoning (`<think>`) text, streamed as generated.
+    Reasoning(&'a str),
+    /// A complete, parsed tool call (emitted after generation ends).
+    ToolCall(&'a ToolCall),
 }
 
 /// Thread-safe handle that cancels the running request of a session.
@@ -403,8 +431,21 @@ impl ChatSession {
 
     /// Chat completion. `on_piece` receives streamed reply text (without reasoning or
     /// tool-call markup); return `false` to cancel. Tool calls and reasoning are returned
-    /// parsed in the response.
+    /// parsed in the response. See [`Self::complete_stream`] to also stream reasoning.
     pub fn complete(&mut self, req: &ChatRequest, mut on_piece: impl FnMut(&str) -> bool) -> Result<ChatResponse> {
+        self.complete_stream(req, |event| match event {
+            StreamEvent::Content(text) => on_piece(text),
+            _ => true,
+        })
+    }
+
+    /// Chat completion with streamed events: reply text and reasoning as they are
+    /// generated, then each parsed tool call. Return `false` to cancel.
+    pub fn complete_stream(
+        &mut self,
+        req: &ChatRequest,
+        mut on_event: impl FnMut(StreamEvent<'_>) -> bool,
+    ) -> Result<ChatResponse> {
         if req.messages.is_empty() {
             return Err(Error::InvalidArgument("messages is empty".into()));
         }
@@ -448,20 +489,19 @@ impl ChatSession {
         let marker = if use_tools { tool_parse::tool_call_start_marker(format) } else { None };
         let mut filter = StreamFilter::new(marker, use_tools && format == ToolFormat::Llama3Json, think_open);
         let mut cancelled_by_callback = false;
+        let deliver = |pieces: Vec<(PieceKind, String)>, on_event: &mut dyn FnMut(StreamEvent<'_>) -> bool| {
+            pieces.iter().all(|(kind, text)| match kind {
+                PieceKind::Content => on_event(StreamEvent::Content(text)),
+                PieceKind::Reasoning => on_event(StreamEvent::Reasoning(text)),
+            })
+        };
         let mut resp = self.run(&tokens, req.max_tokens, &req.stop, &req.sampling, grammars.first(), use_tools, |piece| {
-            let visible = filter.push(piece);
-            if visible.is_empty() || on_piece(&visible) {
-                true
-            } else {
-                cancelled_by_callback = true;
-                false
-            }
+            let ok = deliver(filter.push(piece), &mut on_event);
+            cancelled_by_callback |= !ok;
+            ok
         })?;
         if !cancelled_by_callback && resp.finish_reason != FinishReason::Cancelled {
-            let tail = filter.flush();
-            if !tail.is_empty() {
-                on_piece(&tail);
-            }
+            deliver(filter.flush(), &mut on_event);
         }
 
         let parsed = if use_tools {
@@ -475,6 +515,9 @@ impl ChatSession {
         resp.tool_calls = parsed.calls.into_iter().map(|c| ToolCall::new(c.name, c.arguments)).collect();
         if !resp.tool_calls.is_empty() && resp.finish_reason == FinishReason::Stop {
             resp.finish_reason = FinishReason::ToolCalls;
+        }
+        for call in &resp.tool_calls {
+            on_event(StreamEvent::ToolCall(call));
         }
         Ok(resp)
     }

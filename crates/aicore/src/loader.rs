@@ -16,6 +16,8 @@ fn candidate_dirs() -> Vec<PathBuf> {
         candidates.push(dir.into());
     }
     if let Some(dir) = module_dir() {
+        // Executables (e.g. aicore-server) live in bin/ next to the package's lib/.
+        candidates.push(dir.join("../lib"));
         candidates.push(dir);
     }
     if !sys::BUILD_BACKEND_DIR.is_empty() {

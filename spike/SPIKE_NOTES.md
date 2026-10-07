@@ -112,3 +112,7 @@ Additional model used to exercise the tool-call output parsers
 
 Verified: first 4 bytes are `GGUF` (not an HTML error page). Source repo
 `bartowski/Llama-3.2-3B-Instruct-GGUF` (unsloth mirror not needed).
+| `Qwen3-0.6B-Q8_0.gguf` | 639,446,688 (~609.8 MiB) | https://huggingface.co/Qwen/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q8_0.gguf |
+
+`Qwen3-0.6B-Q8_0.gguf` is a hybrid thinking model (thinking/non-thinking modes),
+used for reasoning streaming tests. Source repo `Qwen/Qwen3-0.6B-GGUF`.

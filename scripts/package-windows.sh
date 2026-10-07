@@ -47,6 +47,9 @@ if [ ! -d "$OUT_DIR/out/bin" ]; then
 fi
 echo ">> using aicore-sys output: $OUT_DIR"
 
+echo ">> building aicore-server.exe"
+cargo build --release -p aicore-server --features dynamic-backends --target "$TARGET"
+
 if [ ! -f "$TARGET_DIR/aicore.dll" ]; then
     echo "ERROR: $TARGET_DIR/aicore.dll not found" >&2
     exit 1
@@ -57,6 +60,7 @@ mkdir -p "$PKG/bin" "$PKG/lib" "$PKG/include"
 # aicore.dll plus every llama/ggml DLL must live in the same folder: aicore.dll
 # delay-loads its dependencies from its own directory.
 cp -L "$TARGET_DIR/aicore.dll" "$PKG/bin/aicore.dll"
+cp -L "$TARGET_DIR/aicore-server.exe" "$PKG/bin/aicore-server.exe"
 cp -L "$TARGET_DIR/libaicore.dll.a" "$PKG/lib/libaicore.dll.a"
 
 shopt -s nullglob
@@ -134,7 +138,7 @@ Notes
 EOF
 
 # Strip debug/unneeded symbols from the DLLs.
-for dll in "$PKG"/bin/*.dll; do
+for dll in "$PKG"/bin/*.dll "$PKG"/bin/*.exe; do
     llvm-strip --strip-unneeded "$dll"
 done
 

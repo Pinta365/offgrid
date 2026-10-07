@@ -1,0 +1,28 @@
+[package]
+name = "aicore-server"
+description = "OpenAI-compatible HTTP sidecar for aicore"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[features]
+default = ["vulkan"]
+vulkan = ["aicore/vulkan"]
+cuda = ["aicore/cuda"]
+dynamic-backends = ["aicore/dynamic-backends"]
+
+[dependencies]
+aicore = { workspace = true }
+axum = "0.8"
+base64 = "0.22"
+clap = { version = "4", features = ["derive", "env"] }
+futures-util = "0.3"
+log = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"] }
+tokio-stream = "0.1"
+
+[dev-dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream"] }

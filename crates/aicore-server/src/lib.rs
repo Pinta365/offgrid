@@ -1,0 +1,267 @@
+//! OpenAI-compatible HTTP server for aicore.
+//!
+//! Endpoints: `POST /v1/chat/completions` (incl. SSE streaming with `reasoning_content`
+//! and `tool_calls` deltas), `POST /v1/embeddings`, `GET /v1/models`, `GET /health`.
+
+mod openai;
+mod pool;
+
+use std::convert::Infallible;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use aicore::{
+    ChatRequest, EmbedParams, Embedder, GpuLayers, Model, ModelParams, SessionParams, StreamEvent,
+};
+use axum::extract::{Path, Request, State};
+use axum::http::{HeaderMap, StatusCode};
+use axum::middleware::{self, Next};
+use axum::response::sse::{Event, KeepAlive, Sse};
+use axum::response::{IntoResponse, Response};
+use axum::routing::{get, post};
+use axum::{Json, Router};
+use serde_json::{Value, json};
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
+
+pub use openai::ApiError;
+use pool::ChatPool;
+
+/// Server configuration (CLI flags map 1:1).
+#[derive(Debug, Clone, Default)]
+pub struct ServerConfig {
+    pub model: Option<PathBuf>,
+    pub embedding_model: Option<PathBuf>,
+    /// Model id reported to clients (default: file stem).
+    pub alias: Option<String>,
+    pub embedding_alias: Option<String>,
+    pub model_params: ModelParams,
+    pub session: SessionParams,
+    /// Concurrent chat sessions (each holds its own KV cache).
+    pub parallel: usize,
+    /// Require `Authorization: Bearer <key>` on /v1/*.
+    pub api_key: Option<String>,
+}
+
+pub struct AppState {
+    chat: Option<(String, Arc<ChatPool>)>,
+    embed: Option<(String, Arc<Mutex<Embedder>>)>,
+    api_key: Option<String>,
+    created: u64,
+}
+
+fn now() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+
+fn model_id(path: &std::path::Path, alias: &Option<String>) -> String {
+    alias.clone().unwrap_or_else(|| path.file_stem().map_or_else(|| "model".into(), |s| s.to_string_lossy().into_owned()))
+}
+
+impl AppState {
+    /// Load models and create sessions (blocking; call before serving).
+    pub fn load(config: &ServerConfig) -> aicore::Result<Arc<Self>> {
+        let chat = match &config.model {
+            Some(path) => {
+                let model = Model::load(path, &config.model_params)?;
+                let pool = ChatPool::new(model, &config.session, config.parallel)?;
+                Some((model_id(path, &config.alias), pool))
+            }
+            None => None,
+        };
+        let embed = match &config.embedding_model {
+            Some(path) => {
+                let model = Model::load(path, &config.model_params)?;
+                let emb = Embedder::new(model, &EmbedParams::default())?;
+                Some((model_id(path, &config.embedding_alias), Arc::new(Mutex::new(emb))))
+            }
+            None => None,
+        };
+        if chat.is_none() && embed.is_none() {
+            return Err(aicore::Error::InvalidArgument("no model configured (--model / --embedding-model)".into()));
+        }
+        Ok(Arc::new(Self { chat, embed, api_key: config.api_key.clone().filter(|k| !k.is_empty()), created: now() }))
+    }
+
+    /// Cancel all running generations (for shutdown).
+    pub fn cancel_all(&self) {
+        if let Some((_, pool)) = &self.chat {
+            pool.cancel_all();
+        }
+    }
+}
+
+pub fn router(state: Arc<AppState>) -> Router {
+    let v1 = Router::new()
+        .route("/chat/completions", post(chat_completions))
+        .route("/embeddings", post(embeddings))
+        .route("/models", get(list_models))
+        .route("/models/{id}", get(get_model))
+        .layer(middleware::from_fn_with_state(state.clone(), auth));
+    Router::new()
+        .route("/health", get(|| async { Json(json!({"status": "ok"})) }))
+        .nest("/v1", v1)
+        .fallback(|| async { ApiError::not_found("unknown endpoint") })
+        .with_state(state)
+}
+
+async fn auth(State(state): State<Arc<AppState>>, headers: HeaderMap, req: Request, next: Next) -> Response {
+    if let Some(key) = &state.api_key {
+        let ok = headers
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("Bearer "))
+            .is_some_and(|given| given == key);
+        if !ok {
+            return ApiError::new(StatusCode::UNAUTHORIZED, "invalid_api_key", "invalid or missing API key").into_response();
+        }
+    }
+    next.run(req).await
+}
+
+fn model_entry(state: &AppState, id: &str) -> Value {
+    json!({"id": id, "object": "model", "created": state.created, "owned_by": "aicore"})
+}
+
+async fn list_models(State(state): State<Arc<AppState>>) -> Json<Value> {
+    let data: Vec<Value> = state
+        .chat
+        .iter()
+        .map(|(id, _)| id)
+        .chain(state.embed.iter().map(|(id, _)| id))
+        .map(|id| model_entry(&state, id))
+        .collect();
+    Json(json!({"object": "list", "data": data}))
+}
+
+async fn get_model(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
+    let known = state.chat.iter().map(|(i, _)| i).chain(state.embed.iter().map(|(i, _)| i)).any(|i| *i == id);
+    if known { Json(model_entry(&state, &id)).into_response() } else { ApiError::not_found("model not found").into_response() }
+}
+
+/// Set when the client goes away (handler future dropped), checked by the generation
+/// callback. Per request, so a late disconnect can't cancel the session's next request.
+struct ClientGone(Arc<AtomicBool>);
+
+impl Drop for ClientGone {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+}
+
+async fn chat_completions(State(state): State<Arc<AppState>>, body: axum::body::Bytes) -> Response {
+    let Some((model_id, pool)) = state.chat.clone() else {
+        return ApiError::bad_request("no chat model loaded").into_response();
+    };
+    let body: Value = match serde_json::from_slice(&body) {
+        Ok(v) => v,
+        Err(e) => return ApiError::bad_request(format!("invalid JSON body: {e}")).into_response(),
+    };
+    if body.get("n").and_then(Value::as_u64).is_some_and(|n| n != 1) {
+        return ApiError::bad_request("only n=1 is supported").into_response();
+    }
+    let stream = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
+    let include_usage = body.pointer("/stream_options/include_usage").and_then(Value::as_bool).unwrap_or(false);
+    let req: ChatRequest = match serde_json::from_value(body) {
+        Ok(r) => r,
+        Err(e) => return ApiError::bad_request(format!("invalid request: {e}")).into_response(),
+    };
+    if req.messages.is_empty() {
+        return ApiError::bad_request("messages must not be empty").into_response();
+    }
+    let meta = openai::Meta::new(model_id);
+    let lease = pool.acquire().await;
+
+    if stream {
+        let (tx, rx) = mpsc::channel::<Result<Event, Infallible>>(64);
+        tokio::task::spawn_blocking(move || {
+            let mut tool_index = 0usize;
+            let send = |v: Value| tx.blocking_send(Ok(Event::default().data(v.to_string()))).is_ok();
+            if !send(meta.chunk(json!({"role": "assistant", "content": ""}), None)) {
+                return;
+            }
+            let result = lease.session().complete_stream(&req, |event| {
+                let delta = match event {
+                    StreamEvent::Content(t) => json!({"content": t}),
+                    StreamEvent::Reasoning(t) => json!({"reasoning_content": t}),
+                    StreamEvent::ToolCall(c) => {
+                        tool_index += 1;
+                        json!({"tool_calls": [openai::tool_call_delta(tool_index - 1, c)]})
+                    }
+                };
+                // A failed send means the client disconnected: cancel generation.
+                send(meta.chunk(delta, None))
+            });
+            match result {
+                Ok(resp) => {
+                    send(meta.chunk(json!({}), Some(openai::finish_reason(resp.finish_reason))));
+                    if include_usage {
+                        send(meta.usage_chunk(&resp.usage));
+                    }
+                }
+                Err(e) => {
+                    send(json!({"error": {"message": e.to_string(), "type": "server_error"}}));
+                }
+            }
+            let _ = tx.blocking_send(Ok(Event::default().data("[DONE]")));
+        });
+        Sse::new(ReceiverStream::new(rx)).keep_alive(KeepAlive::default()).into_response()
+    } else {
+        let gone = Arc::new(AtomicBool::new(false));
+        let _guard = ClientGone(gone.clone());
+        let joined = tokio::task::spawn_blocking(move || {
+            
+            lease.session().complete_stream(&req, |_| !gone.load(Ordering::Relaxed))
+        })
+        .await;
+        match joined {
+            Ok(Ok(resp)) => Json(meta.completion(&resp)).into_response(),
+            Ok(Err(e)) => ApiError::from_core(e).into_response(),
+            Err(e) => ApiError::internal(format!("worker failed: {e}")).into_response(),
+        }
+    }
+}
+
+async fn embeddings(State(state): State<Arc<AppState>>, Json(body): Json<Value>) -> Response {
+    let Some((model_id, embedder)) = state.embed.clone() else {
+        return ApiError::bad_request("no embedding model loaded (--embedding-model)").into_response();
+    };
+    let inputs: Vec<String> = match body.get("input") {
+        Some(Value::String(s)) => vec![s.clone()],
+        Some(Value::Array(items)) if items.iter().all(Value::is_string) => {
+            items.iter().filter_map(|v| v.as_str().map(String::from)).collect()
+        }
+        Some(Value::Array(_)) => return ApiError::bad_request("input must be a string or an array of strings (token arrays are not supported)").into_response(),
+        _ => return ApiError::bad_request("missing input").into_response(),
+    };
+    if inputs.is_empty() || inputs.iter().any(String::is_empty) {
+        return ApiError::bad_request("input must not be empty").into_response();
+    }
+    let base64 = match body.get("encoding_format").and_then(Value::as_str) {
+        None | Some("float") => false,
+        Some("base64") => true,
+        Some(other) => return ApiError::bad_request(format!("unsupported encoding_format '{other}'")).into_response(),
+    };
+    let joined = tokio::task::spawn_blocking(move || {
+        let mut emb = embedder.lock().unwrap_or_else(|e| e.into_inner());
+        let tokens: usize = inputs.iter().map(|s| emb.model().tokenize(s, true, false).map_or(0, |t| t.len())).sum();
+        emb.embed(&inputs).map(|v| (v, tokens))
+    })
+    .await;
+    match joined {
+        Ok(Ok((vectors, tokens))) => Json(openai::embeddings(&model_id, &vectors, tokens, base64)).into_response(),
+        Ok(Err(e)) => ApiError::from_core(e).into_response(),
+        Err(e) => ApiError::internal(format!("worker failed: {e}")).into_response(),
+    }
+}
+
+/// Parse a `--gpu-layers` value: `all`, `none` or a count.
+pub fn parse_gpu_layers(s: &str) -> Result<GpuLayers, String> {
+    match s {
+        "all" => Ok(GpuLayers::All),
+        "none" | "0" => Ok(GpuLayers::None),
+        n => n.parse().map(GpuLayers::Count).map_err(|_| format!("expected all, none or a number, got '{n}'")),
+    }
+}

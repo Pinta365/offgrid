@@ -144,3 +144,46 @@ fn response_format_json_shapes() {
     let f: ResponseFormat = serde_json::from_value(json!({"type": "json_object"})).unwrap();
     assert_eq!(f, ResponseFormat::JsonObject { schema: None });
 }
+
+/// Reasoning streaming with a thinking model (AICORE_TEST_THINKING_MODEL, e.g. Qwen3-0.6B).
+#[test]
+fn reasoning_streams_separately() {
+    let Ok(path) = std::env::var("AICORE_TEST_THINKING_MODEL") else {
+        eprintln!("skip: AICORE_TEST_THINKING_MODEL not set");
+        return;
+    };
+    let model = Model::load(path, &ModelParams::default()).unwrap();
+    let mut chat = ChatSession::new(model, &SessionParams::default()).unwrap();
+    let mut req = request("What is 17 + 25? Answer with just the number.", None);
+    req.max_tokens = Some(1500);
+    let (mut content, mut reasoning, mut order) = (String::new(), String::new(), Vec::new());
+    let r = chat
+        .complete_stream(&req, |e| {
+            match e {
+                StreamEvent::Content(t) => content.push_str(t),
+                StreamEvent::Reasoning(t) => reasoning.push_str(t),
+                StreamEvent::ToolCall(_) => panic!("no tools given"),
+            }
+            let kind = matches!(e, StreamEvent::Reasoning(_));
+            if order.last() != Some(&kind) {
+                order.push(kind);
+            }
+            true
+        })
+        .unwrap();
+    println!("reasoning ({} chars): {:.200}...\ncontent: {:?}", reasoning.len(), reasoning, r.content);
+    assert_eq!(r.finish_reason, FinishReason::Stop);
+    assert!(!reasoning.is_empty(), "thinking model produced no reasoning");
+    assert_eq!(order, vec![true, false], "reasoning must stream before content");
+    assert_eq!(Some(reasoning.as_str()), r.reasoning_content.as_deref());
+    assert_eq!(content, r.content);
+    assert!(r.content.contains("42"));
+    assert!(!r.content.contains("<think>") && !reasoning.contains("<think>"));
+
+    // Thinking switched off via template kwargs: no reasoning at all.
+    req.chat_template_kwargs = Some(json!({"enable_thinking": false}).as_object().unwrap().clone());
+    let r = chat.complete(&req, |_| true).unwrap();
+    println!("no-think: {r:?}");
+    assert!(r.reasoning_content.as_deref().unwrap_or("").is_empty());
+    assert!(r.content.contains("42"));
+}

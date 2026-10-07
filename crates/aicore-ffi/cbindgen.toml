@@ -24,6 +24,7 @@ no_includes = true
 "AicoreEmbedder" = "aicore_embedder"
 "AicoreTokenCallback" = "aicore_token_callback"
 "AicoreLogCallback" = "aicore_log_callback"
+"AicoreEventCallback" = "aicore_event_callback"
 
 [fn]
 args = "horizontal"

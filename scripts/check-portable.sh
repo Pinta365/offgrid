@@ -133,6 +133,23 @@ grep -iE 'ggml-cpu|loaded.*cpu|cpu backend|variant' "$TMP/err4.txt" | head -8 | 
 variant_line="$(grep -iE 'ggml-cpu-[a-z0-9]+\.so' "$TMP/err4.txt" | head -1 || true)"
 info "selected CPU module: ${variant_line:-<not detected>}"
 
+# h) Packaged server: run bin/aicore-server from a relocated copy, answer an HTTP request.
+mkdir -p "$TMP/srv"
+cp -r "$DIST" "$TMP/srv/pkg"
+PORT=$(( 20000 + RANDOM % 20000 ))
+"$TMP/srv/pkg/bin/aicore-server" --model "$MODEL" --port "$PORT" >"$TMP/srv.log" 2>&1 &
+SRV_PID=$!
+for _ in $(seq 120); do curl -sf "http://127.0.0.1:$PORT/health" >/dev/null 2>&1 && break; sleep 0.5; done
+reply="$(curl -sf "http://127.0.0.1:$PORT/v1/chat/completions" \
+    -d '{"messages":[{"role":"user","content":"Say OK."}],"max_tokens":8,"temperature":0}' 2>/dev/null || true)"
+kill "$SRV_PID" 2>/dev/null; wait "$SRV_PID" 2>/dev/null || true
+if printf '%s' "$reply" | grep -q '"chat.completion"'; then
+    pass "server: relocated bin/aicore-server answered /v1/chat/completions"
+else
+    fail "server: no valid reply (log below)"
+    tail -15 "$TMP/srv.log" | sed 's/^/      /'
+fi
+
 # g) Deno: dlopen from a non-C host (different load order/flags than a linked C binary).
 #    This caught a static-libstdc++ symbol interposition crash that C checks missed.
 if command -v deno >/dev/null 2>&1; then

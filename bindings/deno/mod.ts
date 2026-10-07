@@ -53,6 +53,11 @@ const symbols = {
     result: "pointer",
     nonblocking: true,
   },
+  aicore_chat_complete_events: {
+    parameters: ["pointer", "buffer", "function", "pointer", "buffer"],
+    result: "pointer",
+    nonblocking: true,
+  },
   aicore_chat_generate: {
     parameters: ["pointer", "buffer", "function", "pointer", "buffer"],
     result: "pointer",
@@ -77,6 +82,15 @@ const TOKEN_CALLBACK = {
   parameters: ["pointer", "usize", "pointer"],
   result: "bool",
 } as const satisfies Deno.UnsafeCallbackDefinition;
+
+const EVENT_CALLBACK = {
+  parameters: ["i32", "pointer", "usize", "pointer"],
+  result: "bool",
+} as const satisfies Deno.UnsafeCallbackDefinition;
+
+/** Event kinds of aicore_chat_complete_events. */
+const EVENT_CONTENT = 0;
+const EVENT_REASONING = 1;
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -258,8 +272,10 @@ export class Model extends Handle {
 }
 
 export interface CompleteOptions {
-  /** Called with each streamed text piece. Return `false` to stop. */
+  /** Called with each streamed piece of reply text. Return `false` to stop. */
   onToken?: (piece: string) => boolean | void;
+  /** Called with each streamed piece of reasoning (`<think>`) text. Return `false` to stop. */
+  onReasoning?: (piece: string) => boolean | void;
   /** Aborting cancels the generation; the promise resolves with `finish_reason: "cancelled"`. */
   signal?: AbortSignal;
 }
@@ -311,7 +327,7 @@ export class ChatSession extends Handle {
 
   /** Chat completion using the model's chat template. */
   complete(request: ChatRequest, options: CompleteOptions = {}): Promise<ChatResponse> {
-    return this.#run("aicore_chat_complete", request, options);
+    return this.#run("aicore_chat_complete_events", request, options);
   }
 
   /** Raw text completion without a chat template. */
@@ -361,20 +377,31 @@ export class ChatSession extends Handle {
   }
 
   async #run(
-    fn: "aicore_chat_complete" | "aicore_chat_generate",
+    fn: "aicore_chat_complete_events" | "aicore_chat_generate",
     request: unknown,
-    { onToken, signal }: CompleteOptions,
+    { onToken, onReasoning, signal }: CompleteOptions,
   ): Promise<ChatResponse> {
     signal?.throwIfAborted();
+    const text = (ptr: Deno.PointerValue, len: number | bigint) =>
+      ptr === null ? "" : decoder.decode(new Uint8Array(Deno.UnsafePointerView.getArrayBuffer(ptr, Number(len))));
     return await this.exclusive(async (ptr) => {
       // Native code calls back from a worker thread; threadSafe marshals it to the JS thread.
-      const callback = onToken
-        ? Deno.UnsafeCallback.threadSafe(TOKEN_CALLBACK, (piecePtr, len) => {
-          if (piecePtr === null) return true;
-          const bytes = new Uint8Array(Deno.UnsafePointerView.getArrayBuffer(piecePtr, Number(len)));
-          return onToken(decoder.decode(bytes)) !== false;
-        })
-        : null;
+      let callback:
+        | Deno.UnsafeCallback<typeof EVENT_CALLBACK>
+        | Deno.UnsafeCallback<typeof TOKEN_CALLBACK>
+        | null = null;
+      if (fn === "aicore_chat_complete_events" && (onToken || onReasoning)) {
+        callback = Deno.UnsafeCallback.threadSafe(EVENT_CALLBACK, (kind, piecePtr, len) => {
+          if (kind === EVENT_CONTENT) return onToken?.(text(piecePtr, len)) !== false;
+          if (kind === EVENT_REASONING) return onReasoning?.(text(piecePtr, len)) !== false;
+          return true; // tool calls arrive parsed in the response
+        });
+      } else if (onToken) {
+        callback = Deno.UnsafeCallback.threadSafe(
+          TOKEN_CALLBACK,
+          (piecePtr, len) => onToken(text(piecePtr, len)) !== false,
+        );
+      }
       const onAbort = () => this.lib.aicore_chat_cancel(ptr);
       signal?.addEventListener("abort", onAbort, { once: true });
       const err = new ErrorSlot();

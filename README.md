@@ -17,6 +17,29 @@ Built in Rust on top of [llama.cpp](https://github.com/ggml-org/llama.cpp)
                                      └─ Vulkan · CPU · (CUDA)
 ```
 
+## Sidecar server (OpenAI-compatible)
+
+For apps that would rather talk HTTP than link a library, or several apps sharing one
+loaded model: `aicore-server` (in `bin/` of both packages).
+
+```sh
+bin/aicore-server --model qwen3-4b.gguf --embedding-model embed.gguf --port 8080 \
+                  [--parallel 2] [--ctx 8192] [--api-key KEY] [--alias qwen3-4b]
+```
+
+Point any OpenAI client at `http://127.0.0.1:8080/v1`:
+
+- `POST /v1/chat/completions` — non-stream and SSE `stream: true` (with
+  `stream_options.include_usage`); `delta.reasoning_content` for thinking models,
+  `delta.tool_calls` for calls; `tools`/`tool_choice`, `response_format`, `stop`, `seed`,
+  sampling params, `chat_template_kwargs` (e.g. `{"enable_thinking": false}`).
+- `POST /v1/embeddings` — `float` or `base64` (the OpenAI SDKs' default).
+- `GET /v1/models`, `GET /v1/models/{id}`, `GET /health`.
+- `--parallel N` sessions (requests beyond N queue; the last-used session is reused to
+  keep a client's KV-cache prefix). A client disconnect cancels its generation.
+- Binds `127.0.0.1` by default; `--api-key` (or `AICORE_API_KEY`) requires a Bearer token.
+- Verified with the official `openai` npm SDK: `scripts/openai-compat.ts` (9 checks).
+
 ## Layout
 
 | Path | What |
@@ -24,6 +47,7 @@ Built in Rust on top of [llama.cpp](https://github.com/ggml-org/llama.cpp)
 | `crates/aicore-sys` | Raw bindgen bindings; builds `vendor/llama.cpp` statically with CMake |
 | `crates/aicore` | Safe Rust API: `Model`, `ChatSession`, `Embedder`, `devices()` |
 | `crates/aicore-ffi` | C ABI → `libaicore.so` / `aicore.dll` / `libaicore.a`, header in `include/aicore.h` |
+| `crates/aicore-server` | OpenAI-compatible HTTP sidecar (`aicore-server`) |
 | `bindings/deno` | Deno FFI bindings (async, streaming, AbortSignal) |
 | `examples/c`, `examples/deno` | Runnable examples |
 | `spike/` | Phase 0 notes and benchmarks |
@@ -132,7 +156,10 @@ Status: builds and passes static checks (imports, delay-loads, exports, examples
     lazily, once the model starts a call); Mistral and XML formats are parsed only.
     Streaming shows reply text only; calls arrive parsed in the response.
     `run_tools` (Rust) / `runTools` (Deno) run the call → execute → feed back loop.
-  - **Reasoning**: `<think>…</think>` is split into `reasoning_content` (not streamed yet).
+  - **Reasoning**: `<think>…</think>` is split into `reasoning_content` and streamed as its
+    own event: Rust `complete_stream` (`StreamEvent::{Content, Reasoning, ToolCall}`), C
+    `aicore_chat_complete_events` (`AICORE_EVENT_*` kinds), Deno `onReasoning`, server
+    `delta.reasoning_content`. `complete` / `aicore_chat_complete` / `onToken` stay content-only.
   - Tested end-to-end with Qwen3-4B-Instruct-2507 (all scenarios) and Llama-3.2-3B-Instruct
     (format/plumbing). Note: Llama 3.2 3B over-calls tools and re-calls instead of answering;
     llama.cpp's llama-server behaves the same with it — prefer Qwen3-class models for agents.
@@ -153,7 +180,7 @@ cargo test --workspace
 
 Phase 0 (spike) ✔ · Phase 1 (core crate) ✔ · Phase 2 (C ABI, C + Deno examples) ✔ ·
 Phase 3a (portable Linux package, glibc 2.28 via zig) ✔ ·
-Phase 3b (Windows cross-build, static-checked; untested on Windows)
+Phase 3b (Windows cross-build, static-checked; untested on Windows) ·
+Phase 4 (templates, JSON output, tool calling, reasoning streaming, sidecar server) ✔
 
-Next: run on real Windows, Jinja chat
-templates (minijinja) + JSON-schema output, optional OpenAI-compatible sidecar server.
+Next: run on real Windows; macOS/ARM builds; vision models (mtmd).

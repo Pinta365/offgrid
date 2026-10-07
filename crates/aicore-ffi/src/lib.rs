@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 
 use aicore::{
     CancelToken, ChatRequest, ChatSession, EmbedParams, Embedder, Model, ModelParams,
-    SessionParams,
+    SessionParams, StreamEvent,
 };
 
 pub use logging::AicoreLogCallback;
@@ -170,6 +170,49 @@ pub unsafe extern "C" fn aicore_chat_complete(
         let mut session = lock(&chat.session);
         let resp = session
             .complete(&req, |piece| stream_piece(callback, user_data, piece))
+            .map_err(|e| e.to_string())?;
+        json_out(&resp)
+    })
+}
+
+/// Event kinds for [`aicore_chat_complete_events`].
+pub const AICORE_EVENT_CONTENT: i32 = 0;
+pub const AICORE_EVENT_REASONING: i32 = 1;
+/// `text` is the call as JSON: `{"id","type":"function","function":{"name","arguments"}}`.
+pub const AICORE_EVENT_TOOL_CALL: i32 = 2;
+
+/// Streaming event callback: `kind` is an `AICORE_EVENT_*` value; `text` holds `len`
+/// bytes of UTF-8 (also NUL-terminated). Return `false` to cancel generation.
+pub type AicoreEventCallback = Option<
+    unsafe extern "C" fn(kind: i32, text: *const c_char, len: usize, user_data: *mut c_void) -> bool,
+>;
+
+/// Like [`aicore_chat_complete`] but streams reasoning and tool calls too:
+/// reply text (`AICORE_EVENT_CONTENT`) and reasoning (`AICORE_EVENT_REASONING`) as they
+/// are generated, then one `AICORE_EVENT_TOOL_CALL` per parsed call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn aicore_chat_complete_events(
+    chat: *const AicoreChat,
+    request_json: *const c_char,
+    callback: AicoreEventCallback,
+    user_data: *mut c_void,
+    error_out: *mut *mut c_char,
+) -> *mut c_char {
+    guard(error_out, std::ptr::null_mut(), || {
+        let chat = handle(chat, "chat")?;
+        let req: ChatRequest = json_arg(request_json, "request")?;
+        let mut session = lock(&chat.session);
+        let resp = session
+            .complete_stream(&req, |event| {
+                let Some(cb) = callback else { return true };
+                let (kind, text) = match event {
+                    StreamEvent::Content(t) => (AICORE_EVENT_CONTENT, t.to_string()),
+                    StreamEvent::Reasoning(t) => (AICORE_EVENT_REASONING, t.to_string()),
+                    StreamEvent::ToolCall(c) => (AICORE_EVENT_TOOL_CALL, serde_json::to_string(c).unwrap_or_default()),
+                };
+                let Ok(c) = CString::new(text.as_str()) else { return true };
+                unsafe { cb(kind, c.as_ptr(), text.len(), user_data) }
+            })
             .map_err(|e| e.to_string())?;
         json_out(&resp)
     })
