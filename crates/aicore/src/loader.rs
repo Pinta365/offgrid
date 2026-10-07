@@ -9,7 +9,8 @@ use std::path::{Path, PathBuf};
 
 use aicore_sys as sys;
 
-pub(crate) fn load_backends() {
+/// Directories that may hold the shipped llama/ggml libraries and backend modules.
+fn candidate_dirs() -> Vec<PathBuf> {
     let mut candidates: Vec<PathBuf> = Vec::new();
     if let Some(dir) = std::env::var_os("AICORE_BACKEND_DIR") {
         candidates.push(dir.into());
@@ -20,7 +21,34 @@ pub(crate) fn load_backends() {
     if !sys::BUILD_BACKEND_DIR.is_empty() {
         candidates.push(sys::BUILD_BACKEND_DIR.into());
     }
+    candidates
+}
 
+/// Windows: aicore.dll delay-loads llama/ggml (see aicore-ffi/build.rs). Load them by
+/// full path from our folder first; the delay-load stubs then bind to these modules.
+/// Must run before any other llama/ggml call. No-op elsewhere (RUNPATH handles it).
+pub(crate) fn preload_core_libs() {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::System::LibraryLoader::{LOAD_WITH_ALTERED_SEARCH_PATH, LoadLibraryExW};
+        const LIBS: [&str; 3] = ["ggml-base.dll", "ggml.dll", "libllama.dll"];
+        let Some(dir) = candidate_dirs().into_iter().find(|d| d.join(LIBS[2]).is_file()) else {
+            log::warn!(target: "aicore", "llama/ggml DLLs not found next to aicore; relying on the default search path");
+            return;
+        };
+        for lib in LIBS {
+            let wide: Vec<u16> = dir.join(lib).as_os_str().encode_wide().chain([0]).collect();
+            let h = unsafe { LoadLibraryExW(wide.as_ptr(), std::ptr::null_mut(), LOAD_WITH_ALTERED_SEARCH_PATH) };
+            if h.is_null() {
+                log::error!(target: "aicore", "failed to load {}", dir.join(lib).display());
+            }
+        }
+    }
+}
+
+pub(crate) fn load_backends() {
+    let candidates = candidate_dirs();
     match candidates.iter().find(|d| has_cpu_backend(d)) {
         Some(dir) => {
             log::info!(target: "aicore", "loading backends from {}", dir.display());

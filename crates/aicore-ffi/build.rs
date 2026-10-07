@@ -5,6 +5,17 @@ fn main() {
     println!("cargo:rerun-if-changed=src");
     println!("cargo:rerun-if-changed=cbindgen.toml");
 
+    // Windows doesn't search a DLL's own folder for its dependencies, so a host that
+    // loads aicore.dll by path (Deno, Python, ...) couldn't find llama/ggml. Delay-load
+    // them; aicore preloads them by full path from its own folder before first use.
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
+        && std::env::var_os("CARGO_FEATURE_DYNAMIC_BACKENDS").is_some()
+    {
+        for dll in ["libllama.dll", "ggml.dll", "ggml-base.dll"] {
+            println!("cargo:rustc-cdylib-link-arg=-Wl,--delayload={dll}");
+        }
+        println!("cargo:rustc-cdylib-link-arg=-ldelayimp");
+    }
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
         // Find libllama/libggml next to libaicore in a packaged folder.
         println!("cargo:rustc-cdylib-link-arg=-Wl,-rpath,$ORIGIN");

@@ -78,6 +78,31 @@ Note: the default (static) dev build and the dynamic build both write
 `target/release/libaicore.so`; after packaging, point consumers at the dist folder
 (e.g. `AICORE_LIB=dist/.../lib/libaicore.so`) or rebuild without the feature.
 
+## Windows (cross-compiled from Linux)
+
+```sh
+# one-time: llvm-mingw (clang+lld+mingw-w64, UCRT) unpacked into ~/.local/share
+#   https://github.com/mstorsjo/llvm-mingw/releases  (ucrt-ubuntu-…-x86_64.tar.xz)
+rustup target add x86_64-pc-windows-gnullvm
+scripts/package-windows.sh          # → dist/aicore-<ver>-windows-x86_64{/,.zip}
+scripts/check-windows.sh dist/aicore-<ver>-windows-x86_64
+```
+
+- `bin/`: `aicore.dll` + llama/ggml DLLs, 14 CPU variants, `ggml-vulkan.dll`; keep them together.
+  Only Windows system DLLs are needed (UCRT, kernel32; `vulkan-1.dll` from the GPU driver
+  for the optional Vulkan module). libc++/libunwind are linked statically.
+- Windows doesn't search a DLL's own folder for its dependencies, so `aicore.dll`
+  **delay-loads** llama/ggml and preloads them by full path from its own folder. Hosts can
+  `LoadLibrary`/`dlopen` it from anywhere (Deno, Python, C#, …).
+- `lib/`: `libaicore.dll.a` (MinGW), `aicore.lib` (MSVC), `aicore.def`; `include/aicore.h`.
+- Vulkan without an SDK: Vulkan/SPIR-V headers come from the Linux host, the `vulkan-1`
+  import library is generated from `crates/aicore-sys/windows/vulkan-1.def`.
+- zig is **not** used for Windows: ggml relies on MinGW auto-export, and zig's CRT object
+  naming makes lld export `atexit` too (duplicate symbols).
+
+Status: builds and passes static checks (imports, delay-loads, exports, examples link).
+**Not yet run on real Windows.**
+
 ## API at a glance
 
 - **Model**: `load(path, {gpu_layers, devices})`, `info()` (name, size, context, template).
@@ -100,7 +125,8 @@ cargo test --workspace
 ## Status
 
 Phase 0 (spike) ✔ · Phase 1 (core crate) ✔ · Phase 2 (C ABI, C + Deno examples) ✔ ·
-Phase 3a (portable Linux package, glibc 2.28 via zig) ✔
+Phase 3a (portable Linux package, glibc 2.28 via zig) ✔ ·
+Phase 3b (Windows cross-build, static-checked; untested on Windows)
 
-Next: Windows build, Jinja chat
+Next: run on real Windows, Jinja chat
 templates (minijinja) + JSON-schema output, optional OpenAI-compatible sidecar server.

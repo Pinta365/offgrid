@@ -19,6 +19,8 @@ pub(crate) fn setup_lock() -> MutexGuard<'static, ()> {
 /// Initialize llama.cpp once per process. Called implicitly by every entry point.
 pub(crate) fn ensure_init() {
     INIT.call_once(|| unsafe {
+        #[cfg(feature = "dynamic-backends")]
+        crate::loader::preload_core_libs();
         sys::llama_log_set(Some(log_callback), std::ptr::null_mut());
         #[cfg(feature = "dynamic-backends")]
         crate::loader::load_backends();
@@ -112,5 +114,6 @@ pub fn system_info() -> String {
 
 /// Version of the bundled llama.cpp.
 pub fn version() -> String {
+    ensure_init();
     unsafe { cstr_to_string(sys::llama_version()) }
 }

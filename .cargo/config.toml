@@ -1,0 +1,4 @@
+# Windows (llvm-mingw, see scripts/env-llvm-mingw.sh): link libunwind statically so
+# aicore.dll doesn't depend on llvm-mingw runtime DLLs.
+[target.x86_64-pc-windows-gnullvm]
+rustflags = ["-C", "target-feature=+crt-static"]

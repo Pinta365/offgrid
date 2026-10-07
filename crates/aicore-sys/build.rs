@@ -74,10 +74,22 @@ fn main() {
             // modules leave exit-time handlers behind, so unmapping them crashes the
             // process at exit. nodelete keeps them mapped (cheap: mostly untouched pages).
             cfg.define("CMAKE_MODULE_LINKER_FLAGS", format!("{flags} -Wl,-z,nodelete").trim());
+        } else if target_os == "windows" {
+            // Note: build Windows with a real MinGW toolchain (llvm-mingw, see
+            // scripts/env-llvm-mingw.sh). ggml relies on MinGW auto-export, and zig's
+            // CRT object naming makes lld also export atexit/_CRT_INIT -> duplicate symbols.
+            // (Set explicitly so CMakeCache can't keep stale flags.)
+            // -static: bake libc++/libunwind into each DLL (only the OS UCRT stays dynamic).
+            cfg.define("CMAKE_SHARED_LINKER_FLAGS", "-static");
+            cfg.define("CMAKE_MODULE_LINKER_FLAGS", "-static");
         }
     } else {
         cfg.define("BUILD_SHARED_LIBS", "OFF");
         cfg.define("GGML_NATIVE", if native { "ON" } else { "OFF" });
+    }
+
+    if vulkan && target_os == "windows" && !cfg!(windows) {
+        cross_windows_vulkan(&mut cfg, &manifest_dir);
     }
 
     if has_ninja() {
@@ -127,6 +139,62 @@ fn main() {
         .expect("aicore-sys: failed to write bindings.rs");
 }
 
+/// Cross-compiling ggml-vulkan for Windows from Linux without a Vulkan SDK: use the
+/// host's (platform-neutral) Vulkan headers and glslc, and generate a MinGW import
+/// library for vulkan-1.dll from windows/vulkan-1.def with llvm-dlltool.
+/// Override with AICORE_VULKAN_INCLUDE / AICORE_GLSLC.
+fn cross_windows_vulkan(cfg: &mut cmake::Config, manifest_dir: &Path) {
+    println!("cargo:rerun-if-env-changed=AICORE_VULKAN_INCLUDE");
+    println!("cargo:rerun-if-env-changed=AICORE_GLSLC");
+    let def = manifest_dir.join("windows/vulkan-1.def");
+    println!("cargo:rerun-if-changed={}", def.display());
+
+    let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
+    let implib = out_dir.join("libvulkan-1.a");
+    let status = Command::new("llvm-dlltool")
+        .args(["-m", "i386:x86-64", "-d"])
+        .arg(&def)
+        .arg("-l")
+        .arg(&implib)
+        .status()
+        .expect("aicore-sys: llvm-dlltool not found (source scripts/env-llvm-mingw.sh)");
+    assert!(status.success(), "aicore-sys: llvm-dlltool failed");
+
+    // Copy just the Vulkan header dirs: adding all of /usr/include would pull host libc
+    // headers into the Windows compile.
+    let include = env::var("AICORE_VULKAN_INCLUDE").map(PathBuf::from).unwrap_or_else(|_| {
+        let dst = out_dir.join("vulkan-include");
+        for sub in ["vulkan", "vk_video", "spirv"] {
+            let src = Path::new("/usr/include").join(sub);
+            if src.is_dir() {
+                copy_dir(&src, &dst.join(sub));
+            }
+        }
+        dst
+    });
+    let glslc = env::var("AICORE_GLSLC").unwrap_or_else(|_| "glslc".into());
+    cfg.define("Vulkan_INCLUDE_DIR", include);
+    cfg.define("Vulkan_LIBRARY", &implib);
+    cfg.define("Vulkan_GLSLC_EXECUTABLE", which(&glslc).unwrap_or_else(|| glslc.into()));
+    println!("cargo:rustc-link-search=native={}", out_dir.display());
+}
+
+fn copy_dir(src: &Path, dst: &Path) {
+    std::fs::create_dir_all(dst).expect("create dir");
+    for entry in std::fs::read_dir(src).expect("read dir").flatten() {
+        let (from, to) = (entry.path(), dst.join(entry.file_name()));
+        if from.is_dir() {
+            copy_dir(&from, &to);
+        } else {
+            std::fs::copy(&from, &to).expect("copy header");
+        }
+    }
+}
+
+fn which(prog: &str) -> Option<PathBuf> {
+    env::var_os("PATH").and_then(|paths| env::split_paths(&paths).map(|d| d.join(prog)).find(|p| p.is_file()))
+}
+
 /// True when the C/C++ compiler is zig's (e.g. under `cargo zigbuild`).
 fn using_zig() -> bool {
     let target = env::var("TARGET").unwrap_or_default().replace('-', "_");
@@ -148,7 +216,8 @@ fn has_ninja() -> bool {
 /// `shared`: `.so`/`.dylib`/import `.lib`; otherwise a static archive (`.a`/`.lib`).
 fn find_lib(root: &Path, name: &str, shared: bool) -> Option<PathBuf> {
     let candidates = if shared {
-        vec![format!("lib{name}.so"), format!("lib{name}.dylib"), format!("{name}.lib")]
+        // .so / .dylib / MinGW import lib / MSVC import lib
+        vec![format!("lib{name}.so"), format!("lib{name}.dylib"), format!("lib{name}.dll.a"), format!("{name}.lib")]
     } else {
         vec![format!("lib{name}.a"), format!("{name}.lib"), format!("lib{name}.lib"), format!("{name}.a")]
     };
