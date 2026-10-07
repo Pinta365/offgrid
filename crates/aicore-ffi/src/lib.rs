@@ -145,6 +145,12 @@ pub unsafe extern "C" fn aicore_chat_new(
 
 /// Run a chat completion. `request_json` is
 /// `{"messages":[{"role":"user","content":"..."}],"max_tokens":256,"temperature":0.7,"stop":[],...}`.
+/// Tools (OpenAI format): `"tools":[{"type":"function","function":{"name","description","parameters"}}]`,
+/// `"tool_choice":"auto"|"none"|"required"|{"type":"function","function":{"name":"..."}}`;
+/// the response then has `"tool_calls":[{"id","type":"function","function":{"name","arguments"}}]`
+/// and `"finish_reason":"tool_calls"`. Send results back as `{"role":"tool","tool_call_id":...,
+/// "content":"..."}` after the assistant message (with its `tool_calls`). The callback streams
+/// reply text only (no reasoning / tool-call markup); `reasoning_content` is in the response.
 /// Structured output: `"response_format":{"type":"json_object"}` or
 /// `{"type":"json_schema","json_schema":{"schema":{...}}}`. Template: `"chat_template"`
 /// (Jinja text or built-in name) and `"chat_template_kwargs":{...}`.

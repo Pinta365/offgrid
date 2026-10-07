@@ -100,3 +100,15 @@ Available devices:
 - Default build links backends statically into libggml; for shipping one binary across machines,
   build with `GGML_BACKEND_DL=ON` (+ `GGML_CPU_ALL_VARIANTS=ON`) so CPU/Vulkan/CUDA backends load at runtime.
 - Must call the model's chat template (llama.cpp has `llama_chat_apply_template` / jinja) rather than hand-writing ChatML.
+
+## Tool-calling test models
+
+Additional model used to exercise the tool-call output parsers
+(`crates/aicore/src/tool_parse.rs`) and chat-template tool conventions.
+
+| File | Size (bytes) | Source URL |
+|---|---|---|
+| `Llama-3.2-3B-Instruct-Q4_K_M.gguf` | 2,019,377,696 (~1.88 GiB) | https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q4_K_M.gguf |
+
+Verified: first 4 bytes are `GGUF` (not an HTML error page). Source repo
+`bartowski/Llama-3.2-3B-Instruct-GGUF` (unsloth mirror not needed).

@@ -186,17 +186,18 @@ impl Model {
         Err(Error::Tokenize)
     }
 
-    /// Raw bytes of a token (may be a partial UTF-8 sequence).
-    pub(crate) fn token_bytes(&self, token: sys::llama_token, buf: &mut Vec<u8>) {
+    /// Raw bytes of a token (may be a partial UTF-8 sequence). `special` renders control
+    /// tokens (e.g. `[TOOL_CALLS]`) as text instead of dropping them.
+    pub(crate) fn token_bytes(&self, token: sys::llama_token, buf: &mut Vec<u8>, special: bool) {
         buf.clear();
         buf.resize(64, 0);
         let mut n = unsafe {
-            sys::llama_token_to_piece(self.vocab(), token, buf.as_mut_ptr() as *mut c_char, buf.len() as i32, 0, false)
+            sys::llama_token_to_piece(self.vocab(), token, buf.as_mut_ptr() as *mut c_char, buf.len() as i32, 0, special)
         };
         if n < 0 {
             buf.resize((-n) as usize, 0);
             n = unsafe {
-                sys::llama_token_to_piece(self.vocab(), token, buf.as_mut_ptr() as *mut c_char, buf.len() as i32, 0, false)
+                sys::llama_token_to_piece(self.vocab(), token, buf.as_mut_ptr() as *mut c_char, buf.len() as i32, 0, special)
             };
         }
         buf.truncate(n.max(0) as usize);

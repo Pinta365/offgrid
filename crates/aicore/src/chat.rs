@@ -10,7 +10,9 @@ use serde::{Deserialize, Serialize};
 use crate::batch::Batch;
 use crate::sampling::Sampler;
 use crate::template::{ChatTemplate, RenderArgs, is_jinja};
-use crate::text::{Push, TextStream};
+use crate::text::{Push, StreamFilter, TextStream};
+use crate::tool_parse::{self, ToolFormat};
+use crate::tools::{GrammarSpec, Tool, ToolCall, ToolChoice, tool_grammar};
 use crate::{Error, Model, Result, SamplingParams};
 
 const DEFAULT_MAX_CTX: u32 = 8192;
@@ -33,15 +35,47 @@ impl Default for SessionParams {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// An OpenAI-style chat message.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChatMessage {
+    /// `system`, `user`, `assistant` or `tool` (templates may accept others).
     pub role: String,
+    /// Message text. `null` is accepted (assistant messages that only call tools).
+    #[serde(default, deserialize_with = "null_as_empty")]
     pub content: String,
+    /// Model reasoning (`<think>` content) of an earlier assistant turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
+    /// Tool calls made by an assistant turn.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<ToolCall>,
+    /// For `role: "tool"`: the id of the call this message answers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    /// For `role: "tool"`: the function name (some templates use it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+fn null_as_empty<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<String, D::Error> {
+    Ok(Option::<String>::deserialize(d)?.unwrap_or_default())
 }
 
 impl ChatMessage {
     pub fn new(role: impl Into<String>, content: impl Into<String>) -> Self {
-        Self { role: role.into(), content: content.into() }
+        Self { role: role.into(), content: content.into(), ..Default::default() }
+    }
+    /// Result of a tool call, answering `call`.
+    pub fn tool_result(call: &ToolCall, content: impl Into<String>) -> Self {
+        Self {
+            tool_call_id: Some(call.id.clone()),
+            name: Some(call.function.name.clone()),
+            ..Self::new("tool", content)
+        }
+    }
+    /// Assistant turn that called tools (to append to the history before tool results).
+    pub fn assistant_tool_calls(content: impl Into<String>, calls: Vec<ToolCall>) -> Self {
+        Self { tool_calls: calls, ..Self::new("assistant", content) }
     }
     pub fn system(content: impl Into<String>) -> Self {
         Self::new("system", content)
@@ -68,6 +102,13 @@ pub struct ChatRequest {
     pub chat_template_kwargs: Option<serde_json::Map<String, serde_json::Value>>,
     /// Constrain the output to JSON (OpenAI-compatible).
     pub response_format: Option<ResponseFormat>,
+    /// Functions the model may call (OpenAI `tools`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<Tool>,
+    /// `auto` (default), `none`, `required` or a specific function.
+    pub tool_choice: Option<ToolChoice>,
+    /// Allow several calls in one turn (default true; some formats only support one).
+    pub parallel_tool_calls: Option<bool>,
     #[serde(flatten)]
     pub sampling: SamplingParams,
 }
@@ -123,6 +164,8 @@ pub enum FinishReason {
     /// `max_tokens` reached or the context is full.
     Length,
     Cancelled,
+    /// The model called one or more tools (see `ChatResponse::tool_calls`).
+    ToolCalls,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -137,9 +180,26 @@ pub struct Usage {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ChatResponse {
+    /// Reply text, with tool-call markup and reasoning removed.
     pub content: String,
+    /// `<think>` reasoning, if the model produced any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<ToolCall>,
     pub finish_reason: FinishReason,
     pub usage: Usage,
+}
+
+impl ChatResponse {
+    /// This response as an assistant message, for appending to the conversation.
+    pub fn to_message(&self) -> ChatMessage {
+        ChatMessage {
+            reasoning_content: self.reasoning_content.clone(),
+            tool_calls: self.tool_calls.clone(),
+            ..ChatMessage::assistant(self.content.clone())
+        }
+    }
 }
 
 /// Thread-safe handle that cancels the running request of a session.
@@ -258,12 +318,17 @@ impl ChatSession {
     /// model's own Jinja template; if that fails to compile or render, falls back to
     /// llama.cpp's built-in template matching the model.
     pub fn render_prompt(&mut self, req: &ChatRequest) -> Result<String> {
-        let messages = serde_json::to_value(&req.messages).map_err(|e| Error::InvalidArgument(e.to_string()))?;
+        let messages = template_messages(&req.messages)?;
+        let tools = if tools_active(req) {
+            Some(serde_json::to_value(&req.tools).map_err(|e| Error::InvalidArgument(e.to_string()))?)
+        } else {
+            None
+        };
         let bos = self.model.token_text(unsafe { sys::llama_vocab_bos(self.model.vocab()) });
         let eos = self.model.token_text(unsafe { sys::llama_vocab_eos(self.model.vocab()) });
         let args = RenderArgs {
             messages: &messages,
-            tools: None,
+            tools: tools.as_ref(),
             add_generation_prompt: true,
             bos_token: &bos,
             eos_token: &eos,
@@ -284,6 +349,10 @@ impl ChatSession {
                     Err(e) => Err(e.clone()),
                 };
                 rendered.or_else(|e| {
+                    if tools.is_some() {
+                        // Built-in templates can't show tools to the model.
+                        return Err(Error::ChatTemplate(format!("tool calling needs the model's Jinja template: {e}")));
+                    }
                     log::warn!(target: "aicore", "jinja chat template unusable ({e}); using llama.cpp built-in");
                     self.apply_builtin_template(&req.messages, None)
                 })
@@ -332,26 +401,123 @@ impl ChatSession {
         Err(Error::ChatTemplate("template output size changed".into()))
     }
 
-    /// Chat completion. `on_piece` receives streamed text; return `false` to cancel.
-    pub fn complete(&mut self, req: &ChatRequest, on_piece: impl FnMut(&str) -> bool) -> Result<ChatResponse> {
+    /// Chat completion. `on_piece` receives streamed reply text (without reasoning or
+    /// tool-call markup); return `false` to cancel. Tool calls and reasoning are returned
+    /// parsed in the response.
+    pub fn complete(&mut self, req: &ChatRequest, mut on_piece: impl FnMut(&str) -> bool) -> Result<ChatResponse> {
         if req.messages.is_empty() {
             return Err(Error::InvalidArgument("messages is empty".into()));
         }
+        let use_tools = tools_active(req);
         let prompt = self.render_prompt(req)?;
+        let format = if use_tools {
+            tool_parse::detect_format(&self.template_source(req).unwrap_or_default())
+        } else {
+            ToolFormat::Generic
+        };
+        // Some templates open the reasoning block in the generation prompt.
+        let think_open = prompt.trim_end().ends_with("<think>");
+
         let mut tokens = self.model.tokenize(&prompt, true, true)?;
         // Templates often include BOS text themselves; avoid a doubled BOS.
         let bos = unsafe { sys::llama_vocab_bos(self.model.vocab()) };
         if tokens.len() >= 2 && tokens[0] == bos && tokens[1] == bos {
             tokens.remove(0);
         }
-        let sampling = match req.response_format.as_ref().map(ResponseFormat::grammar).transpose()?.flatten() {
-            Some(_) if req.sampling.grammar.is_some() => {
-                return Err(Error::InvalidArgument("use either grammar or response_format, not both".into()));
+
+        // At most one source of grammar: raw grammar, response_format, or tools.
+        let mut grammars: Vec<GrammarSpec> = Vec::new();
+        if let Some(g) = &req.sampling.grammar {
+            grammars.push(GrammarSpec::strict(g.clone()));
+        }
+        if let Some(g) = req.response_format.as_ref().map(ResponseFormat::grammar).transpose()?.flatten() {
+            grammars.push(GrammarSpec::strict(g));
+        }
+        if use_tools {
+            let choice = req.tool_choice.clone().unwrap_or_default();
+            if let Some(g) = tool_grammar(format, &req.tools, &choice, req.parallel_tool_calls.unwrap_or(true))? {
+                grammars.push(g);
             }
-            Some(grammar) => &SamplingParams { grammar: Some(grammar), ..req.sampling.clone() },
-            None => &req.sampling,
+        }
+        if grammars.len() > 1 {
+            return Err(Error::InvalidArgument(
+                "only one of grammar, response_format and (constrained) tools can be used at once".into(),
+            ));
+        }
+
+        let marker = if use_tools { tool_parse::tool_call_start_marker(format) } else { None };
+        let mut filter = StreamFilter::new(marker, use_tools && format == ToolFormat::Llama3Json, think_open);
+        let mut cancelled_by_callback = false;
+        let mut resp = self.run(&tokens, req.max_tokens, &req.stop, &req.sampling, grammars.first(), use_tools, |piece| {
+            let visible = filter.push(piece);
+            if visible.is_empty() || on_piece(&visible) {
+                true
+            } else {
+                cancelled_by_callback = true;
+                false
+            }
+        })?;
+        if !cancelled_by_callback && resp.finish_reason != FinishReason::Cancelled {
+            let tail = filter.flush();
+            if !tail.is_empty() {
+                on_piece(&tail);
+            }
+        }
+
+        let parsed = if use_tools {
+            tool_parse::parse_output(format, &resp.content, think_open)
+        } else {
+            let (reasoning, content) = tool_parse::split_reasoning(&resp.content, think_open);
+            tool_parse::Parsed { content: content.trim().to_string(), reasoning, calls: Vec::new() }
         };
-        self.run(&tokens, req.max_tokens, &req.stop, sampling, on_piece)
+        resp.content = parsed.content;
+        resp.reasoning_content = parsed.reasoning;
+        resp.tool_calls = parsed.calls.into_iter().map(|c| ToolCall::new(c.name, c.arguments)).collect();
+        if !resp.tool_calls.is_empty() && resp.finish_reason == FinishReason::Stop {
+            resp.finish_reason = FinishReason::ToolCalls;
+        }
+        Ok(resp)
+    }
+
+    /// Run a tool loop: complete, execute requested calls with `call_tool` (returning the
+    /// result text, typically JSON), append calls + results, and repeat until the model
+    /// answers without calling tools. After `max_rounds` tool rounds a final turn is run
+    /// with `tool_choice: none` to force an answer.
+    ///
+    /// Returns the final response and the full conversation (request messages, assistant
+    /// tool-call turns, tool results and the final answer) for continuing the chat.
+    pub fn run_tools(
+        &mut self,
+        req: &ChatRequest,
+        max_rounds: usize,
+        mut call_tool: impl FnMut(&ToolCall) -> String,
+        mut on_piece: impl FnMut(&str) -> bool,
+    ) -> Result<(ChatResponse, Vec<ChatMessage>)> {
+        let mut req = req.clone();
+        for round in 0..=max_rounds {
+            if round == max_rounds {
+                req.tool_choice = Some(ToolChoice::None);
+            }
+            let resp = self.complete(&req, &mut on_piece)?;
+            req.messages.push(resp.to_message());
+            if resp.tool_calls.is_empty() || resp.finish_reason != FinishReason::ToolCalls {
+                return Ok((resp, req.messages));
+            }
+            for call in &resp.tool_calls {
+                let result = call_tool(call);
+                req.messages.push(ChatMessage::tool_result(call, result));
+            }
+        }
+        unreachable!("the last round runs with tool_choice none")
+    }
+
+    /// The Jinja source used for this request (override text or the model's template).
+    fn template_source(&self, req: &ChatRequest) -> Option<String> {
+        match req.chat_template.as_deref() {
+            Some(t) if is_jinja(t) => Some(t.to_string()),
+            Some(_) => None,
+            None => self.model.chat_template(),
+        }
     }
 
     /// Raw text completion without a chat template.
@@ -364,18 +530,21 @@ impl ChatSession {
         on_piece: impl FnMut(&str) -> bool,
     ) -> Result<ChatResponse> {
         let tokens = self.model.tokenize(prompt, true, true)?;
-        self.run(&tokens, max_tokens, stop, sampling, on_piece)
+        self.run(&tokens, max_tokens, stop, sampling, None, false, on_piece)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn run(
         &mut self,
         tokens: &[sys::llama_token],
         max_tokens: Option<u32>,
         stop: &[String],
         sampling: &SamplingParams,
+        grammar: Option<&GrammarSpec>,
+        special: bool,
         on_piece: impl FnMut(&str) -> bool,
     ) -> Result<ChatResponse> {
-        let result = self.run_inner(tokens, max_tokens, stop, sampling, on_piece);
+        let result = self.run_inner(tokens, max_tokens, stop, sampling, grammar, special, on_piece);
         if result.is_err() {
             // KV state may be partially written; start clean next time.
             self.reset();
@@ -384,12 +553,15 @@ impl ChatSession {
         result
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn run_inner(
         &mut self,
         tokens: &[sys::llama_token],
         max_tokens: Option<u32>,
         stop: &[String],
         sampling: &SamplingParams,
+        grammar: Option<&GrammarSpec>,
+        special: bool,
         mut on_piece: impl FnMut(&str) -> bool,
     ) -> Result<ChatResponse> {
         let n_ctx = self.n_ctx();
@@ -399,7 +571,7 @@ impl ChatSession {
         if tokens.len() >= n_ctx {
             return Err(Error::ContextOverflow { needed: tokens.len() + 1, n_ctx });
         }
-        let mut sampler = Sampler::new(&self.model, sampling)?;
+        let mut sampler = Sampler::new(&self.model, sampling, grammar)?;
         let mut usage = Usage { prompt_tokens: tokens.len() as u32, ..Default::default() };
         let t_prompt = Instant::now();
 
@@ -453,7 +625,7 @@ impl ChatSession {
                 break;
             }
             usage.completion_tokens += 1;
-            self.model.token_bytes(tok, &mut piece);
+            self.model.token_bytes(tok, &mut piece, special);
             let (text, hit_stop) = match stream.push(&piece) {
                 Push::Text(t) => (t, false),
                 Push::Stop(t) => (t, true),
@@ -488,7 +660,7 @@ impl ChatSession {
     }
 
     fn finish(&self, content: String, finish_reason: FinishReason, usage: Usage) -> ChatResponse {
-        ChatResponse { content, finish_reason, usage }
+        ChatResponse { content, reasoning_content: None, tool_calls: Vec::new(), finish_reason, usage }
     }
 
     /// Returns `Ok(false)` when the decode was aborted by the cancel token.
@@ -499,4 +671,25 @@ impl ChatSession {
             code => Err(Error::Decode(code)),
         }
     }
+}
+
+fn tools_active(req: &ChatRequest) -> bool {
+    !req.tools.is_empty() && req.tool_choice != Some(ToolChoice::None)
+}
+
+/// Messages as templates expect them: tool-call arguments as JSON objects (HF convention;
+/// OpenAI sends them as strings), assistant tool-call turns with string content.
+fn template_messages(messages: &[ChatMessage]) -> Result<serde_json::Value> {
+    let mut value = serde_json::to_value(messages).map_err(|e| Error::InvalidArgument(e.to_string()))?;
+    for msg in value.as_array_mut().into_iter().flatten() {
+        for call in msg.get_mut("tool_calls").and_then(|c| c.as_array_mut()).into_iter().flatten() {
+            if let Some(args) = call.pointer_mut("/function/arguments")
+                && let Some(text) = args.as_str()
+                && let Ok(parsed @ serde_json::Value::Object(_)) = serde_json::from_str::<serde_json::Value>(text)
+            {
+                *args = parsed;
+            }
+        }
+    }
+    Ok(value)
 }

@@ -41,11 +41,13 @@ impl ChatTemplate {
         // Python string/list/dict methods: .strip(), .split(), .startswith(), .items(), ...
         env.set_unknown_method_callback(minijinja_contrib::pycompat::unknown_method_callback);
         env.add_filter("tojson", tojson);
-        // minijinja treats none/undefined as iterable (iterates empty); Python doesn't, and
-        // templates rely on `tools is iterable and tools|length > 0` with tools=None.
+        // `is iterable` as templates intend it: lists/dicts, not none (minijinja iterates
+        // none as empty; templates test `tools is iterable` with tools=None) and not strings
+        // (Llama 3.x does `content is mapping or content is iterable -> tojson`, which would
+        // double-encode a JSON string tool result).
         env.add_test("iterable", |v: Value| {
             use minijinja::value::ValueKind::*;
-            matches!(v.kind(), Seq | Map | String | Iterable | Plain) && v.try_iter().is_ok()
+            matches!(v.kind(), Seq | Map | Iterable | Plain) && v.try_iter().is_ok()
         });
         env.add_function("raise_exception", raise_exception);
         env.add_function("strftime_now", strftime_now);
@@ -328,13 +330,13 @@ mod tests {
     }
 
     #[test]
-    fn iterable_test_matches_python() {
+    fn iterable_test_lists_not_strings() {
         let out = render(
             "{{ none is iterable }} {{ [] is iterable }} {{ 'ab' is iterable }} {{ {} is iterable }} {{ 3 is iterable }}",
             json!([]),
         )
         .unwrap();
-        assert_eq!(out, "False True True True False");
+        assert_eq!(out, "False True False True False");
     }
 
     #[test]

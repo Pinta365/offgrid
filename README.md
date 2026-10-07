@@ -43,6 +43,9 @@ cargo run --release -p aicore --example chat -- model.gguf
 make -C examples/c && examples/c/chat model.gguf "Hello"
 # Deno
 deno run --allow-ffi --allow-env --allow-read examples/deno/chat.ts model.gguf
+# Tool calling (Rust / Deno)
+cargo run --release -p aicore --example tools -- model.gguf "What's 1234 * 5678?"
+deno run --allow-ffi --allow-env --allow-read examples/deno/tools.ts model.gguf
 ```
 
 CPU-only build: add `--no-default-features`. CUDA: `--features cuda`.
@@ -120,6 +123,19 @@ Status: builds and passes static checks (imports, delay-loads, exports, examples
     (port of llama.cpp's json-schema-to-grammar: objects, arrays, enums/const, anyOf/oneOf/allOf,
     `$ref`/`$defs`, string formats/patterns/lengths). Properties are generated in declared
     order (put `reasoning` before `answer`). Not supported: remote `$ref`, numeric min/max.
+  - **Tool calling** (OpenAI `tools` / `tool_choice` / `parallel_tool_calls`): tools and tool
+    history are rendered through the model's own template; output is parsed from the model's
+    native format into `tool_calls` (`finish_reason: "tool_calls"`). Formats, detected from the
+    template: Hermes/Qwen `<tool_call>`, Llama 3.x JSON, Mistral `[TOOL_CALLS]` (list and
+    `[ARGS]`), Qwen3-Coder XML, generic JSON. Calls are grammar-constrained to the tool's
+    argument schema for Hermes/generic/Llama 3 (`required`/named: from the first token; `auto`:
+    lazily, once the model starts a call); Mistral and XML formats are parsed only.
+    Streaming shows reply text only; calls arrive parsed in the response.
+    `run_tools` (Rust) / `runTools` (Deno) run the call → execute → feed back loop.
+  - **Reasoning**: `<think>…</think>` is split into `reasoning_content` (not streamed yet).
+  - Tested end-to-end with Qwen3-4B-Instruct-2507 (all scenarios) and Llama-3.2-3B-Instruct
+    (format/plumbing). Note: Llama 3.2 3B over-calls tools and re-calls instead of answering;
+    llama.cpp's llama-server behaves the same with it — prefer Qwen3-class models for agents.
 - **Embedder**: batched, L2-normalized vectors.
 
 The C ABI passes parameters and results as JSON; see `crates/aicore-ffi/include/aicore.h`

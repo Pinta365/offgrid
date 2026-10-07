@@ -4,6 +4,7 @@ use std::ptr::NonNull;
 use aicore_sys as sys;
 use serde::{Deserialize, Serialize};
 
+use crate::tools::GrammarSpec;
 use crate::{Error, Model, Result};
 
 /// Sampling settings. Field names follow the OpenAI / llama.cpp server conventions.
@@ -48,17 +49,39 @@ pub(crate) struct Sampler {
 }
 
 impl Sampler {
-    pub fn new(model: &Model, p: &SamplingParams) -> Result<Self> {
+    /// `grammar` overrides `p.grammar` (callers resolve response_format / tools into it).
+    pub fn new(model: &Model, p: &SamplingParams, grammar: Option<&GrammarSpec>) -> Result<Self> {
         unsafe {
             let chain = sys::llama_sampler_chain_init(sys::llama_sampler_chain_default_params());
             let chain = NonNull::new(chain).ok_or(Error::InvalidArgument("sampler chain".into()))?;
             let this = Self { ptr: chain };
             let add = |s: *mut sys::llama_sampler| sys::llama_sampler_chain_add(chain.as_ptr(), s);
 
-            if let Some(grammar) = &p.grammar {
-                let g = CString::new(grammar.as_str()).map_err(|_| Error::Grammar)?;
-                let s = sys::llama_sampler_init_grammar(model.vocab(), g.as_ptr(), c"root".as_ptr());
+            let from_params = p.grammar.clone().map(GrammarSpec::strict);
+            if let Some(spec) = grammar.or(from_params.as_ref()) {
+                let text = CString::new(spec.text.as_str()).map_err(|_| Error::Grammar)?;
+                let root = CString::new(spec.root.as_str()).map_err(|_| Error::Grammar)?;
+                let s = if spec.lazy_patterns.is_empty() {
+                    sys::llama_sampler_init_grammar(model.vocab(), text.as_ptr(), root.as_ptr())
+                } else {
+                    let pats: Vec<CString> = spec
+                        .lazy_patterns
+                        .iter()
+                        .map(|p| CString::new(p.as_str()).map_err(|_| Error::Grammar))
+                        .collect::<Result<_>>()?;
+                    let ptrs: Vec<*const std::ffi::c_char> = pats.iter().map(|p| p.as_ptr()).collect();
+                    sys::llama_sampler_init_grammar_lazy_patterns(
+                        model.vocab(),
+                        text.as_ptr(),
+                        root.as_ptr(),
+                        ptrs.as_ptr() as *mut _,
+                        ptrs.len(),
+                        std::ptr::null(),
+                        0,
+                    )
+                };
                 if s.is_null() {
+                    log::debug!(target: "aicore", "rejected grammar:\n{}", spec.text);
                     return Err(Error::Grammar);
                 }
                 add(s);

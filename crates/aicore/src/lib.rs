@@ -26,6 +26,8 @@ mod model;
 mod sampling;
 mod template;
 mod text;
+mod tool_parse;
+mod tools;
 
 pub use backend::{DeviceInfo, DeviceKind, devices, system_info, version};
 pub use chat::{
@@ -36,3 +38,4 @@ pub use embed::{EmbedParams, Embedder};
 pub use error::{Error, Result};
 pub use model::{GpuLayers, Model, ModelInfo, ModelParams};
 pub use sampling::SamplingParams;
+pub use tools::{FunctionCall, FunctionDef, Tool, ToolCall, ToolChoice};

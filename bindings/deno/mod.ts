@@ -21,6 +21,7 @@
  */
 
 import type {
+  ChatMessage,
   ChatRequest,
   ChatResponse,
   DeviceInfo,
@@ -29,6 +30,7 @@ import type {
   ModelInfo,
   ModelParams,
   SessionParams,
+  ToolCall,
   VersionInfo,
 } from "./types.ts";
 
@@ -262,8 +264,51 @@ export interface CompleteOptions {
   signal?: AbortSignal;
 }
 
+/** Implementations of tools, keyed by function name. Receives parsed arguments. */
+export type ToolHandlers = Record<string, (args: Record<string, unknown>, call: ToolCall) => unknown>;
+
+export interface RunToolsOptions extends CompleteOptions {
+  /** Max tool rounds before a final answer is forced with `tool_choice: "none"` (default 5). */
+  maxRounds?: number;
+  /** Observe each executed call and its result text. */
+  onToolCall?: (call: ToolCall, result: string) => void;
+}
+
 /** One inference context. Requests are stateless; the KV cache prefix is reused between calls. */
 export class ChatSession extends Handle {
+  /**
+   * Run a tool loop: complete, execute requested calls with `handlers`, append the calls and
+   * results, and repeat until the model answers. Handler return values are sent as-is if
+   * strings, else JSON-encoded; thrown errors and unknown tools become `{"error": ...}` results.
+   * Returns the final response and the whole conversation for continuing the chat.
+   */
+  async runTools(
+    request: ChatRequest,
+    handlers: ToolHandlers,
+    options: RunToolsOptions = {},
+  ): Promise<{ response: ChatResponse; messages: ChatMessage[] }> {
+    const maxRounds = options.maxRounds ?? 5;
+    const messages = [...request.messages];
+    for (let round = 0; round <= maxRounds; round++) {
+      const req: ChatRequest = { ...request, messages };
+      if (round === maxRounds) req.tool_choice = "none";
+      const response = await this.complete(req, options);
+      messages.push({
+        role: "assistant",
+        content: response.content,
+        reasoning_content: response.reasoning_content,
+        tool_calls: response.tool_calls,
+      });
+      if (response.finish_reason !== "tool_calls" || !response.tool_calls?.length) return { response, messages };
+      for (const call of response.tool_calls) {
+        const result = await runHandler(handlers, call);
+        options.onToolCall?.(call, result);
+        messages.push({ role: "tool", tool_call_id: call.id, name: call.function.name, content: result });
+      }
+    }
+    throw new AiCoreError("unreachable: last round runs with tool_choice none");
+  }
+
   /** Chat completion using the model's chat template. */
   complete(request: ChatRequest, options: CompleteOptions = {}): Promise<ChatResponse> {
     return this.#run("aicore_chat_complete", request, options);
@@ -372,6 +417,18 @@ export class Embedder extends Handle {
 
   protected release(ptr: Deno.PointerObject): void {
     this.lib.aicore_embedder_free(ptr);
+  }
+}
+
+async function runHandler(handlers: ToolHandlers, call: ToolCall): Promise<string> {
+  const handler = handlers[call.function.name];
+  if (!handler) return JSON.stringify({ error: `unknown tool ${call.function.name}` });
+  try {
+    const args = JSON.parse(call.function.arguments || "{}");
+    const out = await handler(args, call);
+    return typeof out === "string" ? out : JSON.stringify(out ?? null);
+  } catch (e) {
+    return JSON.stringify({ error: e instanceof Error ? e.message : String(e) });
   }
 }
 

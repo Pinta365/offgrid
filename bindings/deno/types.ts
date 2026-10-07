@@ -42,8 +42,38 @@ export type Role = string;
 
 export interface ChatMessage {
   role: Role;
-  content: string;
+  /** `null` is accepted for assistant turns that only call tools. */
+  content: string | null;
+  /** Reasoning (`<think>`) of an earlier assistant turn. */
+  reasoning_content?: string;
+  /** Calls made by an assistant turn. */
+  tool_calls?: ToolCall[];
+  /** For `role: "tool"`: the call this result answers. */
+  tool_call_id?: string;
+  /** For `role: "tool"`: the function name. */
+  name?: string;
 }
+
+export interface ToolFunction {
+  name: string;
+  description?: string;
+  /** JSON Schema of the arguments object. */
+  parameters?: JsonSchema;
+}
+
+export interface Tool {
+  type: "function";
+  function: ToolFunction;
+}
+
+export interface ToolCall {
+  id: string;
+  type: "function";
+  /** `arguments` is JSON text (OpenAI convention). */
+  function: { name: string; arguments: string };
+}
+
+export type ToolChoice = "none" | "auto" | "required" | { type: "function"; function: { name: string } };
 
 export interface ChatRequest extends SamplingParams {
   messages: ChatMessage[];
@@ -55,6 +85,12 @@ export interface ChatRequest extends SamplingParams {
   chat_template_kwargs?: Record<string, unknown> | null;
   /** Constrain output to JSON (OpenAI-compatible). Cannot be combined with `grammar`. */
   response_format?: ResponseFormat | null;
+  /** Functions the model may call. */
+  tools?: Tool[];
+  /** Default `"auto"`. `"required"` / a named function force a call (grammar-enforced where supported). */
+  tool_choice?: ToolChoice | null;
+  /** Allow several calls per turn (default true). */
+  parallel_tool_calls?: boolean | null;
 }
 
 /** JSON Schema object (draft 2020-12 subset supported by the grammar converter). */
@@ -71,7 +107,7 @@ export interface GenerateRequest extends SamplingParams {
   stop?: string[];
 }
 
-export type FinishReason = "stop" | "length" | "cancelled";
+export type FinishReason = "stop" | "length" | "cancelled" | "tool_calls";
 
 export interface Usage {
   prompt_tokens: number;
@@ -82,7 +118,12 @@ export interface Usage {
 }
 
 export interface ChatResponse {
+  /** Reply text without reasoning or tool-call markup. */
   content: string;
+  /** `<think>` reasoning, if any. */
+  reasoning_content?: string;
+  /** Present when `finish_reason` is `"tool_calls"`. */
+  tool_calls?: ToolCall[];
   finish_reason: FinishReason;
   usage: Usage;
 }

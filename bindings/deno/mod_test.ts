@@ -107,6 +107,42 @@ Deno.test({ name: "chat: json_schema response_format", ignore: !chatModel }, asy
   assertEquals(v.age, 85);
 });
 
+Deno.test({ name: "chat: tool calling loop", ignore: !chatModel }, async () => {
+  using core = AiCore.open();
+  using model = await core.loadModel(chatModel!);
+  using chat = await model.createChat();
+  const calls: string[] = [];
+  let streamed = "";
+  const { response, messages } = await chat.runTools(
+    {
+      messages: [{ role: "user", content: "What is the weather in Paris? Answer in one sentence." }],
+      temperature: 0,
+      max_tokens: 200,
+      tools: [{
+        type: "function",
+        function: {
+          name: "get_weather",
+          description: "Current weather for a city",
+          parameters: { type: "object", properties: { city: { type: "string" } }, required: ["city"] },
+        },
+      }],
+    },
+    {
+      get_weather: ({ city }) => {
+        calls.push(String(city));
+        return { temperature_c: 21, conditions: "sunny" };
+      },
+    },
+    { onToken: (t) => void (streamed += t) },
+  );
+  assertEquals(calls.length, 1);
+  assertStringIncludes(calls[0], "Paris");
+  assertEquals(response.finish_reason, "stop");
+  assertStringIncludes(response.content, "21");
+  assertEquals(messages.map((m) => m.role), ["user", "assistant", "tool", "assistant"]);
+  assert(!streamed.includes("<tool_call>"), streamed);
+});
+
 Deno.test({ name: "embeddings", ignore: !embedModel }, async () => {
   using core = AiCore.open();
   using model = await core.loadModel(embedModel!);
