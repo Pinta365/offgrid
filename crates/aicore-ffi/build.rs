@@ -11,7 +11,7 @@ fn main() {
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
         && std::env::var_os("CARGO_FEATURE_DYNAMIC_BACKENDS").is_some()
     {
-        for dll in ["libllama.dll", "ggml.dll", "ggml-base.dll"] {
+        for dll in ["libmtmd.dll", "libllama.dll", "ggml.dll", "ggml-base.dll"] {
             println!("cargo:rustc-cdylib-link-arg=-Wl,--delayload={dll}");
         }
         println!("cargo:rustc-cdylib-link-arg=-ldelayimp");

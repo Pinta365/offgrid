@@ -24,6 +24,7 @@ import type {
   ChatMessage,
   ChatRequest,
   ChatResponse,
+  ContentPart,
   DeviceInfo,
   EmbedParams,
   GenerateRequest,
@@ -457,6 +458,24 @@ async function runHandler(handlers: ToolHandlers, call: ToolCall): Promise<strin
   } catch (e) {
     return JSON.stringify({ error: e instanceof Error ? e.message : String(e) });
   }
+}
+
+/**
+ * An `image_url` content part from encoded image bytes (PNG, JPEG, GIF, BMP) or a file path.
+ * @example `{ role: "user", content: [{ type: "text", text: "Describe" }, await imagePart("cat.png")] }`
+ */
+export async function imagePart(image: Uint8Array | string): Promise<ContentPart> {
+  const bytes = typeof image === "string" ? await Deno.readFile(image) : image;
+  const mime = bytes[0] === 0x89
+    ? "image/png"
+    : bytes[0] === 0xff
+    ? "image/jpeg"
+    : bytes[0] === 0x47
+    ? "image/gif"
+    : "image/bmp";
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return { type: "image_url", image_url: { url: `data:${mime};base64,${btoa(binary)}` } };
 }
 
 /** Dot product; equals cosine similarity for normalized vectors. */

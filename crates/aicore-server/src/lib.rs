@@ -33,6 +33,8 @@ use pool::ChatPool;
 #[derive(Debug, Clone, Default)]
 pub struct ServerConfig {
     pub model: Option<PathBuf>,
+    /// Vision projector for `model`.
+    pub mmproj: Option<PathBuf>,
     pub embedding_model: Option<PathBuf>,
     /// Model id reported to clients (default: file stem).
     pub alias: Option<String>,
@@ -65,7 +67,8 @@ impl AppState {
     pub fn load(config: &ServerConfig) -> aicore::Result<Arc<Self>> {
         let chat = match &config.model {
             Some(path) => {
-                let model = Model::load(path, &config.model_params)?;
+                let params = ModelParams { mmproj: config.mmproj.clone(), ..config.model_params.clone() };
+                let model = Model::load(path, &params)?;
                 let pool = ChatPool::new(model, &config.session, config.parallel)?;
                 Some((model_id(path, &config.alias), pool))
             }
@@ -73,7 +76,8 @@ impl AppState {
         };
         let embed = match &config.embedding_model {
             Some(path) => {
-                let model = Model::load(path, &config.model_params)?;
+                let params = ModelParams { mmproj: None, ..config.model_params.clone() };
+                let model = Model::load(path, &params)?;
                 let emb = Embedder::new(model, &EmbedParams::default())?;
                 Some((model_id(path, &config.embedding_alias), Arc::new(Mutex::new(emb))))
             }

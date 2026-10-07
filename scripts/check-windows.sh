@@ -75,14 +75,14 @@ else
     fail "$bad_imports unexpected import(s)"
 fi
 
-# --- b) aicore.dll delay-loads libllama/ggml/ggml-base ----------------------
+# --- b) aicore.dll delay-loads libllama/libmtmd/ggml/ggml-base ----------------------
 imports_class="$(llvm-readobj --coff-imports "$BIN/aicore.dll" 2>/dev/null | awk '
     /^Import \{/       { t = "normal" }
     /^DelayImport \{/  { t = "delay" }
     /^  Name: /        { name = $0; sub(/^  Name: /, "", name); print t, tolower(name) }
 ')"
 delay_bad=0
-for want in libllama.dll ggml.dll ggml-base.dll; do
+for want in libllama.dll libmtmd.dll ggml.dll ggml-base.dll; do
     kind="$(echo "$imports_class" | awk -v n="$want" '$2 == n { print $1 }' | head -1)"
     if [ "$kind" = "delay" ]; then
         info "aicore.dll delay-loads $want"
@@ -92,7 +92,7 @@ for want in libllama.dll ggml.dll ggml-base.dll; do
     fi
 done
 if [ "$delay_bad" -eq 0 ]; then
-    pass "aicore.dll delay-loads libllama.dll, ggml.dll, ggml-base.dll"
+    pass "aicore.dll delay-loads libllama.dll, libmtmd.dll, ggml.dll, ggml-base.dll"
 fi
 
 # --- c) aicore.dll exports exactly the aicore_* functions in aicore.h -------

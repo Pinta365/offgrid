@@ -6,6 +6,8 @@ export interface ModelParams {
   gpu_layers?: GpuLayers;
   /** Restrict offloading to these device names, e.g. `["Vulkan0"]`. */
   devices?: string[] | null;
+  /** Vision projector (`mmproj-*.gguf`) for multimodal models; enables image input. */
+  mmproj?: string | null;
 }
 
 export interface SessionParams {
@@ -40,10 +42,15 @@ export interface SamplingParams {
 /** Usually "system" | "user" | "assistant"; templates may accept others. */
 export type Role = string;
 
+/** OpenAI content parts. Images must be `data:` URLs (see `imagePart`). */
+export type ContentPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string } };
+
 export interface ChatMessage {
   role: Role;
-  /** `null` is accepted for assistant turns that only call tools. */
-  content: string | null;
+  /** Text, parts (text + images), or `null` for assistant turns that only call tools. */
+  content: string | ContentPart[] | null;
   /** Reasoning (`<think>`) of an earlier assistant turn. */
   reasoning_content?: string;
   /** Calls made by an assistant turn. */
@@ -148,6 +155,8 @@ export interface ModelInfo {
   has_encoder: boolean;
   has_decoder: boolean;
   chat_template: string | null;
+  /** Image input available (vision projector loaded). */
+  vision: boolean;
 }
 
 export interface VersionInfo {

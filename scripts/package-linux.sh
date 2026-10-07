@@ -79,6 +79,7 @@ mkdir -p "$PKG/bin" "$PKG/lib" "$PKG/include"
 cp -L "$TARGET_DIR/libaicore.so"              "$PKG/lib/libaicore.so"
 cp -L "$TARGET_DIR/aicore-server"              "$PKG/bin/aicore-server"
 cp -L "$OUT_DIR/out/lib/libllama.so.0"         "$PKG/lib/libllama.so.0"
+cp -L "$OUT_DIR/out/lib/libmtmd.so.0"          "$PKG/lib/libmtmd.so.0"
 cp -L "$OUT_DIR/out/lib/libggml.so.0"          "$PKG/lib/libggml.so.0"
 cp -L "$OUT_DIR/out/lib/libggml-base.so.0"     "$PKG/lib/libggml-base.so.0"
 
@@ -111,7 +112,7 @@ Linking
   cc your_app.c -I<this dir>/include -L<this dir>/lib -laicore \\
      -Wl,-rpath,<this dir>/lib
   The shared library has RUNPATH \$ORIGIN, so at runtime it finds
-  libllama.so.0, libggml.so.0, libggml-base.so.0 and the backend modules in the
+  libllama.so.0, libmtmd.so.0 (vision), libggml.so.0, libggml-base.so.0 and the backend modules in the
   same directory as libaicore.so. Distributing the whole tree is sufficient.
 
 Environment variables

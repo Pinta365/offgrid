@@ -22,6 +22,8 @@ pub(crate) fn ensure_init() {
         #[cfg(feature = "dynamic-backends")]
         crate::loader::preload_core_libs();
         sys::llama_log_set(Some(log_callback), std::ptr::null_mut());
+        sys::mtmd_log_set(Some(log_callback), std::ptr::null_mut());
+        sys::mtmd_helper_log_set(Some(log_callback), std::ptr::null_mut());
         #[cfg(feature = "dynamic-backends")]
         crate::loader::load_backends();
         sys::llama_backend_init();

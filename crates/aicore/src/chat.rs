@@ -13,7 +13,8 @@ use crate::template::{ChatTemplate, RenderArgs, is_jinja};
 use crate::text::{PieceKind, Push, StreamFilter, TextStream};
 use crate::tool_parse::{self, ToolFormat};
 use crate::tools::{GrammarSpec, Tool, ToolCall, ToolChoice, tool_grammar};
-use crate::{Error, Model, Result, SamplingParams};
+use crate::vision::{Chunks, media_marker};
+use crate::{Error, Image, Model, Result, SamplingParams};
 
 const DEFAULT_MAX_CTX: u32 = 8192;
 
@@ -36,25 +37,116 @@ impl Default for SessionParams {
 }
 
 /// An OpenAI-style chat message.
+///
+/// On the wire `content` may be a string, `null`, or an array of parts
+/// (`{"type":"text","text":...}` / `{"type":"image_url","image_url":{"url":"data:..."}}`).
+/// Internally the text holds one [`media_marker`] per image, in order, and the images are
+/// in `images`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "WireMessage", into = "WireMessage")]
 pub struct ChatMessage {
     /// `system`, `user`, `assistant` or `tool` (templates may accept others).
     pub role: String,
-    /// Message text. `null` is accepted (assistant messages that only call tools).
-    #[serde(default, deserialize_with = "null_as_empty")]
+    /// Message text (with a media marker where each image goes).
     pub content: String,
+    /// Images referenced by the markers in `content`, in order.
+    pub images: Vec<Image>,
     /// Model reasoning (`<think>` content) of an earlier assistant turn.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_content: Option<String>,
     /// Tool calls made by an assistant turn.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_calls: Vec<ToolCall>,
     /// For `role: "tool"`: the id of the call this message answers.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
     /// For `role: "tool"`: the function name (some templates use it).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+}
+
+/// Serde shape of [`ChatMessage`] (OpenAI wire format).
+#[derive(Serialize, Deserialize)]
+struct WireMessage {
+    role: String,
+    #[serde(default)]
+    content: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reasoning_content: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    tool_calls: Vec<ToolCall>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tool_call_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+}
+
+impl TryFrom<WireMessage> for ChatMessage {
+    type Error = String;
+
+    fn try_from(w: WireMessage) -> std::result::Result<Self, String> {
+        let (content, images) = match w.content {
+            serde_json::Value::Null => (String::new(), Vec::new()),
+            serde_json::Value::String(s) => (s, Vec::new()),
+            serde_json::Value::Array(parts) => {
+                let (mut texts, mut images) = (Vec::new(), Vec::new());
+                for part in parts {
+                    match part.get("type").and_then(|t| t.as_str()) {
+                        Some("text") => texts.push(part.get("text").and_then(|t| t.as_str()).unwrap_or("").to_string()),
+                        Some("image_url") => {
+                            let url = part
+                                .pointer("/image_url/url")
+                                .or_else(|| part.get("image_url"))
+                                .and_then(|u| u.as_str())
+                                .ok_or("image_url part without url")?;
+                            images.push(Image::from_data_url(url).map_err(|e| e.to_string())?);
+                            texts.push(media_marker().to_string());
+                        }
+                        other => return Err(format!("unsupported content part type {other:?}")),
+                    }
+                }
+                (texts.join("\n"), images)
+            }
+            other => return Err(format!("content must be a string, null or an array of parts, got {other}")),
+        };
+        Ok(Self {
+            role: w.role,
+            content,
+            images,
+            reasoning_content: w.reasoning_content,
+            tool_calls: w.tool_calls,
+            tool_call_id: w.tool_call_id,
+            name: w.name,
+        })
+    }
+}
+
+impl From<ChatMessage> for WireMessage {
+    fn from(m: ChatMessage) -> Self {
+        let content = if m.images.is_empty() {
+            serde_json::Value::String(m.content)
+        } else {
+            // Back to OpenAI parts: text segments around each marker, images in between.
+            let mut parts = Vec::new();
+            let mut images = m.images.iter();
+            for (i, segment) in m.content.split(media_marker()).enumerate() {
+                if i > 0
+                    && let Some(img) = images.next()
+                {
+                    parts.push(serde_json::json!({"type": "image_url", "image_url": {"url": img.to_data_url()}}));
+                }
+                let text = segment.trim_matches('\n');
+                if !text.is_empty() {
+                    parts.push(serde_json::json!({"type": "text", "text": text}));
+                }
+            }
+            serde_json::Value::Array(parts)
+        };
+        Self {
+            role: m.role,
+            content,
+            reasoning_content: m.reasoning_content,
+            tool_calls: m.tool_calls,
+            tool_call_id: m.tool_call_id,
+            name: m.name,
+        }
+    }
 }
 
 fn string_or_seq<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Vec<String>, D::Error> {
@@ -71,13 +163,15 @@ fn string_or_seq<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<
     })
 }
 
-fn null_as_empty<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<String, D::Error> {
-    Ok(Option::<String>::deserialize(d)?.unwrap_or_default())
-}
 
 impl ChatMessage {
     pub fn new(role: impl Into<String>, content: impl Into<String>) -> Self {
         Self { role: role.into(), content: content.into(), ..Default::default() }
+    }
+    /// A user message with images (each shown before the text).
+    pub fn user_with_images(text: impl Into<String>, images: Vec<Image>) -> Self {
+        let markers: String = images.iter().map(|_| format!("{}\n", media_marker())).collect();
+        Self { images, ..Self::new("user", format!("{markers}{}", text.into())) }
     }
     /// Result of a tool call, answering `call`.
     pub fn tool_result(call: &ToolCall, content: impl Into<String>) -> Self {
@@ -265,6 +359,18 @@ pub struct ChatSession {
     cancel: CancelToken,
     /// The model's Jinja chat template, compiled on first use (`Err` = unusable, use built-in).
     model_template: Option<std::result::Result<ChatTemplate, String>>,
+    /// Next position in sequence 0 (== cached.len() unless media was evaluated; M-RoPE
+    /// images use a different number of positions than tokens).
+    n_past: usize,
+    /// The KV cache holds media chunks that `cached` doesn't mirror: no prefix reuse.
+    kv_untracked: bool,
+}
+
+/// What to evaluate before generating.
+enum Prompt<'a> {
+    Tokens(&'a [sys::llama_token]),
+    /// Text + image chunks (mtmd), evaluated from position 0.
+    Media(&'a Chunks),
 }
 
 // The context is used from one thread at a time (&mut self), but may move between threads.
@@ -318,6 +424,8 @@ impl ChatSession {
             cached: Vec::new(),
             cancel,
             model_template: None,
+            n_past: 0,
+            kv_untracked: false,
         })
     }
 
@@ -338,6 +446,8 @@ impl ChatSession {
     pub fn reset(&mut self) {
         unsafe { sys::llama_memory_clear(sys::llama_get_memory(self.ctx.as_ptr()), true) };
         self.cached.clear();
+        self.n_past = 0;
+        self.kv_untracked = false;
     }
 
     /// Render the request's messages into the prompt text the model will see.
@@ -459,12 +569,27 @@ impl ChatSession {
         // Some templates open the reasoning block in the generation prompt.
         let think_open = prompt.trim_end().ends_with("<think>");
 
-        let mut tokens = self.model.tokenize(&prompt, true, true)?;
-        // Templates often include BOS text themselves; avoid a doubled BOS.
-        let bos = unsafe { sys::llama_vocab_bos(self.model.vocab()) };
-        if tokens.len() >= 2 && tokens[0] == bos && tokens[1] == bos {
-            tokens.remove(0);
-        }
+        let images: Vec<&Image> = req.messages.iter().flat_map(|m| &m.images).collect();
+        let (tokens, chunks) = if images.is_empty() {
+            let mut tokens = self.model.tokenize(&prompt, true, true)?;
+            // Templates often include BOS text themselves; avoid a doubled BOS.
+            let bos = unsafe { sys::llama_vocab_bos(self.model.vocab()) };
+            if tokens.len() >= 2 && tokens[0] == bos && tokens[1] == bos {
+                tokens.remove(0);
+            }
+            (tokens, None)
+        } else {
+            let vision = self.model.vision().ok_or_else(|| {
+                Error::InvalidArgument("request has images but the model has no vision projector (mmproj)".into())
+            })?;
+            let bos = self.model.token_text(unsafe { sys::llama_vocab_bos(self.model.vocab()) });
+            let add_bos = bos.is_empty() || !prompt.starts_with(&bos);
+            (Vec::new(), Some(vision.tokenize(&prompt, &images, add_bos)?))
+        };
+        let prompt_input = match &chunks {
+            Some(c) => Prompt::Media(c),
+            None => Prompt::Tokens(&tokens),
+        };
 
         // At most one source of grammar: raw grammar, response_format, or tools.
         let mut grammars: Vec<GrammarSpec> = Vec::new();
@@ -495,7 +620,7 @@ impl ChatSession {
                 PieceKind::Reasoning => on_event(StreamEvent::Reasoning(text)),
             })
         };
-        let mut resp = self.run(&tokens, req.max_tokens, &req.stop, &req.sampling, grammars.first(), use_tools, |piece| {
+        let mut resp = self.run(prompt_input, req.max_tokens, &req.stop, &req.sampling, grammars.first(), use_tools, |piece| {
             let ok = deliver(filter.push(piece), &mut on_event);
             cancelled_by_callback |= !ok;
             ok
@@ -573,13 +698,13 @@ impl ChatSession {
         on_piece: impl FnMut(&str) -> bool,
     ) -> Result<ChatResponse> {
         let tokens = self.model.tokenize(prompt, true, true)?;
-        self.run(&tokens, max_tokens, stop, sampling, None, false, on_piece)
+        self.run(Prompt::Tokens(&tokens), max_tokens, stop, sampling, None, false, on_piece)
     }
 
     #[allow(clippy::too_many_arguments)]
     fn run(
         &mut self,
-        tokens: &[sys::llama_token],
+        prompt: Prompt<'_>,
         max_tokens: Option<u32>,
         stop: &[String],
         sampling: &SamplingParams,
@@ -587,7 +712,7 @@ impl ChatSession {
         special: bool,
         on_piece: impl FnMut(&str) -> bool,
     ) -> Result<ChatResponse> {
-        let result = self.run_inner(tokens, max_tokens, stop, sampling, grammar, special, on_piece);
+        let result = self.run_inner(prompt, max_tokens, stop, sampling, grammar, special, on_piece);
         if result.is_err() {
             // KV state may be partially written; start clean next time.
             self.reset();
@@ -599,24 +724,43 @@ impl ChatSession {
     #[allow(clippy::too_many_arguments)]
     fn run_inner(
         &mut self,
-        tokens: &[sys::llama_token],
+        prompt: Prompt<'_>,
         max_tokens: Option<u32>,
         stop: &[String],
         sampling: &SamplingParams,
         grammar: Option<&GrammarSpec>,
         special: bool,
-        mut on_piece: impl FnMut(&str) -> bool,
+        on_piece: impl FnMut(&str) -> bool,
     ) -> Result<ChatResponse> {
         let n_ctx = self.n_ctx();
+        let sampler = Sampler::new(&self.model, sampling, grammar)?;
+        let t_prompt = Instant::now();
+        let tokens = match prompt {
+            Prompt::Tokens(t) => t,
+            Prompt::Media(chunks) => {
+                let n_pos = chunks.n_pos();
+                if n_pos >= n_ctx {
+                    return Err(Error::ContextOverflow { needed: n_pos + 1, n_ctx });
+                }
+                let mut usage = Usage { prompt_tokens: chunks.n_tokens() as u32, ..Default::default() };
+                self.reset();
+                self.kv_untracked = true;
+                let vision = self.model.vision().expect("checked by caller");
+                self.n_past = vision.eval(self.ctx.as_ptr(), chunks, 0, self.n_batch as i32)? as usize;
+                usage.prompt_ms = t_prompt.elapsed().as_secs_f64() * 1000.0;
+                return self.generate_tokens(sampler, usage, max_tokens, stop, special, on_piece);
+            }
+        };
         if tokens.is_empty() {
             return Err(Error::InvalidArgument("empty prompt".into()));
         }
         if tokens.len() >= n_ctx {
             return Err(Error::ContextOverflow { needed: tokens.len() + 1, n_ctx });
         }
-        let mut sampler = Sampler::new(&self.model, sampling, grammar)?;
+        if self.kv_untracked {
+            self.reset();
+        }
         let mut usage = Usage { prompt_tokens: tokens.len() as u32, ..Default::default() };
-        let t_prompt = Instant::now();
 
         // Reuse the common prefix; always re-evaluate at least the last prompt token for logits.
         let mut keep = self.cached.iter().zip(tokens).take_while(|(a, b)| a == b).count();
@@ -648,10 +792,23 @@ impl ChatSession {
                 return Ok(self.finish(String::new(), FinishReason::Cancelled, usage));
             }
         }
+        self.n_past = self.cached.len();
         usage.prompt_ms = t_prompt.elapsed().as_secs_f64() * 1000.0;
+        self.generate_tokens(sampler, usage, max_tokens, stop, special, on_piece)
+    }
 
+    /// Sample and decode until EOG, a stop string, the budget, or cancellation.
+    fn generate_tokens(
+        &mut self,
+        mut sampler: Sampler,
+        mut usage: Usage,
+        max_tokens: Option<u32>,
+        stop: &[String],
+        special: bool,
+        mut on_piece: impl FnMut(&str) -> bool,
+    ) -> Result<ChatResponse> {
         let t_gen = Instant::now();
-        let budget = (n_ctx - self.cached.len()).min(max_tokens.map_or(usize::MAX, |m| m as usize));
+        let budget = self.n_ctx().saturating_sub(self.n_past).min(max_tokens.map_or(usize::MAX, |m| m as usize));
         let mut stream = TextStream::new(stop);
         let mut content = String::new();
         let mut piece = Vec::new();
@@ -685,13 +842,16 @@ impl ChatSession {
                 break;
             }
             self.batch.clear();
-            self.batch.add(tok, self.cached.len() as i32, &[0], true);
+            self.batch.add(tok, self.n_past as i32, &[0], true);
             if !self.decode()? {
                 self.reset();
                 reason = FinishReason::Cancelled;
                 break;
             }
-            self.cached.push(tok);
+            self.n_past += 1;
+            if !self.kv_untracked {
+                self.cached.push(tok);
+            }
         }
         let tail = stream.finish();
         if !tail.is_empty() && reason != FinishReason::Cancelled {
@@ -724,7 +884,9 @@ fn tools_active(req: &ChatRequest) -> bool {
 /// OpenAI sends them as strings), assistant tool-call turns with string content.
 fn template_messages(messages: &[ChatMessage]) -> Result<serde_json::Value> {
     let mut value = serde_json::to_value(messages).map_err(|e| Error::InvalidArgument(e.to_string()))?;
-    for msg in value.as_array_mut().into_iter().flatten() {
+    for (msg, orig) in value.as_array_mut().into_iter().flatten().zip(messages) {
+        // Templates get plain text; images are the media markers mtmd expands later.
+        msg["content"] = serde_json::Value::String(orig.content.clone());
         for call in msg.get_mut("tool_calls").and_then(|c| c.as_array_mut()).into_iter().flatten() {
             if let Some(args) = call.pointer_mut("/function/arguments")
                 && let Some(text) = args.as_str()

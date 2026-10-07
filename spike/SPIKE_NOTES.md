@@ -116,3 +116,24 @@ Verified: first 4 bytes are `GGUF` (not an HTML error page). Source repo
 
 `Qwen3-0.6B-Q8_0.gguf` is a hybrid thinking model (thinking/non-thinking modes),
 used for reasoning streaming tests. Source repo `Qwen/Qwen3-0.6B-GGUF`.
+
+## Vision test models
+
+Multimodal models with their `mmproj` projectors, for image-input tests. All
+verified: first 4 bytes are `GGUF`. Source repos are `ggml-org` (not gated).
+
+| File | Size (bytes) | Source URL |
+|---|---|---|
+| `Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf` | 1,929,901,056 | https://huggingface.co/ggml-org/Qwen2.5-VL-3B-Instruct-GGUF/resolve/main/Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf |
+| `mmproj-Qwen2.5-VL-3B-Instruct-f16.gguf` | 1,338,428,128 | https://huggingface.co/ggml-org/Qwen2.5-VL-3B-Instruct-GGUF/resolve/main/mmproj-Qwen2.5-VL-3B-Instruct-f16.gguf |
+| `gemma-3-4b-it-Q4_K_M.gguf` | 2,489,757,856 | https://huggingface.co/ggml-org/gemma-3-4b-it-GGUF/resolve/main/gemma-3-4b-it-Q4_K_M.gguf |
+| `mmproj-model-f16.gguf` | 851,251,104 | https://huggingface.co/ggml-org/gemma-3-4b-it-GGUF/resolve/main/mmproj-model-f16.gguf |
+
+Deterministic vision test images in `spike/images/` (generated with ImageMagick):
+
+| File | Dims | Size (bytes) | Content |
+|---|---|---|---|
+| `red_square.png` | 256x256 | 316 | solid red #FF0000 |
+| `three_circles.png` | 384x256 | 4268 | white bg, three solid blue #0000FF circles r=40 |
+| `text_hello.png` | 512x160 | 3010 | white bg, large black "HELLO 42" |
+| `stripes.jpg` | 320x240 | 1397 | left half green #00FF00, right half yellow #FFFF00 |

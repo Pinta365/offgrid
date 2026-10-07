@@ -24,7 +24,7 @@ loaded model: `aicore-server` (in `bin/` of both packages).
 
 ```sh
 bin/aicore-server --model qwen3-4b.gguf --embedding-model embed.gguf --port 8080 \
-                  [--parallel 2] [--ctx 8192] [--api-key KEY] [--alias qwen3-4b]
+                  [--mmproj mmproj.gguf] [--parallel 2] [--ctx 8192] [--api-key KEY] [--alias qwen3-4b]
 ```
 
 Point any OpenAI client at `http://127.0.0.1:8080/v1`:
@@ -163,6 +163,13 @@ Status: builds and passes static checks (imports, delay-loads, exports, examples
   - Tested end-to-end with Qwen3-4B-Instruct-2507 (all scenarios) and Llama-3.2-3B-Instruct
     (format/plumbing). Note: Llama 3.2 3B over-calls tools and re-calls instead of answering;
     llama.cpp's llama-server behaves the same with it — prefer Qwen3-class models for agents.
+  - **Vision**: load a multimodal model with its projector (`ModelParams.mmproj`, server
+    `--mmproj`, Deno `{ mmproj }`) and send images as OpenAI content parts
+    (`image_url` with a `data:` URL; Deno `imagePart(file)`, Rust
+    `ChatMessage::user_with_images`). Several images per message and images in earlier turns
+    work. Remote URLs are never fetched. Uses llama.cpp's mtmd; tested with Qwen2.5-VL-3B
+    (M-RoPE) and Gemma 3 4B (color, counting, OCR, JPEG, multi-image, follow-ups).
+    Requests with images re-encode them each turn (no KV-cache reuse for media yet).
 - **Embedder**: batched, L2-normalized vectors.
 
 The C ABI passes parameters and results as JSON; see `crates/aicore-ffi/include/aicore.h`
@@ -181,6 +188,7 @@ cargo test --workspace
 Phase 0 (spike) ✔ · Phase 1 (core crate) ✔ · Phase 2 (C ABI, C + Deno examples) ✔ ·
 Phase 3a (portable Linux package, glibc 2.28 via zig) ✔ ·
 Phase 3b (Windows cross-build, static-checked; untested on Windows) ·
-Phase 4 (templates, JSON output, tool calling, reasoning streaming, sidecar server) ✔
+Phase 4 (templates, JSON output, tool calling, reasoning streaming, sidecar server) ✔ ·
+Phase 5 (vision / image input) ✔
 
-Next: run on real Windows; macOS/ARM builds; vision models (mtmd).
+Next: run on real Windows; macOS/ARM builds; KV-cache reuse for image prompts; audio input (mtmd).

@@ -15,6 +15,9 @@ struct Args {
     /// Chat model (GGUF).
     #[arg(short, long, env = "AICORE_MODEL")]
     model: Option<PathBuf>,
+    /// Vision projector for the chat model (mmproj-*.gguf); enables image input.
+    #[arg(long, env = "AICORE_MMPROJ")]
+    mmproj: Option<PathBuf>,
     /// Embedding model (GGUF).
     #[arg(long, env = "AICORE_EMBEDDING_MODEL")]
     embedding_model: Option<PathBuf>,
@@ -58,9 +61,11 @@ fn main() {
         embedding_model: args.embedding_model,
         alias: args.alias,
         embedding_alias: args.embedding_alias,
+        mmproj: args.mmproj,
         model_params: ModelParams {
             gpu_layers: args.gpu_layers,
             devices: (!args.devices.is_empty()).then_some(args.devices),
+            mmproj: None,
         },
         session: SessionParams { n_ctx: args.ctx, n_threads: args.threads, ..Default::default() },
         parallel: args.parallel,

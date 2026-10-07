@@ -1,10 +1,13 @@
 // deno test --allow-ffi --allow-env --allow-read bindings/deno/mod_test.ts
 // Model tests need AICORE_TEST_MODEL / AICORE_TEST_EMBED_MODEL; they are skipped otherwise.
 import { assert, assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
-import { AiCore, type ChatRequest, dot } from "./mod.ts";
+import { AiCore, type ChatRequest, dot, imagePart } from "./mod.ts";
 
 const chatModel = Deno.env.get("AICORE_TEST_MODEL");
 const thinkingModel = Deno.env.get("AICORE_TEST_THINKING_MODEL");
+const vlModel = Deno.env.get("AICORE_TEST_VL_MODEL");
+const vlMmproj = Deno.env.get("AICORE_TEST_VL_MMPROJ");
+const testImages = Deno.env.get("AICORE_TEST_IMAGES");
 const embedModel = Deno.env.get("AICORE_TEST_EMBED_MODEL");
 
 const greedy = (content: string, max_tokens: number): ChatRequest => ({
@@ -174,6 +177,22 @@ Deno.test({ name: "chat: reasoning streams via onReasoning", ignore: !thinkingMo
   assertEquals(reasoning, res.reasoning_content);
   assertEquals(content, res.content);
   assertStringIncludes(res.content, "42");
+});
+
+Deno.test({ name: "chat: image input", ignore: !vlModel || !vlMmproj || !testImages }, async () => {
+  using core = AiCore.open();
+  using model = await core.loadModel(vlModel!, { mmproj: vlMmproj });
+  assert(model.info().vision);
+  using chat = await model.createChat();
+  const res = await chat.complete({
+    temperature: 0,
+    max_tokens: 40,
+    messages: [{
+      role: "user",
+      content: [{ type: "text", text: "What text is in this image?" }, await imagePart(`${testImages}/text_hello.png`)],
+    }],
+  });
+  assertStringIncludes(res.content.toUpperCase(), "HELLO 42");
 });
 
 Deno.test({ name: "embeddings", ignore: !embedModel }, async () => {

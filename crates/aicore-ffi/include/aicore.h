@@ -92,7 +92,8 @@ void aicore_set_log_callback(aicore_log_callback callback, void *user_data, int3
 char *aicore_devices_json(void);
 
 /**
- * Load a GGUF model. `params_json` (nullable): `{"gpu_layers":"all"|"none"|{"count":N},"devices":["Vulkan0"]}`.
+ * Load a GGUF model. `params_json` (nullable): `{"gpu_layers":"all"|"none"|{"count":N},"devices":["Vulkan0"],
+ * "mmproj":"/path/mmproj.gguf"}` (`mmproj` = vision projector, enables image input).
  */
 aicore_model *aicore_model_load(const char *path, const char *params_json, char **error_out);
 
@@ -117,6 +118,9 @@ aicore_chat *aicore_chat_new(const aicore_model *model, const char *params_json,
  * and `"finish_reason":"tool_calls"`. Send results back as `{"role":"tool","tool_call_id":...,
  * "content":"..."}` after the assistant message (with its `tool_calls`). The callback streams
  * reply text only (no reasoning / tool-call markup); `reasoning_content` is in the response.
+ * Images: message `content` as OpenAI parts, `[{"type":"text","text":"..."},
+ * {"type":"image_url","image_url":{"url":"data:image/png;base64,..."}}]` (data: URLs only;
+ * needs a model loaded with `mmproj`).
  * Structured output: `"response_format":{"type":"json_object"}` or
  * `{"type":"json_schema","json_schema":{"schema":{...}}}`. Template: `"chat_template"`
  * (Jinja text or built-in name) and `"chat_template_kwargs":{...}`.

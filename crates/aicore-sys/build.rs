@@ -44,6 +44,8 @@ fn main() {
     cfg.define("LLAMA_BUILD_APP", "OFF");
     // `common` is only used by tools/examples/app; not needed for the libraries.
     cfg.define("LLAMA_BUILD_COMMON", "OFF");
+    // Multimodal (vision) library, built standalone without the rest of tools/.
+    cfg.define("LLAMA_BUILD_MTMD", "ON");
     cfg.define("LLAMA_CURL", "OFF");
     cfg.define("GGML_OPENMP", "OFF");
     cfg.define("GGML_VULKAN", if vulkan { "ON" } else { "OFF" });
@@ -105,7 +107,7 @@ fn main() {
             .and_then(|p| p.parent().map(Path::to_path_buf))
             .expect("aicore-sys: libllama shared library not found");
         println!("cargo:rustc-link-search=native={}", lib_dir.display());
-        for name in ["llama", "ggml", "ggml-base"] {
+        for name in ["mtmd", "llama", "ggml", "ggml-base"] {
             println!("cargo:rustc-link-lib=dylib={name}");
         }
         // cmake installs backend modules into bin/ (lib/ on some layouts).
@@ -124,11 +126,15 @@ fn main() {
     }
 
     let bindings = bindgen::Builder::default()
-        .header(llama_dir.join("include/llama.h").to_string_lossy())
+        .header_contents(
+            "aicore_sys.h",
+            "#include \"llama.h\"\n#include \"mtmd.h\"\n#include \"mtmd-helper.h\"\n",
+        )
         .clang_arg(format!("-I{}", llama_dir.join("include").display()))
         .clang_arg(format!("-I{}", llama_dir.join("ggml/include").display()))
-        .allowlist_function("llama_.*|ggml_backend_.*|ggml_log_.*")
-        .allowlist_type("llama_.*|ggml_.*")
+        .clang_arg(format!("-I{}", llama_dir.join("tools/mtmd").display()))
+        .allowlist_function("llama_.*|ggml_backend_.*|ggml_log_.*|mtmd_.*")
+        .allowlist_type("llama_.*|ggml_.*|mtmd_.*")
         .allowlist_var("LLAMA_.*")
         .generate()
         .expect("aicore-sys: bindgen failed to generate bindings");
@@ -238,9 +244,31 @@ fn find_lib(root: &Path, name: &str, shared: bool) -> Option<PathBuf> {
     None
 }
 
+/// `libvendor-*.a` archives in the cmake build tree (MSVC: `vendor-*.lib`).
+fn find_vendor_archives(root: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if path.is_dir() {
+                stack.push(path);
+            } else if (name.starts_with("libvendor-") && name.ends_with(".a"))
+                || (name.starts_with("vendor-") && name.ends_with(".lib"))
+            {
+                found.push(path);
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
 fn link_static(dst: &Path, vulkan: bool, cuda: bool, target_os: &str) {
     // Dependency order (left-to-right): consumers before providers.
-    let mut static_libs: Vec<&str> = vec!["llama", "ggml"];
+    let mut static_libs: Vec<&str> = vec!["mtmd", "llama", "ggml"];
     if vulkan {
         static_libs.push("ggml-vulkan");
     }
@@ -274,6 +302,13 @@ fn link_static(dst: &Path, vulkan: bool, cuda: bool, target_os: &str) {
     }
     for name in &static_libs {
         println!("cargo:rustc-link-lib=static={name}");
+    }
+    // mtmd's private helper archives (vendor/hash, ...) are not installed; take them from
+    // the build tree. Linked after mtmd, which depends on them.
+    for archive in find_vendor_archives(&dst.join("build")) {
+        let stem = archive.file_stem().unwrap().to_string_lossy();
+        println!("cargo:rustc-link-search=native={}", archive.parent().unwrap().display());
+        println!("cargo:rustc-link-lib=static={}", stem.trim_start_matches("lib"));
     }
 
     // System dependencies.

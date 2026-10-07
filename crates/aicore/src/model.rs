@@ -7,6 +7,7 @@ use aicore_sys as sys;
 use serde::{Deserialize, Serialize};
 
 use crate::backend::{cstr_to_string, ensure_init, setup_lock};
+use crate::vision::Vision;
 use crate::{Error, Result};
 
 /// How many transformer layers to offload to GPU devices.
@@ -28,6 +29,8 @@ pub struct ModelParams {
     /// Restrict offloading to these device names (see [`crate::devices`]), e.g. `["Vulkan0"]`.
     /// `None` lets llama.cpp choose.
     pub devices: Option<Vec<String>>,
+    /// Vision projector (`mmproj-*.gguf`) shipped with a multimodal model; enables image input.
+    pub mmproj: Option<std::path::PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -43,10 +46,14 @@ pub struct ModelInfo {
     pub has_encoder: bool,
     pub has_decoder: bool,
     pub chat_template: Option<String>,
+    /// Image input available (a vision projector is loaded).
+    pub vision: bool,
 }
 
 /// A loaded GGUF model. Cheap to share: sessions and embedders hold an `Arc<Model>`.
 pub struct Model {
+    /// Freed before the text model in `Drop`.
+    vision: Option<Vision>,
     ptr: NonNull<sys::llama_model>,
 }
 
@@ -56,6 +63,8 @@ unsafe impl Sync for Model {}
 
 impl Drop for Model {
     fn drop(&mut self) {
+        // The projector references the text model: free it first (it takes setup_lock itself).
+        drop(self.vision.take());
         let _guard = setup_lock();
         unsafe { sys::llama_model_free(self.ptr.as_ptr()) };
     }
@@ -92,9 +101,18 @@ impl Model {
             let _guard = setup_lock();
             unsafe { sys::llama_model_load_from_file(c_path.as_ptr(), mp) }
         };
-        NonNull::new(raw)
-            .map(|ptr| Arc::new(Self { ptr }))
-            .ok_or_else(|| Error::ModelLoad(path.to_path_buf()))
+        let ptr = NonNull::new(raw).ok_or_else(|| Error::ModelLoad(path.to_path_buf()))?;
+        let mut model = Self { vision: None, ptr };
+        if let Some(mmproj) = &params.mmproj {
+            let threads = crate::chat::default_threads();
+            model.vision = Some(Vision::load(mmproj, ptr.as_ptr(), params.gpu_layers != GpuLayers::None, threads)?);
+        }
+        Ok(Arc::new(model))
+    }
+
+    /// The vision projector, if loaded.
+    pub(crate) fn vision(&self) -> Option<&Vision> {
+        self.vision.as_ref()
     }
 
     pub(crate) fn as_ptr(&self) -> *mut sys::llama_model {
@@ -123,6 +141,7 @@ impl Model {
                 has_encoder: sys::llama_model_has_encoder(m),
                 has_decoder: sys::llama_model_has_decoder(m),
                 chat_template: self.chat_template(),
+                vision: self.vision.is_some(),
             }
         }
     }

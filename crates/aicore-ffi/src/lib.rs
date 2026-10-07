@@ -93,7 +93,8 @@ pub extern "C" fn aicore_devices_json() -> *mut c_char {
 
 // ---------------------------------------------------------------- model
 
-/// Load a GGUF model. `params_json` (nullable): `{"gpu_layers":"all"|"none"|{"count":N},"devices":["Vulkan0"]}`.
+/// Load a GGUF model. `params_json` (nullable): `{"gpu_layers":"all"|"none"|{"count":N},"devices":["Vulkan0"],
+/// "mmproj":"/path/mmproj.gguf"}` (`mmproj` = vision projector, enables image input).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn aicore_model_load(
     path: *const c_char,
@@ -151,6 +152,9 @@ pub unsafe extern "C" fn aicore_chat_new(
 /// and `"finish_reason":"tool_calls"`. Send results back as `{"role":"tool","tool_call_id":...,
 /// "content":"..."}` after the assistant message (with its `tool_calls`). The callback streams
 /// reply text only (no reasoning / tool-call markup); `reasoning_content` is in the response.
+/// Images: message `content` as OpenAI parts, `[{"type":"text","text":"..."},
+/// {"type":"image_url","image_url":{"url":"data:image/png;base64,..."}}]` (data: URLs only;
+/// needs a model loaded with `mmproj`).
 /// Structured output: `"response_format":{"type":"json_object"}` or
 /// `{"type":"json_schema","json_schema":{"schema":{...}}}`. Template: `"chat_template"`
 /// (Jinja text or built-in name) and `"chat_template_kwargs":{...}`.

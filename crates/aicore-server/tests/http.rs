@@ -287,3 +287,32 @@ async fn reasoning_streams_over_sse() {
     assert!(last_reasoning < first_content, "reasoning must precede content");
     assert!(!content.contains("think"));
 }
+
+#[tokio::test]
+async fn vision_over_http() {
+    let (Ok(model), Ok(mmproj), Ok(images)) =
+        (std::env::var("AICORE_TEST_VL_MODEL"), std::env::var("AICORE_TEST_VL_MMPROJ"), std::env::var("AICORE_TEST_IMAGES"))
+    else {
+        return;
+    };
+    let url = spawn(ServerConfig { model: Some(model.into()), mmproj: Some(mmproj.into()), parallel: 1, ..Default::default() });
+    let png = std::fs::read(std::path::Path::new(&images).join("text_hello.png")).unwrap();
+    let data_url = format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(png));
+    let body = json!({"temperature": 0, "max_tokens": 40, "messages": [{"role": "user", "content": [
+        {"type": "text", "text": "What text is in this image?"},
+        {"type": "image_url", "image_url": {"url": data_url}}
+    ]}]});
+    let r = reqwest::Client::new().post(format!("{url}/v1/chat/completions")).json(&body).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+    let v: Value = r.json().await.unwrap();
+    let text = v["choices"][0]["message"]["content"].as_str().unwrap().to_uppercase();
+    println!("vision reply: {text:?}");
+    assert!(text.contains("HELLO") && text.contains("42"));
+
+    // Remote URLs are refused (offline: never fetched).
+    let bad = json!({"messages": [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": "http://example.com/a.png"}}]}]});
+    let r = reqwest::Client::new().post(format!("{url}/v1/chat/completions")).json(&bad).send().await.unwrap();
+    assert_eq!(r.status(), 400);
+    let e: Value = r.json().await.unwrap();
+    assert!(e["error"]["message"].as_str().unwrap().contains("data: URL"), "{e}");
+}

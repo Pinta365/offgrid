@@ -26,7 +26,7 @@ fn candidate_dirs() -> Vec<PathBuf> {
     candidates
 }
 
-/// Windows: aicore.dll delay-loads llama/ggml (see aicore-ffi/build.rs). Load them by
+/// Windows: aicore.dll delay-loads llama/ggml/mtmd (see aicore-ffi/build.rs). Load them by
 /// full path from our folder first; the delay-load stubs then bind to these modules.
 /// Must run before any other llama/ggml call. No-op elsewhere (RUNPATH handles it).
 pub(crate) fn preload_core_libs() {
@@ -34,8 +34,9 @@ pub(crate) fn preload_core_libs() {
     {
         use std::os::windows::ffi::OsStrExt;
         use windows_sys::Win32::System::LibraryLoader::{LOAD_WITH_ALTERED_SEARCH_PATH, LoadLibraryExW};
-        const LIBS: [&str; 3] = ["ggml-base.dll", "ggml.dll", "libllama.dll"];
-        let Some(dir) = candidate_dirs().into_iter().find(|d| d.join(LIBS[2]).is_file()) else {
+        // Dependency order; the last one is used to locate the folder.
+        const LIBS: [&str; 4] = ["ggml-base.dll", "ggml.dll", "libllama.dll", "libmtmd.dll"];
+        let Some(dir) = candidate_dirs().into_iter().find(|d| d.join(LIBS[3]).is_file()) else {
             log::warn!(target: "aicore", "llama/ggml DLLs not found next to aicore; relying on the default search path");
             return;
         };
