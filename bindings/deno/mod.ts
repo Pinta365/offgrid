@@ -1,0 +1,383 @@
+/**
+ * Deno bindings for aicore (embeddable offline AI core).
+ *
+ * Long-running calls (model load, chat, embeddings) run off the JS thread via
+ * `nonblocking` FFI, so they return Promises and never block the event loop.
+ *
+ * Requires `--allow-ffi` (and `--allow-env`/`--allow-read` to locate the library).
+ *
+ * @example
+ * ```ts
+ * import { AiCore } from "./mod.ts";
+ * using core = AiCore.open();
+ * using model = await core.loadModel("model.gguf");
+ * using chat = await model.createChat();
+ * const res = await chat.complete(
+ *   { messages: [{ role: "user", content: "Hi!" }] },
+ *   { onToken: (t) => Deno.stdout.writeSync(new TextEncoder().encode(t)) },
+ * );
+ * ```
+ * @module
+ */
+
+import type {
+  ChatRequest,
+  ChatResponse,
+  DeviceInfo,
+  EmbedParams,
+  GenerateRequest,
+  ModelInfo,
+  ModelParams,
+  SessionParams,
+  VersionInfo,
+} from "./types.ts";
+
+export type * from "./types.ts";
+
+/** ABI version these bindings were written against. */
+export const ABI_VERSION = 1;
+
+const symbols = {
+  aicore_abi_version: { parameters: [], result: "u32" },
+  aicore_version_json: { parameters: [], result: "pointer" },
+  aicore_string_free: { parameters: ["pointer"], result: "void" },
+  aicore_devices_json: { parameters: [], result: "pointer" },
+  aicore_model_load: { parameters: ["buffer", "buffer", "buffer"], result: "pointer", nonblocking: true },
+  aicore_model_info_json: { parameters: ["pointer"], result: "pointer" },
+  aicore_model_free: { parameters: ["pointer"], result: "void" },
+  aicore_chat_new: { parameters: ["pointer", "buffer", "buffer"], result: "pointer", nonblocking: true },
+  aicore_chat_complete: {
+    parameters: ["pointer", "buffer", "function", "pointer", "buffer"],
+    result: "pointer",
+    nonblocking: true,
+  },
+  aicore_chat_generate: {
+    parameters: ["pointer", "buffer", "function", "pointer", "buffer"],
+    result: "pointer",
+    nonblocking: true,
+  },
+  aicore_chat_cancel: { parameters: ["pointer"], result: "void" },
+  aicore_chat_reset: { parameters: ["pointer"], result: "void" },
+  aicore_chat_free: { parameters: ["pointer"], result: "void" },
+  aicore_embedder_new: { parameters: ["pointer", "buffer", "buffer"], result: "pointer", nonblocking: true },
+  aicore_embedder_dim: { parameters: ["pointer"], result: "i64" },
+  aicore_embed: {
+    parameters: ["pointer", "buffer", "usize", "buffer", "usize", "buffer"],
+    result: "i32",
+    nonblocking: true,
+  },
+  aicore_embedder_free: { parameters: ["pointer"], result: "void" },
+} as const satisfies Deno.ForeignLibraryInterface;
+
+type Lib = Deno.DynamicLibrary<typeof symbols>["symbols"];
+
+const TOKEN_CALLBACK = {
+  parameters: ["pointer", "usize", "pointer"],
+  result: "bool",
+} as const satisfies Deno.UnsafeCallbackDefinition;
+
+const encoder = new TextEncoder();
+const decoder = new TextDecoder();
+
+/** Thrown for errors reported by the native library. */
+export class AiCoreError extends Error {
+  override name = "AiCoreError";
+}
+
+function cstr(s: string): Uint8Array<ArrayBuffer> {
+  const bytes = encoder.encode(s);
+  const buf = new Uint8Array(bytes.length + 1);
+  buf.set(bytes);
+  return buf;
+}
+
+function jsonArg(value: unknown): Uint8Array<ArrayBuffer> {
+  return cstr(value === undefined ? "" : JSON.stringify(value));
+}
+
+/** Read and free a library-owned string. */
+function takeString(lib: Lib, ptr: Deno.PointerValue): string | null {
+  if (ptr === null) return null;
+  try {
+    return Deno.UnsafePointerView.getCString(ptr);
+  } finally {
+    lib.aicore_string_free(ptr);
+  }
+}
+
+/** A `char **error_out` slot. */
+class ErrorSlot {
+  readonly buf = new BigUint64Array(1);
+  throwIfSet(lib: Lib, what: string): never | void {
+    const addr = this.buf[0];
+    if (addr === 0n) return;
+    const msg = takeString(lib, Deno.UnsafePointer.create(addr));
+    throw new AiCoreError(`${what}: ${msg ?? "unknown error"}`);
+  }
+  fail(lib: Lib, what: string): never {
+    this.throwIfSet(lib, what);
+    throw new AiCoreError(`${what} failed`);
+  }
+}
+
+function defaultLibPath(): string {
+  const env = Deno.env.get("AICORE_LIB");
+  if (env) return env;
+  const file = Deno.build.os === "windows"
+    ? "aicore.dll"
+    : Deno.build.os === "darwin"
+    ? "libaicore.dylib"
+    : "libaicore.so";
+  for (const profile of ["release", "debug"]) {
+    const url = new URL(`../../target/${profile}/${file}`, import.meta.url);
+    try {
+      Deno.statSync(url);
+      return url.pathname;
+    } catch { /* try next */ }
+  }
+  return file; // fall back to the system loader search path
+}
+
+/** Handle to the loaded native library. */
+export class AiCore implements Disposable {
+  readonly #dylib: Deno.DynamicLibrary<typeof symbols>;
+  /** @internal */
+  readonly lib: Lib;
+
+  private constructor(dylib: Deno.DynamicLibrary<typeof symbols>) {
+    this.#dylib = dylib;
+    this.lib = dylib.symbols;
+  }
+
+  /** Load the native library. Path defaults to `$AICORE_LIB`, then the repo's target/ dir. */
+  static open(path: string = defaultLibPath()): AiCore {
+    const dylib = Deno.dlopen(path, symbols);
+    const abi = dylib.symbols.aicore_abi_version();
+    if (abi !== ABI_VERSION) {
+      dylib.close();
+      throw new AiCoreError(`ABI mismatch: library ${abi}, bindings ${ABI_VERSION}`);
+    }
+    return new AiCore(dylib);
+  }
+
+  version(): VersionInfo {
+    return JSON.parse(takeString(this.lib, this.lib.aicore_version_json())!);
+  }
+
+  devices(): DeviceInfo[] {
+    return JSON.parse(takeString(this.lib, this.lib.aicore_devices_json())!);
+  }
+
+  async loadModel(path: string, params?: ModelParams): Promise<Model> {
+    const err = new ErrorSlot();
+    const ptr = await this.lib.aicore_model_load(cstr(path), jsonArg(params), err.buf);
+    if (ptr === null) return err.fail(this.lib, `load model ${path}`);
+    return new Model(this, ptr);
+  }
+
+  /** Unload the library. All models/sessions must be disposed first. */
+  close(): void {
+    this.#dylib.close();
+  }
+
+  [Symbol.dispose](): void {
+    this.close();
+  }
+}
+
+abstract class Handle implements Disposable {
+  #ptr: Deno.PointerObject | null;
+  #busy = false;
+
+  constructor(readonly core: AiCore, ptr: Deno.PointerObject) {
+    this.#ptr = ptr;
+  }
+
+  protected get ptr(): Deno.PointerObject {
+    if (this.#ptr === null) throw new AiCoreError(`${this.constructor.name} is disposed`);
+    return this.#ptr;
+  }
+
+  protected get lib(): Lib {
+    return this.core.lib;
+  }
+
+  /** Run a native call exclusively; the handle cannot be freed meanwhile. */
+  protected async exclusive<T>(fn: (ptr: Deno.PointerObject) => Promise<T>): Promise<T> {
+    if (this.#busy) throw new AiCoreError(`${this.constructor.name} is busy with another request`);
+    const ptr = this.ptr;
+    this.#busy = true;
+    try {
+      return await fn(ptr);
+    } finally {
+      this.#busy = false;
+    }
+  }
+
+  protected abstract release(ptr: Deno.PointerObject): void;
+
+  /** Free the native handle. Throws if a request is still running. */
+  free(): void {
+    if (this.#ptr === null) return;
+    if (this.#busy) throw new AiCoreError(`cannot free ${this.constructor.name} while a request is running`);
+    this.release(this.#ptr);
+    this.#ptr = null;
+  }
+
+  [Symbol.dispose](): void {
+    this.free();
+  }
+}
+
+/** A loaded GGUF model. Sessions/embedders keep it alive natively, so it may be freed first. */
+export class Model extends Handle {
+  info(): ModelInfo {
+    return JSON.parse(takeString(this.lib, this.lib.aicore_model_info_json(this.ptr))!);
+  }
+
+  async createChat(params?: SessionParams): Promise<ChatSession> {
+    const err = new ErrorSlot();
+    const ptr = await this.lib.aicore_chat_new(this.ptr, jsonArg(params), err.buf);
+    if (ptr === null) return err.fail(this.lib, "create chat session");
+    return new ChatSession(this.core, ptr);
+  }
+
+  async createEmbedder(params?: EmbedParams): Promise<Embedder> {
+    const err = new ErrorSlot();
+    const ptr = await this.lib.aicore_embedder_new(this.ptr, jsonArg(params), err.buf);
+    if (ptr === null) return err.fail(this.lib, "create embedder");
+    const dim = Number(this.lib.aicore_embedder_dim(ptr));
+    return new Embedder(this.core, ptr, dim);
+  }
+
+  protected release(ptr: Deno.PointerObject): void {
+    this.lib.aicore_model_free(ptr);
+  }
+}
+
+export interface CompleteOptions {
+  /** Called with each streamed text piece. Return `false` to stop. */
+  onToken?: (piece: string) => boolean | void;
+  /** Aborting cancels the generation; the promise resolves with `finish_reason: "cancelled"`. */
+  signal?: AbortSignal;
+}
+
+/** One inference context. Requests are stateless; the KV cache prefix is reused between calls. */
+export class ChatSession extends Handle {
+  /** Chat completion using the model's chat template. */
+  complete(request: ChatRequest, options: CompleteOptions = {}): Promise<ChatResponse> {
+    return this.#run("aicore_chat_complete", request, options);
+  }
+
+  /** Raw text completion without a chat template. */
+  generate(request: GenerateRequest, options: CompleteOptions = {}): Promise<ChatResponse> {
+    return this.#run("aicore_chat_generate", request, options);
+  }
+
+  /** Stream pieces as an async iterator. Breaking out of the loop cancels generation. */
+  async *stream(request: ChatRequest, options: { signal?: AbortSignal } = {}): AsyncGenerator<string, ChatResponse> {
+    const queue: string[] = [];
+    let wake: (() => void) | null = null;
+    let done = false;
+    const pending = this.complete(request, {
+      signal: options.signal,
+      onToken: (t) => {
+        queue.push(t);
+        wake?.();
+      },
+    }).finally(() => {
+      done = true;
+      wake?.();
+    });
+    try {
+      while (true) {
+        while (queue.length) yield queue.shift()!;
+        if (done) break;
+        await new Promise<void>((r) => (wake = r));
+        wake = null;
+      }
+      return await pending;
+    } finally {
+      if (!done) {
+        this.cancel();
+        await pending.catch(() => {});
+      }
+    }
+  }
+
+  /** Cancel the running request (safe to call any time). */
+  cancel(): void {
+    this.lib.aicore_chat_cancel(this.ptr);
+  }
+
+  /** Clear the KV cache. */
+  reset(): void {
+    this.lib.aicore_chat_reset(this.ptr);
+  }
+
+  async #run(
+    fn: "aicore_chat_complete" | "aicore_chat_generate",
+    request: unknown,
+    { onToken, signal }: CompleteOptions,
+  ): Promise<ChatResponse> {
+    signal?.throwIfAborted();
+    return await this.exclusive(async (ptr) => {
+      // Native code calls back from a worker thread; threadSafe marshals it to the JS thread.
+      const callback = onToken
+        ? Deno.UnsafeCallback.threadSafe(TOKEN_CALLBACK, (piecePtr, len) => {
+          if (piecePtr === null) return true;
+          const bytes = new Uint8Array(Deno.UnsafePointerView.getArrayBuffer(piecePtr, Number(len)));
+          return onToken(decoder.decode(bytes)) !== false;
+        })
+        : null;
+      const onAbort = () => this.lib.aicore_chat_cancel(ptr);
+      signal?.addEventListener("abort", onAbort, { once: true });
+      const err = new ErrorSlot();
+      try {
+        const res = await this.lib[fn](ptr, jsonArg(request), callback?.pointer ?? null, null, err.buf);
+        if (res === null) return err.fail(this.lib, "chat");
+        return JSON.parse(takeString(this.lib, res)!) as ChatResponse;
+      } finally {
+        signal?.removeEventListener("abort", onAbort);
+        callback?.close();
+      }
+    });
+  }
+
+  protected release(ptr: Deno.PointerObject): void {
+    this.lib.aicore_chat_free(ptr);
+  }
+}
+
+/** Computes embedding vectors (L2-normalized by default). */
+export class Embedder extends Handle {
+  constructor(core: AiCore, ptr: Deno.PointerObject, readonly dim: number) {
+    super(core, ptr);
+  }
+
+  /** Embed texts; returns one vector per input, in order. */
+  async embed(texts: string[]): Promise<Float32Array[]> {
+    if (texts.length === 0) return [];
+    return await this.exclusive(async (ptr) => {
+      const strings = texts.map(cstr);
+      const ptrs = new BigUint64Array(strings.map((s) => BigInt(Deno.UnsafePointer.value(Deno.UnsafePointer.of(s)))));
+      const out = new Float32Array(texts.length * this.dim);
+      const err = new ErrorSlot();
+      const rc = await this.lib.aicore_embed(ptr, ptrs, BigInt(texts.length), out, BigInt(out.length), err.buf);
+      void strings; // keep input buffers alive until the call returns
+      if (rc !== 0) err.fail(this.lib, "embed");
+      return texts.map((_, i) => out.subarray(i * this.dim, (i + 1) * this.dim));
+    });
+  }
+
+  protected release(ptr: Deno.PointerObject): void {
+    this.lib.aicore_embedder_free(ptr);
+  }
+}
+
+/** Dot product; equals cosine similarity for normalized vectors. */
+export function dot(a: Float32Array, b: Float32Array): number {
+  let s = 0;
+  for (let i = 0; i < a.length; i++) s += a[i] * b[i];
+  return s;
+}

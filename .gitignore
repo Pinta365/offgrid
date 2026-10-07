@@ -2,3 +2,7 @@
 /spike/llama.cpp
 /spike/models
 *.gguf
+/examples/c/chat
+/examples/c/chat-static
+/examples/c/embed
+/examples/c/cancel

@@ -1,0 +1,16 @@
+use std::path::PathBuf;
+
+fn main() {
+    let crate_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
+    println!("cargo:rerun-if-changed=src");
+    println!("cargo:rerun-if-changed=cbindgen.toml");
+
+    let config = cbindgen::Config::from_file(crate_dir.join("cbindgen.toml")).expect("cbindgen.toml");
+    match cbindgen::generate_with_config(&crate_dir, config) {
+        Ok(bindings) => {
+            bindings.write_to_file(crate_dir.join("include/aicore.h"));
+        }
+        // Don't break the build on header generation hiccups; the checked-in header stays.
+        Err(e) => println!("cargo:warning=cbindgen failed: {e}"),
+    }
+}

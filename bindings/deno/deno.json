@@ -1,0 +1,21 @@
+{
+  "name": "@pinta365/aicore",
+  "version": "0.1.0",
+  "exports": "./mod.ts",
+  "tasks": {
+    "test": "deno test --allow-ffi --allow-env --allow-read mod_test.ts"
+  },
+  "fmt": {
+    "lineWidth": 120
+  },
+  "lint": {
+    "rules": {
+      "exclude": [
+        "no-explicit-any"
+      ]
+    }
+  },
+  "imports": {
+    "@std/assert": "jsr:@std/assert@^1"
+  }
+}

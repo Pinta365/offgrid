@@ -10,7 +10,7 @@ rust-version = "1.85"
 
 [workspace.dependencies]
 aicore-sys = { path = "crates/aicore-sys", default-features = false }
-aicore = { path = "crates/aicore" }
+aicore = { path = "crates/aicore", default-features = false }
 
 [profile.release]
 lto = "thin"
