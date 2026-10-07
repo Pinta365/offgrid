@@ -11,6 +11,8 @@ build = "build.rs"
 default = ["vulkan"]
 vulkan = []
 cuda = []
+# Shared libs + runtime-loaded backends + all CPU variants (for distributable builds).
+dynamic-backends = []
 
 [build-dependencies]
 cmake = "0.1.58"

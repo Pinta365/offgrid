@@ -47,6 +47,30 @@ deno run --allow-ffi --allow-env --allow-read examples/deno/chat.ts model.gguf
 
 CPU-only build: add `--no-default-features`. CUDA: `--features cuda`.
 
+## Portable / distributable build
+
+```sh
+scripts/package-linux.sh            # → dist/aicore-<ver>-linux-x86_64{/,.tar.gz}
+scripts/check-portable.sh dist/aicore-<ver>-linux-x86_64 model.gguf
+```
+
+Built with `--features dynamic-backends`: llama.cpp as shared libs with backends loaded
+at runtime from the library's own directory (`$AICORE_BACKEND_DIR` overrides):
+
+- 14 CPU variants (x64 → sse42 → … → zen4/sapphirerapids); the best for the running CPU is
+  picked at load time, so old CPUs work and new ones are fast.
+- Vulkan is an optional module: no GPU, no Vulkan driver, or the module deleted → CPU fallback.
+- libstdc++/libgcc are linked statically (symbols hidden); runtime deps are only glibc/libm
+  (+ libvulkan for the Vulkan module). All libs use `$ORIGIN` RPATH, so the folder is relocatable.
+- Ship the whole `lib/` folder; ~25 MB compressed (the Vulkan module is ~47 MB of shaders).
+
+Known limit: the glibc baseline is the build host's (currently 2.43). Build on an older
+toolchain/sysroot for wider distro coverage.
+
+Note: the default (static) dev build and the dynamic build both write
+`target/release/libaicore.so`; after packaging, point consumers at the dist folder
+(e.g. `AICORE_LIB=dist/.../lib/libaicore.so`) or rebuild without the feature.
+
 ## API at a glance
 
 - **Model**: `load(path, {gpu_layers, devices})`, `info()` (name, size, context, template).
@@ -68,7 +92,8 @@ cargo test --workspace
 
 ## Status
 
-Phase 0 (spike) ✔ · Phase 1 (core crate) ✔ · Phase 2 (C ABI, C + Deno examples) ✔
+Phase 0 (spike) ✔ · Phase 1 (core crate) ✔ · Phase 2 (C ABI, C + Deno examples) ✔ ·
+Phase 3a (portable Linux package) ✔
 
-Next: runtime-loaded GPU backends for portable binaries, Windows build, Jinja chat
+Next: glibc baseline, Windows build, Jinja chat
 templates (minijinja) + JSON-schema output, optional OpenAI-compatible sidecar server.

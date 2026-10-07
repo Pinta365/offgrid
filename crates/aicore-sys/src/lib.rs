@@ -6,3 +6,7 @@
 )]
 
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
+
+/// Build-time directory of the ggml backend modules when built with `dynamic-backends`
+/// (empty otherwise). Used as a development fallback only.
+pub const BUILD_BACKEND_DIR: &str = env!("AICORE_SYS_BACKEND_DIR");

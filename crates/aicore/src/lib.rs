@@ -19,6 +19,8 @@ mod batch;
 mod chat;
 mod embed;
 mod error;
+#[cfg(feature = "dynamic-backends")]
+mod loader;
 mod model;
 mod sampling;
 mod text;

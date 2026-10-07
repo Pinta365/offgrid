@@ -5,6 +5,14 @@ fn main() {
     println!("cargo:rerun-if-changed=src");
     println!("cargo:rerun-if-changed=cbindgen.toml");
 
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
+        // Find libllama/libggml next to libaicore in a packaged folder.
+        println!("cargo:rustc-cdylib-link-arg=-Wl,-rpath,$ORIGIN");
+        // Never unmap on dlclose: ggml (which outlives us when backends are loaded)
+        // keeps pointers to our log callback, and our init state must stay consistent.
+        println!("cargo:rustc-cdylib-link-arg=-Wl,-z,nodelete");
+    }
+
     let config = cbindgen::Config::from_file(crate_dir.join("cbindgen.toml")).expect("cbindgen.toml");
     match cbindgen::generate_with_config(&crate_dir, config) {
         Ok(bindings) => {

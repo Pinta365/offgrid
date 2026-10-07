@@ -20,6 +20,8 @@ pub(crate) fn setup_lock() -> MutexGuard<'static, ()> {
 pub(crate) fn ensure_init() {
     INIT.call_once(|| unsafe {
         sys::llama_log_set(Some(log_callback), std::ptr::null_mut());
+        #[cfg(feature = "dynamic-backends")]
+        crate::loader::load_backends();
         sys::llama_backend_init();
     });
 }

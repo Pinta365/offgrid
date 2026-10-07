@@ -15,6 +15,7 @@ crate-type = ["cdylib", "staticlib"]
 default = ["vulkan"]
 vulkan = ["aicore/vulkan"]
 cuda = ["aicore/cuda"]
+dynamic-backends = ["aicore/dynamic-backends"]
 
 [dependencies]
 aicore = { workspace = true }

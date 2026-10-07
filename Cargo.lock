@@ -16,9 +16,11 @@ name = "aicore"
 version = "0.1.0"
 dependencies = [
  "aicore-sys",
+ "libc",
  "log",
  "serde",
  "thiserror",
+ "windows-sys",
 ]
 
 [[package]]
