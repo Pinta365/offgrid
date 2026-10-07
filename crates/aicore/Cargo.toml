@@ -17,6 +17,9 @@ dynamic-backends = ["aicore-sys/dynamic-backends", "dep:libc", "dep:windows-sys"
 aicore-sys = { workspace = true }
 log = "0.4"
 serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+minijinja = { version = "2", features = ["loop_controls", "preserve_order", "json"] }
+minijinja-contrib = { version = "2", features = ["pycompat"] }
 thiserror = "2"
 
 [target.'cfg(unix)'.dependencies]
@@ -24,3 +27,6 @@ libc = { version = "0.2", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", optional = true, features = ["Win32_Foundation", "Win32_System_LibraryLoader"] }
+
+[dev-dependencies]
+jsonschema = "0.58.6"

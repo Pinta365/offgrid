@@ -1,8 +1,7 @@
 # aicore for Deno
 
-FFI bindings to `libaicore` (see the repo root README). Long-running calls use
-`nonblocking` FFI, so they return Promises and never block the event loop; tokens
-stream back through a thread-safe callback.
+FFI bindings to `libaicore` (see the repo root README). Long-running calls use `nonblocking` FFI, so they return
+Promises and never block the event loop; tokens stream back through a thread-safe callback.
 
 ```ts
 import { AiCore } from "./mod.ts";
@@ -29,8 +28,9 @@ const [a, b] = await emb.embed(["first text", "second text"]); // Float32Array, 
 Permissions: `--allow-ffi --allow-env --allow-read`.
 
 Rules:
-- One request at a time per `ChatSession`/`Embedder` (a second concurrent call throws
-  "busy"). Create several sessions for parallel work.
+
+- One request at a time per `ChatSession`/`Embedder` (a second concurrent call throws "busy"). Create several sessions
+  for parallel work.
 - Handles are `Disposable` (`using`); a session keeps its model alive natively.
 - `free()` throws while a request is running; cancel and await it first.
 

@@ -202,6 +202,14 @@ impl Model {
         buf.truncate(n.max(0) as usize);
     }
 
+    /// Text of a (special) token such as BOS/EOS; empty for invalid ids.
+    pub(crate) fn token_text(&self, token: sys::llama_token) -> String {
+        if token < 0 {
+            return String::new();
+        }
+        unsafe { crate::backend::cstr_to_string(sys::llama_vocab_get_text(self.vocab(), token)) }
+    }
+
     pub(crate) fn is_eog(&self, token: sys::llama_token) -> bool {
         unsafe { sys::llama_vocab_is_eog(self.vocab(), token) }
     }

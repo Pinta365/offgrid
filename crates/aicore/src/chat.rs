@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::batch::Batch;
 use crate::sampling::Sampler;
+use crate::template::{ChatTemplate, RenderArgs, is_jinja};
 use crate::text::{Push, TextStream};
 use crate::{Error, Model, Result, SamplingParams};
 
@@ -60,10 +61,52 @@ pub struct ChatRequest {
     /// Max tokens to generate. `None` = until end-of-generation or the context is full.
     pub max_tokens: Option<u32>,
     pub stop: Vec<String>,
-    /// Override the model's chat template (a built-in name such as `chatml`, or template text).
+    /// Override the model's chat template: Jinja template text, or a llama.cpp built-in
+    /// name such as `chatml`. Default: the model's own (Jinja) template.
     pub chat_template: Option<String>,
+    /// Extra variables for the chat template, e.g. `{"enable_thinking": false}`.
+    pub chat_template_kwargs: Option<serde_json::Map<String, serde_json::Value>>,
+    /// Constrain the output to JSON (OpenAI-compatible).
+    pub response_format: Option<ResponseFormat>,
     #[serde(flatten)]
     pub sampling: SamplingParams,
+}
+
+/// OpenAI-style `response_format`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ResponseFormat {
+    /// Unconstrained text (same as omitting it).
+    Text,
+    /// Any JSON object; `schema` optionally constrains it (llama-server extension).
+    JsonObject {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        schema: Option<serde_json::Value>,
+    },
+    /// `{"type":"json_schema","json_schema":{"name":"...","schema":{...}}}`
+    JsonSchema { json_schema: JsonSchemaFormat },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct JsonSchemaFormat {
+    #[serde(default)]
+    pub name: Option<String>,
+    pub schema: serde_json::Value,
+    #[serde(default)]
+    pub strict: Option<bool>,
+}
+
+impl ResponseFormat {
+    /// GBNF grammar enforcing this format, if any.
+    pub(crate) fn grammar(&self) -> Result<Option<String>> {
+        let schema = match self {
+            ResponseFormat::Text => return Ok(None),
+            ResponseFormat::JsonObject { schema: None } => return Ok(Some(crate::json_schema::any_json_grammar())),
+            ResponseFormat::JsonObject { schema: Some(s) } => s,
+            ResponseFormat::JsonSchema { json_schema } => &json_schema.schema,
+        };
+        crate::json_schema::json_schema_to_grammar(schema).map(Some).map_err(Error::JsonSchema)
+    }
 }
 
 impl ChatRequest {
@@ -132,6 +175,8 @@ pub struct ChatSession {
     /// Tokens currently in the KV cache for sequence 0.
     cached: Vec<sys::llama_token>,
     cancel: CancelToken,
+    /// The model's Jinja chat template, compiled on first use (`Err` = unusable, use built-in).
+    model_template: Option<std::result::Result<ChatTemplate, String>>,
 }
 
 // The context is used from one thread at a time (&mut self), but may move between threads.
@@ -177,7 +222,15 @@ impl ChatSession {
         };
         let ctx = NonNull::new(ctx).ok_or(Error::ContextCreate)?;
         let n_batch = unsafe { sys::llama_n_batch(ctx.as_ptr()) } as usize;
-        Ok(Self { model, ctx, batch: Batch::new(n_batch, 1), n_batch, cached: Vec::new(), cancel })
+        Ok(Self {
+            model,
+            ctx,
+            batch: Batch::new(n_batch, 1),
+            n_batch,
+            cached: Vec::new(),
+            cancel,
+            model_template: None,
+        })
     }
 
     pub fn model(&self) -> &Arc<Model> {
@@ -199,8 +252,47 @@ impl ChatSession {
         self.cached.clear();
     }
 
-    /// Render messages with the chat template into a prompt string.
-    pub fn apply_template(&self, messages: &[ChatMessage], template: Option<&str>) -> Result<String> {
+    /// Render the request's messages into the prompt text the model will see.
+    ///
+    /// Uses `req.chat_template` if set (Jinja text or a built-in name), otherwise the
+    /// model's own Jinja template; if that fails to compile or render, falls back to
+    /// llama.cpp's built-in template matching the model.
+    pub fn render_prompt(&mut self, req: &ChatRequest) -> Result<String> {
+        let messages = serde_json::to_value(&req.messages).map_err(|e| Error::InvalidArgument(e.to_string()))?;
+        let bos = self.model.token_text(unsafe { sys::llama_vocab_bos(self.model.vocab()) });
+        let eos = self.model.token_text(unsafe { sys::llama_vocab_eos(self.model.vocab()) });
+        let args = RenderArgs {
+            messages: &messages,
+            tools: None,
+            add_generation_prompt: true,
+            bos_token: &bos,
+            eos_token: &eos,
+            extra: req.chat_template_kwargs.as_ref(),
+        };
+        match req.chat_template.as_deref() {
+            Some(t) if is_jinja(t) => ChatTemplate::new(t)?.render(&args),
+            Some(name) => self.apply_builtin_template(&req.messages, Some(name)),
+            None => {
+                if self.model_template.is_none() {
+                    self.model_template = Some(match self.model.chat_template() {
+                        Some(src) => ChatTemplate::new(&src).map_err(|e| e.to_string()),
+                        None => Err("model has no chat template".into()),
+                    });
+                }
+                let rendered = match self.model_template.as_ref().expect("set above") {
+                    Ok(t) => t.render(&args).map_err(|e| e.to_string()),
+                    Err(e) => Err(e.clone()),
+                };
+                rendered.or_else(|e| {
+                    log::warn!(target: "aicore", "jinja chat template unusable ({e}); using llama.cpp built-in");
+                    self.apply_builtin_template(&req.messages, None)
+                })
+            }
+        }
+    }
+
+    /// Render with llama.cpp's built-in templates (no Jinja; fixed list of known formats).
+    fn apply_builtin_template(&self, messages: &[ChatMessage], template: Option<&str>) -> Result<String> {
         let owned: Vec<(CString, CString)> = messages
             .iter()
             .map(|m| Ok((CString::new(m.role.as_str())?, CString::new(m.content.as_str())?)))
@@ -245,14 +337,21 @@ impl ChatSession {
         if req.messages.is_empty() {
             return Err(Error::InvalidArgument("messages is empty".into()));
         }
-        let prompt = self.apply_template(&req.messages, req.chat_template.as_deref())?;
+        let prompt = self.render_prompt(req)?;
         let mut tokens = self.model.tokenize(&prompt, true, true)?;
         // Templates often include BOS text themselves; avoid a doubled BOS.
         let bos = unsafe { sys::llama_vocab_bos(self.model.vocab()) };
         if tokens.len() >= 2 && tokens[0] == bos && tokens[1] == bos {
             tokens.remove(0);
         }
-        self.run(&tokens, req.max_tokens, &req.stop, &req.sampling, on_piece)
+        let sampling = match req.response_format.as_ref().map(ResponseFormat::grammar).transpose()?.flatten() {
+            Some(_) if req.sampling.grammar.is_some() => {
+                return Err(Error::InvalidArgument("use either grammar or response_format, not both".into()));
+            }
+            Some(grammar) => &SamplingParams { grammar: Some(grammar), ..req.sampling.clone() },
+            None => &req.sampling,
+        };
+        self.run(&tokens, req.max_tokens, &req.stop, sampling, on_piece)
     }
 
     /// Raw text completion without a chat template.

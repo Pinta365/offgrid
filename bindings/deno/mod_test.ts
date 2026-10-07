@@ -82,6 +82,31 @@ Deno.test({ name: "chat: stream, prefix reuse, cancel", ignore: !chatModel }, as
   await a;
 });
 
+Deno.test({ name: "chat: json_schema response_format", ignore: !chatModel }, async () => {
+  using core = AiCore.open();
+  using model = await core.loadModel(chatModel!);
+  using chat = await model.createChat();
+  const res = await chat.complete({
+    ...greedy("Extract: 'Grace Hopper, 85, computer scientist'.", 200),
+    response_format: {
+      type: "json_schema",
+      json_schema: {
+        name: "person",
+        schema: {
+          type: "object",
+          properties: { name: { type: "string" }, age: { type: "integer" } },
+          required: ["name", "age"],
+          additionalProperties: false,
+        },
+      },
+    },
+  });
+  const v = JSON.parse(res.content);
+  assertEquals(Object.keys(v), ["name", "age"]);
+  assertStringIncludes(v.name, "Hopper");
+  assertEquals(v.age, 85);
+});
+
 Deno.test({ name: "embeddings", ignore: !embedModel }, async () => {
   using core = AiCore.open();
   using model = await core.loadModel(embedModel!);

@@ -109,6 +109,17 @@ Status: builds and passes static checks (imports, delay-loads, exports, examples
 - **ChatSession**: stateless OpenAI-style requests (`messages`, `max_tokens`, `stop`,
   `temperature`, `top_p`, …, `grammar`), streamed through a callback; reuses the KV-cache
   prefix between calls so follow-up turns only process new tokens. Cancel from any thread.
+  - **Chat templates**: the model's own Jinja template (from the GGUF) rendered with
+    minijinja in Hugging Face style (Python string methods, `tojson` à la `json.dumps`,
+    `strftime_now`, `raise_exception`, `{% generation %}`); falls back to llama.cpp's
+    built-in formats if a template can't be used. 69/72 templates in llama.cpp's corpus
+    render (the other 3 refuse by design, e.g. Gemma 2 has no system role).
+    `chat_template` (Jinja text or built-in name) and `chat_template_kwargs` override.
+  - **Structured output**: OpenAI `response_format` — `{"type":"json_object"}` or
+    `{"type":"json_schema","json_schema":{"schema":{…}}}` — compiled to a llama.cpp grammar
+    (port of llama.cpp's json-schema-to-grammar: objects, arrays, enums/const, anyOf/oneOf/allOf,
+    `$ref`/`$defs`, string formats/patterns/lengths). Properties are generated in declared
+    order (put `reasoning` before `answer`). Not supported: remote `$ref`, numeric min/max.
 - **Embedder**: batched, L2-normalized vectors.
 
 The C ABI passes parameters and results as JSON; see `crates/aicore-ffi/include/aicore.h`

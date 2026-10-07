@@ -145,6 +145,9 @@ pub unsafe extern "C" fn aicore_chat_new(
 
 /// Run a chat completion. `request_json` is
 /// `{"messages":[{"role":"user","content":"..."}],"max_tokens":256,"temperature":0.7,"stop":[],...}`.
+/// Structured output: `"response_format":{"type":"json_object"}` or
+/// `{"type":"json_schema","json_schema":{"schema":{...}}}`. Template: `"chat_template"`
+/// (Jinja text or built-in name) and `"chat_template_kwargs":{...}`.
 /// `callback` (nullable) streams text pieces. Blocks until done; returns response JSON
 /// `{"content":"...","finish_reason":"stop"|"length"|"cancelled","usage":{...}}` or NULL on error.
 #[unsafe(no_mangle)]

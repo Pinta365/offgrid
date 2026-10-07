@@ -21,6 +21,8 @@ pub enum Error {
     Tokenize,
     #[error("invalid grammar")]
     Grammar,
+    #[error("unsupported JSON schema: {0}")]
+    JsonSchema(String),
     #[error("llama_decode failed with code {0}")]
     Decode(i32),
     #[error("model does not produce embeddings")]

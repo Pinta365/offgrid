@@ -54,7 +54,7 @@ while IFS= read -r dll; do
             continue
         fi
         case "$low" in
-            kernel32.dll|advapi32.dll|ntdll.dll) continue ;;
+            kernel32.dll|advapi32.dll|ntdll.dll|bcryptprimitives.dll) continue ;;  # bcryptprimitives: Rust std RNG (ProcessPrng), Windows 8+
             api-ms-win-*.dll) continue ;;
             vulkan-1.dll)
                 if [ "$self" = "ggml-vulkan.dll" ]; then

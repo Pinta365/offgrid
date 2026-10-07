@@ -49,9 +49,21 @@ export interface ChatRequest extends SamplingParams {
   messages: ChatMessage[];
   max_tokens?: number | null;
   stop?: string[];
-  /** Built-in template name (e.g. "chatml") or template text; default = model's own. */
+  /** Jinja template text or a llama.cpp built-in name (e.g. "chatml"); default = the model's own template. */
   chat_template?: string | null;
+  /** Extra chat template variables, e.g. `{ enable_thinking: false }`. */
+  chat_template_kwargs?: Record<string, unknown> | null;
+  /** Constrain output to JSON (OpenAI-compatible). Cannot be combined with `grammar`. */
+  response_format?: ResponseFormat | null;
 }
+
+/** JSON Schema object (draft 2020-12 subset supported by the grammar converter). */
+export type JsonSchema = Record<string, unknown>;
+
+export type ResponseFormat =
+  | { type: "text" }
+  | { type: "json_object"; schema?: JsonSchema }
+  | { type: "json_schema"; json_schema: { name?: string; schema: JsonSchema; strict?: boolean } };
 
 export interface GenerateRequest extends SamplingParams {
   prompt: string;
