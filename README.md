@@ -64,8 +64,15 @@ at runtime from the library's own directory (`$AICORE_BACKEND_DIR` overrides):
   (+ libvulkan for the Vulkan module). All libs use `$ORIGIN` RPATH, so the folder is relocatable.
 - Ship the whole `lib/` folder; ~25 MB compressed (the Vulkan module is ~47 MB of shaders).
 
-Known limit: the glibc baseline is the build host's (currently 2.43). Build on an older
-toolchain/sysroot for wider distro coverage.
+**glibc baseline:** with `cargo-zigbuild` + zig available (used automatically; zig may come
+from `mise install zig@0.16.0`), the package targets **glibc 2.28** — Ubuntu 20.04+, Debian 10+,
+RHEL 8+ — using zig's static libc++. Override with `AICORE_GLIBC=2.31`, or force the host
+toolchain with `AICORE_TOOLCHAIN=host` (then the build host's glibc is required).
+Measured: zig and host builds run at the same speed (GPU prompt ~5,000 tok/s, generation
+~150 tok/s; CPU generation ~21 tok/s on a 9800X3D, Qwen3-4B Q4_K_M).
+
+Backend modules are linked `-z nodelete`: ggml dlopens every module to probe it and closes the
+unused ones, and unmapping them left dangling exit handlers (crash at process exit, CPU-only).
 
 Note: the default (static) dev build and the dynamic build both write
 `target/release/libaicore.so`; after packaging, point consumers at the dist folder
@@ -93,7 +100,7 @@ cargo test --workspace
 ## Status
 
 Phase 0 (spike) ✔ · Phase 1 (core crate) ✔ · Phase 2 (C ABI, C + Deno examples) ✔ ·
-Phase 3a (portable Linux package) ✔
+Phase 3a (portable Linux package, glibc 2.28 via zig) ✔
 
-Next: glibc baseline, Windows build, Jinja chat
+Next: Windows build, Jinja chat
 templates (minijinja) + JSON-schema output, optional OpenAI-compatible sidecar server.

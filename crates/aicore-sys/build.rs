@@ -64,9 +64,16 @@ fn main() {
             // so copies in different libs can't interpose each other (that crashed in
             // std::locale when loaded into Deno). Backends are MODULE targets, which use
             // a separate flags variable.
-            let flags = "-static-libstdc++ -static-libgcc -Wl,--exclude-libs,ALL";
+            // zig (cargo-zigbuild) always links its own libc++ statically and its
+            // linker rejects these GNU flags, so only pass them to gcc/clang toolchains.
+            // (Always set explicitly: CMakeCache would otherwise keep stale values.)
+            let flags = if using_zig() { "" } else { "-static-libstdc++ -static-libgcc -Wl,--exclude-libs,ALL" };
             cfg.define("CMAKE_SHARED_LINKER_FLAGS", flags);
-            cfg.define("CMAKE_MODULE_LINKER_FLAGS", flags);
+            // ggml dlopens every backend module to probe it and dlcloses the unused ones
+            // (other CPU variants; Vulkan when no GPU). With zig's static libc++ those
+            // modules leave exit-time handlers behind, so unmapping them crashes the
+            // process at exit. nodelete keeps them mapped (cheap: mostly untouched pages).
+            cfg.define("CMAKE_MODULE_LINKER_FLAGS", format!("{flags} -Wl,-z,nodelete").trim());
         }
     } else {
         cfg.define("BUILD_SHARED_LIBS", "OFF");
@@ -118,6 +125,15 @@ fn main() {
     bindings
         .write_to_file(out_dir.join("bindings.rs"))
         .expect("aicore-sys: failed to write bindings.rs");
+}
+
+/// True when the C/C++ compiler is zig's (e.g. under `cargo zigbuild`).
+fn using_zig() -> bool {
+    let target = env::var("TARGET").unwrap_or_default().replace('-', "_");
+    ["CXX", &format!("CXX_{target}"), "CC", &format!("CC_{target}")]
+        .iter()
+        .filter_map(|k| env::var(k).ok())
+        .any(|v| v.contains("zig"))
 }
 
 fn has_ninja() -> bool {
