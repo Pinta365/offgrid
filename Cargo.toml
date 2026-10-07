@@ -1,0 +1,16 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+rust-version = "1.85"
+
+[workspace.dependencies]
+aicore-sys = { path = "crates/aicore-sys", default-features = false }
+aicore = { path = "crates/aicore" }
+
+[profile.release]
+lto = "thin"

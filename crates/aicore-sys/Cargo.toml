@@ -1,0 +1,17 @@
+[package]
+name = "aicore-sys"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+links = "llama"
+description = "Low-level FFI bindings to llama.cpp (Vulkan/CPU), built from source."
+build = "build.rs"
+
+[features]
+default = ["vulkan"]
+vulkan = []
+cuda = []
+
+[build-dependencies]
+cmake = "0.1.58"
+bindgen = "0.73"

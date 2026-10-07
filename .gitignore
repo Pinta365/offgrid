@@ -1,0 +1,4 @@
+/target
+/spike/llama.cpp
+/spike/models
+*.gguf
