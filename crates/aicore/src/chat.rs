@@ -13,7 +13,7 @@ use crate::template::{ChatTemplate, RenderArgs, is_jinja};
 use crate::text::{PieceKind, Push, StreamFilter, TextStream};
 use crate::tool_parse::{self, ToolFormat};
 use crate::tools::{GrammarSpec, Tool, ToolCall, ToolChoice, tool_grammar};
-use crate::media::{Chunks, Segment, media_marker};
+use crate::media::{Chunks, MediaMemo, Segment, media_marker};
 use crate::{Error, Media, MediaKind, Model, Result, SamplingParams};
 
 const DEFAULT_MAX_CTX: u32 = 8192;
@@ -434,6 +434,40 @@ pub struct ChatSession {
     /// Next position in sequence 0 (sum of the cached items' positions; M-RoPE images
     /// use a different number of positions than tokens).
     n_past: usize,
+    /// Shapes of media seen before, so cached media can be re-tokenized without decoding.
+    media_memo: MediaMemo,
+}
+
+/// Error text used internally when a placeholder media chunk would have to be evaluated;
+/// `complete_stream` then re-tokenizes with real data.
+const PLACEHOLDER_EVAL: &str = "internal: placeholder media chunk needs real data";
+
+/// KV-cache items for a tokenized prompt, in order.
+fn segment_items(segments: &[Segment]) -> Vec<CacheItem> {
+    segments
+        .iter()
+        .flat_map(|seg| match seg {
+            Segment::Text(t) => t.iter().map(|&t| CacheItem::Token(t)).collect::<Vec<_>>(),
+            Segment::Media(m) => vec![CacheItem::Media { id: m.id.clone(), n_tokens: m.n_tokens, n_pos: m.n_pos }],
+        })
+        .collect()
+}
+
+/// Whether any placeholder media chunk lies at or after item index `keep` (must be evaluated).
+fn placeholder_after(segments: &[Segment], keep: usize) -> bool {
+    let mut index = 0;
+    for seg in segments {
+        match seg {
+            Segment::Text(t) => index += t.len(),
+            Segment::Media(m) => {
+                if m.placeholder && index >= keep {
+                    return true;
+                }
+                index += 1;
+            }
+        }
+    }
+    false
 }
 
 /// One entry of the KV cache: a token, or a whole image identified by its content hash.
@@ -531,6 +565,7 @@ impl ChatSession {
             cancel,
             model_template: None,
             n_past: 0,
+            media_memo: MediaMemo::default(),
         })
     }
 
@@ -684,12 +719,21 @@ impl ChatSession {
             }
             (tokens, None)
         } else {
-            let projector = self.model.projector().ok_or_else(|| {
+            let model = self.model.clone();
+            let projector = model.projector().ok_or_else(|| {
                 Error::InvalidArgument("request has images/audio but the model has no multimodal projector (mmproj)".into())
             })?;
-            let bos = self.model.token_text(unsafe { sys::llama_vocab_bos(self.model.vocab()) });
+            let bos = model.token_text(unsafe { sys::llama_vocab_bos(model.vocab()) });
             let add_bos = bos.is_empty() || !prompt.starts_with(&bos);
-            (Vec::new(), Some(projector.tokenize(&prompt, &media, add_bos)?))
+            // Media still in the KV cache is tokenized from its remembered shape (no decode).
+            let cached = self.cached_media_hashes();
+            let mut chunks = projector.tokenize(&prompt, &media, add_bos, &mut self.media_memo, &|id| cached.contains(id))?;
+            let segments = chunks.segments();
+            if placeholder_after(&segments, self.reusable_prefix(&segment_items(&segments))) {
+                // The cache diverges before some remembered media: it must be encoded again.
+                chunks = projector.tokenize(&prompt, &media, add_bos, &mut self.media_memo, &|_| false)?;
+            }
+            (Vec::new(), Some(chunks))
         };
         let prompt_input = match &chunks {
             Some(c) => Prompt::Media(c),
@@ -729,11 +773,28 @@ impl ChatSession {
                 PieceKind::Reasoning => on_event(StreamEvent::Reasoning(text)),
             })
         };
-        let mut resp = self.run(prompt_input, req.max_tokens, &req.stop, &req.sampling, grammars.first(), use_tools, |piece| {
+        let mut on_piece = |piece: &str| {
             let ok = deliver(filter.push(piece), &mut on_event);
             cancelled_by_callback |= !ok;
             ok
-        })?;
+        };
+        let mut result = self.run(prompt_input, req.max_tokens, &req.stop, &req.sampling, grammars.first(), use_tools, &mut on_piece);
+        if let (Err(Error::Media(msg)), Some(_)) = (&result, &chunks)
+            && msg == PLACEHOLDER_EVAL
+        {
+            // The KV prefix shrank unexpectedly (e.g. a model that can't trim its cache):
+            // nothing was generated yet, so tokenize with real data and run again.
+            let model = self.model.clone();
+            let projector = model.projector().expect("media implies a projector");
+            let bos = model.token_text(unsafe { sys::llama_vocab_bos(model.vocab()) });
+            let add_bos = bos.is_empty() || !prompt.starts_with(&bos);
+            let real = projector.tokenize(&prompt, &media, add_bos, &mut self.media_memo, &|_| false)?;
+            result = self.run(Prompt::Media(&real), req.max_tokens, &req.stop, &req.sampling, grammars.first(), use_tools, &mut on_piece);
+        }
+        let mut resp = result?;
+        // Forget shapes of media no longer cached.
+        let cached = self.cached_media_hashes();
+        self.media_memo.retain(|id| cached.contains(id));
         if !cancelled_by_callback && resp.finish_reason != FinishReason::Cancelled {
             deliver(filter.flush(), &mut on_event);
         }
@@ -867,18 +928,30 @@ impl ChatSession {
         self.generate_tokens(sampler, usage, max_tokens, stop, special, on_piece)
     }
 
+    /// Number of leading `items` that can be kept from the KV cache: the common prefix,
+    /// minus at least one item so the last one is evaluated (logits).
+    fn reusable_prefix(&self, items: &[CacheItem]) -> usize {
+        let common = self.cached.iter().zip(items).take_while(|(a, b)| a == b).count();
+        common.min(items.len().saturating_sub(1))
+    }
+
+    /// Content hashes (without `#k`) of media currently in the KV cache.
+    fn cached_media_hashes(&self) -> std::collections::HashSet<String> {
+        self.cached
+            .iter()
+            .filter_map(|c| match c {
+                CacheItem::Media { id, .. } => Some(id.split('#').next().unwrap_or(id).to_string()),
+                CacheItem::Token(_) => None,
+            })
+            .collect()
+    }
+
     /// Bring the KV cache to `segments`, reusing the longest common prefix of cached items
     /// (tokens, and images by content hash). Always re-evaluates at least the last item so
     /// logits are available. Returns `false` if cancelled.
     fn eval_prompt(&mut self, segments: &[Segment], usage: &mut Usage) -> Result<bool> {
         let n_ctx = self.n_ctx();
-        let items: Vec<CacheItem> = segments
-            .iter()
-            .flat_map(|seg| match seg {
-                Segment::Text(t) => t.iter().map(|&t| CacheItem::Token(t)).collect::<Vec<_>>(),
-                Segment::Media(m) => vec![CacheItem::Media { id: m.id.clone(), n_tokens: m.n_tokens, n_pos: m.n_pos }],
-            })
-            .collect();
+        let items = segment_items(segments);
         if items.is_empty() {
             return Err(Error::InvalidArgument("empty prompt".into()));
         }
@@ -889,8 +962,7 @@ impl ChatSession {
         }
         usage.prompt_tokens = items.iter().map(CacheItem::n_tokens).sum::<usize>() as u32;
 
-        let mut keep = self.cached.iter().zip(&items).take_while(|(a, b)| a == b).count();
-        keep = keep.min(items.len() - 1);
+        let mut keep = self.reusable_prefix(&items);
         if keep < self.cached.len() {
             let pos: usize = self.cached[..keep].iter().map(CacheItem::n_pos).sum();
             let mem = unsafe { sys::llama_get_memory(self.ctx.as_ptr()) };
@@ -936,6 +1008,9 @@ impl ChatSession {
                     index += 1;
                     if index <= keep {
                         continue;
+                    }
+                    if m.placeholder {
+                        return Err(Error::Media(PLACEHOLDER_EVAL.into()));
                     }
                     if self.cancel.is_cancelled() {
                         return Ok(false);

@@ -114,6 +114,37 @@ pub fn media_marker() -> &'static str {
     MARKER.get_or_init(|| unsafe { CStr::from_ptr(sys::mtmd_default_marker()) }.to_string_lossy().into_owned())
 }
 
+/// Shape of a decoded media item: enough to tokenize it again as a placeholder (no
+/// decoding) while its encoding is still in the KV cache.
+#[derive(Debug, Clone)]
+struct MediaShape {
+    audio: bool,
+    /// Image width / audio sample count (after resampling).
+    nx: u32,
+    ny: u32,
+    /// mtmd's content hash (SHA-256), the chunk id used for KV-cache identity.
+    id: String,
+}
+
+/// Per-session memo of media shapes, keyed by a randomly seeded hash of the bytes.
+#[derive(Default)]
+pub(crate) struct MediaMemo {
+    hasher: std::collections::hash_map::RandomState,
+    shapes: std::collections::HashMap<(u64, usize), MediaShape>,
+}
+
+impl MediaMemo {
+    fn key(&self, data: &[u8]) -> (u64, usize) {
+        use std::hash::BuildHasher;
+        (self.hasher.hash_one(data), data.len())
+    }
+
+    /// Keep only shapes whose content hash satisfies `keep` (e.g. still in the KV cache).
+    pub fn retain(&mut self, keep: impl Fn(&str) -> bool) {
+        self.shapes.retain(|_, s| keep(&s.id));
+    }
+}
+
 /// A loaded multimodal projector (`mmproj`) bound to its text model.
 pub(crate) struct Projector {
     ctx: NonNull<sys::mtmd_context>,
@@ -159,8 +190,21 @@ impl Projector {
     }
 
     /// Tokenize a prompt containing one media marker per media item.
-    pub fn tokenize(&self, prompt: &str, media: &[&Media], add_bos: bool) -> Result<Chunks> {
+    ///
+    /// Items already seen (in `memo`) whose content hash satisfies `reusable` (i.e. still
+    /// in the KV cache) become placeholder bitmaps: same chunks and ids, but no decoding,
+    /// resampling or hashing. Placeholder chunks can't be evaluated; see
+    /// [`MediaChunk::placeholder`].
+    pub fn tokenize(
+        &self,
+        prompt: &str,
+        media: &[&Media],
+        add_bos: bool,
+        memo: &mut MediaMemo,
+        reusable: &dyn Fn(&str) -> bool,
+    ) -> Result<Chunks> {
         let mut bitmaps = Vec::with_capacity(media.len());
+        let mut placeholders = std::collections::HashSet::new();
         for (i, item) in media.iter().enumerate() {
             match item.kind {
                 MediaKind::Image if !self.vision => {
@@ -170,6 +214,25 @@ impl Projector {
                     return Err(Error::InvalidArgument("this model's projector does not accept audio".into()));
                 }
                 _ => {}
+            }
+            let key = memo.key(&item.data);
+            if let Some(shape) = memo.shapes.get(&key)
+                && shape.audio == (item.kind == MediaKind::Audio)
+                && reusable(&shape.id)
+            {
+                let raw = unsafe {
+                    if shape.audio {
+                        sys::mtmd_bitmap_init_from_audio(shape.nx as usize, std::ptr::null())
+                    } else {
+                        sys::mtmd_bitmap_init(shape.nx, shape.ny, std::ptr::null())
+                    }
+                };
+                let bitmap = Bitmap(NonNull::new(raw).ok_or_else(|| Error::Media("placeholder bitmap".into()))?);
+                let id = CString::new(shape.id.as_str()).expect("hex id");
+                unsafe { sys::mtmd_bitmap_set_id(bitmap.0.as_ptr(), id.as_ptr()) };
+                placeholders.insert(shape.id.clone());
+                bitmaps.push(bitmap);
+                continue;
             }
             let opt = unsafe { sys::mtmd_helper_init_opt_default() };
             let w = unsafe {
@@ -185,11 +248,23 @@ impl Projector {
             if unsafe { sys::mtmd_bitmap_is_audio(bitmap.0.as_ptr()) } != (item.kind == MediaKind::Audio) {
                 return Err(Error::Media(format!("media {i} was sent as {what} but its data is not {what}")));
             }
+            let id_ptr = unsafe { sys::mtmd_bitmap_get_id(bitmap.0.as_ptr()) };
+            if !id_ptr.is_null() {
+                let shape = unsafe {
+                    MediaShape {
+                        audio: item.kind == MediaKind::Audio,
+                        nx: sys::mtmd_bitmap_get_nx(bitmap.0.as_ptr()),
+                        ny: sys::mtmd_bitmap_get_ny(bitmap.0.as_ptr()),
+                        id: CStr::from_ptr(id_ptr).to_string_lossy().into_owned(),
+                    }
+                };
+                memo.shapes.insert(key, shape);
+            }
             bitmaps.push(bitmap);
         }
         let text = CString::new(prompt).map_err(|_| Error::InvalidArgument("prompt contains NUL".into()))?;
         let input = sys::mtmd_input_text { text: text.as_ptr(), text_len: prompt.len(), add_special: add_bos, parse_special: true };
-        let chunks = Chunks(NonNull::new(unsafe { sys::mtmd_input_chunks_init() }).ok_or(Error::Tokenize)?);
+        let chunks = Chunks(NonNull::new(unsafe { sys::mtmd_input_chunks_init() }).ok_or(Error::Tokenize)?, placeholders);
         let ptrs: Vec<*const sys::mtmd_bitmap> = bitmaps.iter().map(|b| b.0.as_ptr() as *const _).collect();
         match unsafe { sys::mtmd_tokenize(self.ctx.as_ptr(), chunks.0.as_ptr(), &input, ptrs.as_ptr() as *mut _, ptrs.len()) } {
             0 => Ok(chunks),
@@ -232,8 +307,11 @@ pub(crate) enum Segment {
 /// A media chunk inside a [`Chunks`] (valid while the `Chunks` lives).
 pub(crate) struct MediaChunk {
     ptr: *const sys::mtmd_input_chunk,
-    /// Content hash of the media (SHA-256, set by mtmd); used for KV-cache reuse.
+    /// Content hash of the media (SHA-256, set by mtmd) + `#k` chunk index; used for
+    /// KV-cache reuse.
     pub id: String,
+    /// Tokenized from a placeholder (no data): reusable from the KV cache, not evaluable.
+    pub placeholder: bool,
     pub n_tokens: usize,
     /// Positions consumed (differs from tokens for M-RoPE models).
     pub n_pos: usize,
@@ -247,8 +325,8 @@ impl Drop for Bitmap {
     }
 }
 
-/// Tokenized multimodal prompt.
-pub(crate) struct Chunks(NonNull<sys::mtmd_input_chunks>);
+/// Tokenized multimodal prompt (+ the content hashes that were tokenized as placeholders).
+pub(crate) struct Chunks(NonNull<sys::mtmd_input_chunks>, std::collections::HashSet<String>);
 
 impl Chunks {
     pub fn segments(&self) -> Vec<Segment> {
@@ -267,6 +345,7 @@ impl Chunks {
                     Segment::Text(if toks.is_null() { Vec::new() } else { std::slice::from_raw_parts(toks, len).to_vec() })
                 } else {
                     let id_ptr = sys::mtmd_input_chunk_get_id(chunk);
+                    let placeholder = !id_ptr.is_null() && self.1.contains(CStr::from_ptr(id_ptr).to_string_lossy().as_ref());
                     let id = if id_ptr.is_null() {
                         // No content hash: never matches a cached entry.
                         format!("unhashed-{}", UNHASHED.fetch_add(1, Ordering::Relaxed))
@@ -279,6 +358,7 @@ impl Chunks {
                     Segment::Media(MediaChunk {
                         ptr: chunk,
                         id,
+                        placeholder,
                         n_tokens: sys::mtmd_input_chunk_get_n_tokens(chunk),
                         n_pos: sys::mtmd_input_chunk_get_n_pos(chunk).max(0) as usize,
                     })

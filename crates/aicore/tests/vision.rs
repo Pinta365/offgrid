@@ -186,3 +186,29 @@ fn image_prompt_cache_reuse() {
         assert_ne!(a.content, b.content);
     }
 }
+
+/// Remembered media whose cache prefix diverges *before* it must be encoded again from
+/// real data (placeholder fallback), giving the same answer as a fresh session.
+#[test]
+fn media_placeholder_fallback() {
+    for (name, model) in vision_models() {
+        let mut chat = ChatSession::new(model.clone(), &SessionParams::default()).unwrap();
+        let conv = |system: &str| {
+            vec![
+                ChatMessage::system(system),
+                ChatMessage::user_with_images("What text is in this image?", vec![image("text_hello.png")]),
+            ]
+        };
+        ask(&mut chat, conv("You are a helpful assistant."));
+        // Same image, different system prompt: the image is in the cache but after the
+        // divergence point, so it can't be reused and must be re-encoded.
+        let changed = ask(&mut chat, conv("You are a terse assistant. Answer in as few words as possible."));
+        let fresh = ask(
+            &mut ChatSession::new(model.clone(), &SessionParams::default()).unwrap(),
+            conv("You are a terse assistant. Answer in as few words as possible."),
+        );
+        println!("[{name}] fallback: cached {} -> {:?}", changed.usage.cached_tokens, changed.content);
+        assert_eq!(changed.content, fresh.content, "[{name}]");
+        assert!(changed.content.to_uppercase().contains("HELLO"), "[{name}] {}", changed.content);
+    }
+}
