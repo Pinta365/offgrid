@@ -262,8 +262,8 @@ fn stream_piece(callback: AicoreTokenCallback, user_data: *mut c_void, piece: &s
     unsafe { cb(c.as_ptr(), piece.len(), user_data) }
 }
 
-/// Cancel the in-flight request on this session. Safe from any thread.
-/// If no request is running, the next request on this session returns `cancelled` immediately.
+/// Cancel the in-flight request on this session. Safe from any thread, any time.
+/// A no-op when no request is running: it never affects a later request.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn aicore_chat_cancel(chat: *const AicoreChat) {
     if let Some(chat) = unsafe { chat.as_ref() } {

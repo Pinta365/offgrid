@@ -379,3 +379,25 @@ async fn large_bodies_and_body_errors() {
     let e: Value = r.json().await.unwrap();
     assert!(e["error"]["message"].is_string());
 }
+
+#[tokio::test]
+async fn disconnect_cancels_hidden_tool_call_output() {
+    let Ok(model) = std::env::var("AICORE_TEST_MODEL") else { return };
+    let url = spawn(ServerConfig { model: Some(model.into()), parallel: 1, ..Default::default() });
+    // Forced tool call with a long string argument: all generated text is tool-call markup
+    // that the stream filter hides, so no content events are sent while generating.
+    let body = json!({"stream": true, "max_tokens": 3000, "temperature": 0.7,
+        "tool_choice": "required",
+        "tools": [{"type": "function", "function": {"name": "save_essay", "parameters": {
+            "type": "object", "properties": {"essay": {"type": "string"}}, "required": ["essay"]}}}],
+        "messages": [{"role": "user", "content": "Write a 2000-word essay about rivers and save it."}]});
+    let mut resp = reqwest::Client::new().post(format!("{url}/v1/chat/completions")).json(&body).send().await.unwrap();
+    resp.chunk().await.unwrap(); // role chunk
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    drop(resp);
+    let t = Instant::now();
+    let r = reqwest::Client::new().post(format!("{url}/v1/chat/completions")).json(&greedy("Say hi.")).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+    println!("follow-up after hidden-output disconnect: {:?}", t.elapsed());
+    assert!(t.elapsed() < Duration::from_secs(5), "session stayed busy after disconnect");
+}

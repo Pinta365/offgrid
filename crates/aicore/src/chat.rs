@@ -1,7 +1,7 @@
 use std::ffi::{CString, c_char, c_void};
 use std::ptr::NonNull;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use aicore_sys as sys;
@@ -352,24 +352,68 @@ pub enum StreamEvent<'a> {
     ToolCall(&'a ToolCall),
 }
 
+/// Request-scoped cancellation state of a session. Every request gets the next `epoch`;
+/// a request is cancelled when `cancelled >= epoch`. Cancels therefore never leak into a
+/// later request (no "sticky" flag to reset).
+#[derive(Debug, Default)]
+struct CancelState {
+    /// Number of the current (or last finished) request; 0 = none yet.
+    epoch: AtomicU64,
+    /// Highest request number that has been cancelled.
+    cancelled: AtomicU64,
+}
+
+impl CancelState {
+    fn is_cancelled(&self) -> bool {
+        let epoch = self.epoch.load(Ordering::SeqCst);
+        epoch > 0 && self.cancelled.load(Ordering::SeqCst) >= epoch
+    }
+}
+
 /// Thread-safe handle that cancels the running request of a session.
 #[derive(Debug, Clone, Default)]
-pub struct CancelToken(Arc<AtomicBool>);
+pub struct CancelToken(Arc<CancelState>);
 
 impl CancelToken {
+    /// Cancel the request running right now. A no-op when the session is idle: it never
+    /// affects a later request.
     pub fn cancel(&self) {
-        self.0.store(true, Ordering::Relaxed);
+        self.0.cancelled.fetch_max(self.0.epoch.load(Ordering::SeqCst), Ordering::SeqCst);
     }
+
+    /// Whether the current request has been cancelled.
     pub fn is_cancelled(&self) -> bool {
-        self.0.load(Ordering::Relaxed)
+        self.0.is_cancelled()
     }
-    fn reset(&self) {
-        self.0.store(false, Ordering::Relaxed);
+
+    /// A canceller for the session's *next* request, usable before it starts and after it
+    /// ends (then a no-op). Only valid while the caller has exclusive use of the session
+    /// until that request starts (e.g. it holds the session's lock or pool lease).
+    pub fn next_request(&self) -> RequestCancel {
+        RequestCancel { state: self.0.clone(), epoch: self.0.epoch.load(Ordering::SeqCst) + 1 }
+    }
+
+    /// Start a new request (called at the top of every public generation entry point).
+    fn begin(&self) {
+        self.0.epoch.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+/// Cancels one specific request (see [`CancelToken::next_request`]).
+#[derive(Debug, Clone)]
+pub struct RequestCancel {
+    state: Arc<CancelState>,
+    epoch: u64,
+}
+
+impl RequestCancel {
+    pub fn cancel(&self) {
+        self.state.cancelled.fetch_max(self.epoch, Ordering::SeqCst);
     }
 }
 
 unsafe extern "C" fn abort_callback(data: *mut c_void) -> bool {
-    unsafe { &*(data as *const AtomicBool) }.load(Ordering::Relaxed)
+    unsafe { &*(data as *const CancelState) }.is_cancelled()
 }
 
 /// One inference context for chat / text generation.
@@ -454,7 +498,9 @@ impl ChatSession {
             0 => model.info().n_ctx_train.clamp(512, DEFAULT_MAX_CTX),
             n => n,
         };
-        let n_batch = params.n_batch.clamp(32, n_ctx);
+        // At least 32 (or the whole context if smaller), at most the context; never panics.
+        let n_ctx = n_ctx.max(1);
+        let n_batch = params.n_batch.max(32.min(n_ctx)).min(n_ctx);
         let threads = params.n_threads.unwrap_or_else(default_threads);
         let cancel = CancelToken::default();
 
@@ -614,6 +660,7 @@ impl ChatSession {
         req: &ChatRequest,
         mut on_event: impl FnMut(StreamEvent<'_>) -> bool,
     ) -> Result<ChatResponse> {
+        self.cancel.begin();
         if req.messages.is_empty() {
             return Err(Error::InvalidArgument("messages is empty".into()));
         }
@@ -672,9 +719,13 @@ impl ChatSession {
         let marker = if use_tools { tool_parse::tool_call_start_marker(format) } else { None };
         let mut filter = StreamFilter::new(marker, use_tools && format == ToolFormat::Llama3Json, think_open);
         let mut cancelled_by_callback = false;
-        let deliver = |pieces: Vec<(PieceKind, String)>, on_event: &mut dyn FnMut(StreamEvent<'_>) -> bool| {
+        let mut streamed = String::new(); // content delivered so far
+        let mut deliver = |pieces: Vec<(PieceKind, String)>, on_event: &mut dyn FnMut(StreamEvent<'_>) -> bool| {
             pieces.iter().all(|(kind, text)| match kind {
-                PieceKind::Content => on_event(StreamEvent::Content(text)),
+                PieceKind::Content => {
+                    streamed.push_str(text);
+                    on_event(StreamEvent::Content(text))
+                }
                 PieceKind::Reasoning => on_event(StreamEvent::Reasoning(text)),
             })
         };
@@ -695,6 +746,17 @@ impl ChatSession {
         };
         resp.content = parsed.content;
         resp.reasoning_content = parsed.reasoning;
+        // Text the stream filter held back (e.g. a bare `{...}` reply that was not a tool
+        // call, or a malformed call block) is content after all: deliver the missing part so
+        // streaming clients end up with the same content as the response.
+        if !cancelled_by_callback && resp.finish_reason != FinishReason::Cancelled {
+            let shown = streamed.trim();
+            if let Some(missing) = resp.content.strip_prefix(shown)
+                && !missing.trim().is_empty()
+            {
+                on_event(StreamEvent::Content(missing));
+            }
+        }
         resp.tool_calls = parsed.calls.into_iter().map(|c| ToolCall::new(c.name, c.arguments)).collect();
         if !resp.tool_calls.is_empty() && resp.finish_reason == FinishReason::Stop {
             resp.finish_reason = FinishReason::ToolCalls;
@@ -755,6 +817,7 @@ impl ChatSession {
         sampling: &SamplingParams,
         on_piece: impl FnMut(&str) -> bool,
     ) -> Result<ChatResponse> {
+        self.cancel.begin();
         let tokens = self.model.tokenize(prompt, true, true)?;
         self.run(Prompt::Tokens(&tokens), max_tokens, stop, sampling, None, false, on_piece)
     }
@@ -775,7 +838,6 @@ impl ChatSession {
             // KV state may be partially written; start clean next time.
             self.reset();
         }
-        self.cancel.reset();
         result
     }
 
@@ -820,9 +882,10 @@ impl ChatSession {
         if items.is_empty() {
             return Err(Error::InvalidArgument("empty prompt".into()));
         }
-        let total_pos: usize = items.iter().map(CacheItem::n_pos).sum();
-        if total_pos >= n_ctx {
-            return Err(Error::ContextOverflow { needed: total_pos + 1, n_ctx });
+        // Capacity is in KV cells = tokens (M-RoPE images use fewer positions than tokens).
+        let total_tokens: usize = items.iter().map(CacheItem::n_tokens).sum();
+        if total_tokens >= n_ctx {
+            return Err(Error::ContextOverflow { needed: total_tokens + 1, n_ctx });
         }
         usage.prompt_tokens = items.iter().map(CacheItem::n_tokens).sum::<usize>() as u32;
 
@@ -902,7 +965,8 @@ impl ChatSession {
         mut on_piece: impl FnMut(&str) -> bool,
     ) -> Result<ChatResponse> {
         let t_gen = Instant::now();
-        let budget = self.n_ctx().saturating_sub(self.n_past).min(max_tokens.map_or(usize::MAX, |m| m as usize));
+        let used: usize = self.cached.iter().map(CacheItem::n_tokens).sum();
+        let budget = self.n_ctx().saturating_sub(used).min(max_tokens.map_or(usize::MAX, |m| m as usize));
         let mut stream = TextStream::new(stop);
         let mut content = String::new();
         let mut piece = Vec::new();
@@ -937,10 +1001,19 @@ impl ChatSession {
             }
             self.batch.clear();
             self.batch.add(tok, self.n_past as i32, &[0], true);
-            if !self.decode()? {
-                self.reset();
-                reason = FinishReason::Cancelled;
-                break;
+            match self.decode() {
+                Ok(true) => {}
+                Ok(false) => {
+                    self.reset();
+                    reason = FinishReason::Cancelled;
+                    break;
+                }
+                // No KV slot left (the memory state is unchanged): end like max_tokens.
+                Err(Error::Decode(1)) => {
+                    reason = FinishReason::Length;
+                    break;
+                }
+                Err(e) => return Err(e),
             }
             self.n_past += 1;
             self.cached.push(CacheItem::Token(tok));

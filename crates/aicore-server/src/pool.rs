@@ -2,7 +2,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use aicore::{CancelToken, ChatSession, Model, SessionParams};
+use aicore::{CancelToken, ChatSession, Model, RequestCancel, SessionParams};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 pub struct ChatPool {
@@ -55,6 +55,11 @@ impl ChatPool {
 impl Lease {
     pub fn session(&self) -> std::sync::MutexGuard<'_, ChatSession> {
         self.pool.sessions[self.index].lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Cancels the next request run on this lease (valid: the lease is exclusive).
+    pub fn next_request_cancel(&self) -> RequestCancel {
+        self.pool.cancels[self.index].next_request()
     }
 
 }

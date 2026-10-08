@@ -137,6 +137,12 @@ class ErrorSlot {
   }
 }
 
+/** file: URL to a native path (decodes %XX, handles Windows drive letters). */
+function fromFileUrl(url: URL): string {
+  const path = decodeURIComponent(url.pathname);
+  return Deno.build.os === "windows" ? path.replace(/^\/([A-Za-z]:)/, "$1").replaceAll("/", "\\") : path;
+}
+
 function defaultLibPath(): string {
   const env = Deno.env.get("AICORE_LIB");
   if (env) return env;
@@ -149,7 +155,7 @@ function defaultLibPath(): string {
     const url = new URL(`../../target/${profile}/${file}`, import.meta.url);
     try {
       Deno.statSync(url);
-      return url.pathname;
+      return fromFileUrl(url);
     } catch { /* try next */ }
   }
   return file; // fall back to the system loader search path
@@ -205,6 +211,8 @@ export class AiCore implements Disposable {
 abstract class Handle implements Disposable {
   #ptr: Deno.PointerObject | null;
   #busy = false;
+  /** Native calls in flight that use this handle (it must not be freed meanwhile). */
+  #pending = 0;
 
   constructor(readonly core: AiCore, ptr: Deno.PointerObject) {
     this.#ptr = ptr;
@@ -219,15 +227,32 @@ abstract class Handle implements Disposable {
     return this.core.lib;
   }
 
-  /** Run a native call exclusively; the handle cannot be freed meanwhile. */
+  /** Run a native call exclusively (one request at a time); the handle cannot be freed meanwhile. */
   protected async exclusive<T>(fn: (ptr: Deno.PointerObject) => Promise<T>): Promise<T> {
     if (this.#busy) throw new AiCoreError(`${this.constructor.name} is busy with another request`);
-    const ptr = this.ptr;
     this.#busy = true;
+    try {
+      return await this.pinned(fn);
+    } finally {
+      this.#busy = false;
+    }
+  }
+
+  /** Run a (possibly concurrent) native call; the handle cannot be freed until it settles. */
+  protected async pinned<T>(fn: (ptr: Deno.PointerObject) => Promise<T>): Promise<T> {
+    const ptr = this.ptr;
+    this.#pending++;
     try {
       return await fn(ptr);
     } finally {
-      this.#busy = false;
+      this.#pending--;
+    }
+  }
+
+  /** Throw if a native call is running (sync calls that take the native lock would deadlock). */
+  protected assertIdle(what: string): void {
+    if (this.#busy || this.#pending > 0) {
+      throw new AiCoreError(`cannot ${what} ${this.constructor.name} while a request is running`);
     }
   }
 
@@ -236,7 +261,7 @@ abstract class Handle implements Disposable {
   /** Free the native handle. Throws if a request is still running. */
   free(): void {
     if (this.#ptr === null) return;
-    if (this.#busy) throw new AiCoreError(`cannot free ${this.constructor.name} while a request is running`);
+    this.assertIdle("free");
     this.release(this.#ptr);
     this.#ptr = null;
   }
@@ -252,19 +277,23 @@ export class Model extends Handle {
     return JSON.parse(takeString(this.lib, this.lib.aicore_model_info_json(this.ptr))!);
   }
 
-  async createChat(params?: SessionParams): Promise<ChatSession> {
-    const err = new ErrorSlot();
-    const ptr = await this.lib.aicore_chat_new(this.ptr, jsonArg(params), err.buf);
-    if (ptr === null) return err.fail(this.lib, "create chat session");
-    return new ChatSession(this.core, ptr);
+  createChat(params?: SessionParams): Promise<ChatSession> {
+    return this.pinned(async (model) => {
+      const err = new ErrorSlot();
+      const ptr = await this.lib.aicore_chat_new(model, jsonArg(params), err.buf);
+      if (ptr === null) return err.fail(this.lib, "create chat session");
+      return new ChatSession(this.core, ptr);
+    });
   }
 
-  async createEmbedder(params?: EmbedParams): Promise<Embedder> {
-    const err = new ErrorSlot();
-    const ptr = await this.lib.aicore_embedder_new(this.ptr, jsonArg(params), err.buf);
-    if (ptr === null) return err.fail(this.lib, "create embedder");
-    const dim = Number(this.lib.aicore_embedder_dim(ptr));
-    return new Embedder(this.core, ptr, dim);
+  createEmbedder(params?: EmbedParams): Promise<Embedder> {
+    return this.pinned(async (model) => {
+      const err = new ErrorSlot();
+      const ptr = await this.lib.aicore_embedder_new(model, jsonArg(params), err.buf);
+      if (ptr === null) return err.fail(this.lib, "create embedder");
+      const dim = Number(this.lib.aicore_embedder_dim(ptr));
+      return new Embedder(this.core, ptr, dim);
+    });
   }
 
   protected release(ptr: Deno.PointerObject): void {
@@ -372,8 +401,9 @@ export class ChatSession extends Handle {
     this.lib.aicore_chat_cancel(this.ptr);
   }
 
-  /** Clear the KV cache. */
+  /** Clear the KV cache. Throws while a request is running (cancel and await it first). */
   reset(): void {
+    this.assertIdle("reset");
     this.lib.aicore_chat_reset(this.ptr);
   }
 

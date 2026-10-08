@@ -145,8 +145,8 @@ char *aicore_chat_complete_events(const aicore_chat *chat, const char *request_j
 char *aicore_chat_generate(const aicore_chat *chat, const char *request_json, aicore_token_callback callback, void *user_data, char **error_out);
 
 /**
- * Cancel the in-flight request on this session. Safe from any thread.
- * If no request is running, the next request on this session returns `cancelled` immediately.
+ * Cancel the in-flight request on this session. Safe from any thread, any time.
+ * A no-op when no request is running: it never affects a later request.
  */
 void aicore_chat_cancel(const aicore_chat *chat);
 

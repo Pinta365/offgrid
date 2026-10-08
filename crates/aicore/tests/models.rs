@@ -73,13 +73,32 @@ fn chat_limits_stop_and_cancel() {
     let r = chat.complete(&greedy(count(), 200), |_| { n += 1; n < 3 }).unwrap();
     assert_eq!(r.finish_reason, FinishReason::Cancelled);
 
+    // A cancel while idle (e.g. one that arrives just after a request finished) must not
+    // leak into the next request.
     let token = chat.cancel_token();
     token.cancel();
+    let r = chat.complete(&greedy(count(), 5), |_| true).unwrap();
+    assert_eq!(r.finish_reason, FinishReason::Length, "stale cancel leaked into the next request");
+
+    // Cancelling the next request specifically works, even before it starts...
+    let next = token.next_request();
+    next.cancel();
     let r = chat.complete(&greedy(count(), 200), |_| true).unwrap();
     assert_eq!(r.finish_reason, FinishReason::Cancelled);
-    // Token resets after the request, session still usable.
+    // ...and only that one: a late cancel of a finished request is a no-op.
+    next.cancel();
     let r = chat.complete(&greedy(count(), 5), |_| true).unwrap();
     assert_eq!(r.finish_reason, FinishReason::Length);
+
+    // Cancel from another thread while generating.
+    let t = token.clone();
+    let canceller = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        t.cancel();
+    });
+    let r = chat.complete(&greedy(count(), 2000), |_| true).unwrap();
+    canceller.join().unwrap();
+    assert_eq!(r.finish_reason, FinishReason::Cancelled);
 }
 
 #[test]
@@ -108,4 +127,9 @@ fn embeddings_rank_similarity() {
     // Batched and single-input results agree.
     let single = emb.embed_one("The cat sits on the mat.").unwrap();
     assert!(dot(&single, &v[0]) > 0.999);
+
+    // Inputs well beyond n_ctx / max_batch_inputs (the per-sequence KV split) must work.
+    let long_doc = "The quick brown fox jumps over the lazy dog. ".repeat(150); // ~1500 tokens
+    let long = emb.embed(&[long_doc.as_str(), "short"]).expect("long input embeds");
+    assert_eq!(long[0].len(), emb.dim());
 }

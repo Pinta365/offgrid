@@ -1,6 +1,6 @@
 // deno test --allow-ffi --allow-env --allow-read bindings/deno/mod_test.ts
 // Model tests need AICORE_TEST_MODEL / AICORE_TEST_EMBED_MODEL; they are skipped otherwise.
-import { assert, assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import { assert, assertEquals, assertRejects, assertStringIncludes, assertThrows } from "@std/assert";
 import { AiCore, audioPart, type ChatRequest, dot, imagePart } from "./mod.ts";
 
 const chatModel = Deno.env.get("AICORE_TEST_MODEL");
@@ -83,10 +83,18 @@ Deno.test({ name: "chat: stream, prefix reuse, cancel", ignore: !chatModel }, as
   const r5 = await chat.complete(greedy("Say OK.", 5));
   assert(r5.content.length > 0);
 
-  // Concurrent use of one session is rejected, not a crash.
-  const a = chat.complete(greedy("Say A.", 5));
+  // Concurrent use of one session is rejected, not a crash (or a deadlock).
+  const a = chat.complete(greedy("Say A.", 5), { onToken: () => {} });
   await assertRejects(() => chat.complete(greedy("Say B.", 5)), Error, "busy");
+  assertThrows(() => chat.reset(), Error, "while a request is running");
+  assertThrows(() => chat.free(), Error, "while a request is running");
   await a;
+  chat.reset(); // fine once idle
+
+  // A model can't be freed while a session is being created from it.
+  const pending = model.createChat();
+  assertThrows(() => model.free(), Error, "while a request is running");
+  (await pending).free();
 });
 
 Deno.test({ name: "chat: json_schema response_format", ignore: !chatModel }, async () => {

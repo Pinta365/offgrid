@@ -8,7 +8,6 @@ mod pool;
 
 use std::convert::Infallible;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -159,13 +158,30 @@ async fn get_model(State(state): State<Arc<AppState>>, Path(id): Path<String>) -
     if known { Json(model_entry(&state, &id)).into_response() } else { ApiError::not_found("model not found").into_response() }
 }
 
-/// Set when the client goes away (handler future dropped), checked by the generation
-/// callback. Per request, so a late disconnect can't cancel the session's next request.
-struct ClientGone(Arc<AtomicBool>);
+/// Cancels its request when dropped: the client went away (handler future or SSE body
+/// stream dropped). Request-scoped, so firing after the request finished is a no-op and
+/// can't affect the session's next request. Aborts prompt processing too.
+struct CancelOnDrop(aicore::RequestCancel);
 
-impl Drop for ClientGone {
+impl Drop for CancelOnDrop {
     fn drop(&mut self) {
-        self.0.store(true, Ordering::Relaxed);
+        self.0.cancel();
+    }
+}
+
+/// SSE body stream that cancels its request when the client disconnects.
+struct CancellingStream<S> {
+    inner: S,
+    _cancel: CancelOnDrop,
+}
+
+impl<S: futures_util::Stream + Unpin> futures_util::Stream for CancellingStream<S> {
+    type Item = S::Item;
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        std::pin::Pin::new(&mut self.inner).poll_next(cx)
     }
 }
 
@@ -205,6 +221,8 @@ async fn chat_completions(
     let meta = openai::Meta::new(model_id);
     let lease = pool.acquire().await;
 
+    let cancel = CancelOnDrop(lease.next_request_cancel());
+
     if stream {
         let (tx, rx) = mpsc::channel::<Result<Event, Infallible>>(64);
         tokio::task::spawn_blocking(move || {
@@ -238,15 +256,11 @@ async fn chat_completions(
             }
             let _ = tx.blocking_send(Ok(Event::default().data("[DONE]")));
         });
-        Sse::new(ReceiverStream::new(rx)).keep_alive(KeepAlive::default()).into_response()
+        let body = CancellingStream { inner: ReceiverStream::new(rx), _cancel: cancel };
+        Sse::new(body).keep_alive(KeepAlive::default()).into_response()
     } else {
-        let gone = Arc::new(AtomicBool::new(false));
-        let _guard = ClientGone(gone.clone());
-        let joined = tokio::task::spawn_blocking(move || {
-            
-            lease.session().complete_stream(&req, |_| !gone.load(Ordering::Relaxed))
-        })
-        .await;
+        let _cancel = cancel; // dropped with this future if the client disconnects
+        let joined = tokio::task::spawn_blocking(move || lease.session().complete_stream(&req, |_| true)).await;
         match joined {
             Ok(Ok(resp)) => Json(meta.completion(&resp)).into_response(),
             Ok(Err(e)) => ApiError::from_core(e).into_response(),

@@ -63,44 +63,27 @@ pub(crate) fn tool_call_start_marker(format: ToolFormat) -> Option<&'static str>
     }
 }
 
-/// Extract an optional leading reasoning block.
-///
-/// Accepts the common `<thinking>...</thinking>` and `<think>...</think>` forms,
-/// plus the `<response>` variant seen in some templates.
+/// Split off a reasoning block, using the same rule as the stream filter
+/// (`text::StreamFilter`) so streamed and final output agree:
+/// - the reply starts (after whitespace) with `<think>`: up to `</think>` is reasoning;
+///   if it never closes (cut off), all of it is reasoning;
+/// - the prompt already opened `<think>`: up to `</think>` is reasoning, or everything if
+///   it never closes;
+/// - otherwise there is no reasoning; a `<think>` later in the text is ordinary content.
 pub(crate) fn split_reasoning(text: &str, think_open_in_prompt: bool) -> (Option<String>, String) {
-    const OPENS: [&str; 2] = ["\x3cthinking\x3e", "\x3cthink\x3e"];
-    const CLOSES: [&str; 3] = ["\x3c/thinking\x3e", "\x3c/think\x3e", "\x3c/response\x3e"];
-
-    fn earliest(s: &str, pats: &[&str]) -> Option<(usize, usize)> {
-        let mut best: Option<(usize, usize)> = None;
-        for p in pats {
-            if let Some(i) = s.find(p) {
-                if best.is_none_or(|(bi, _)| i < bi) {
-                    best = Some((i, p.len()));
-                }
-            }
-        }
-        best
+    const OPEN: &str = "<think>";
+    const CLOSE: &str = "</think>";
+    let body = if think_open_in_prompt {
+        text
+    } else if let Some(rest) = text.trim_start().strip_prefix(OPEN) {
+        rest
+    } else {
+        return (None, text.to_string());
+    };
+    match body.find(CLOSE) {
+        Some(i) => (Some(body[..i].trim().to_string()), body[i + CLOSE.len()..].trim_start().to_string()),
+        None => (Some(body.trim().to_string()), String::new()),
     }
-
-    if let Some((op, olen)) = earliest(text, &OPENS) {
-        let after = &text[op + olen..];
-        if let Some((cp, clen)) = earliest(after, &CLOSES) {
-            let reasoning = after[..cp].trim().to_string();
-            let rest = after[cp + clen..].trim_start().to_string();
-            return (Some(reasoning), rest);
-        }
-        // Unclosed reasoning block: generation was cut off.
-        return (Some(after.trim().to_string()), String::new());
-    }
-    if think_open_in_prompt {
-        if let Some((cp, clen)) = earliest(text, &CLOSES) {
-            let reasoning = text[..cp].trim().to_string();
-            let rest = text[cp + clen..].trim_start().to_string();
-            return (Some(reasoning), rest);
-        }
-    }
-    (None, text.to_string())
 }
 
 /// Parse a model output: reasoning split first, then tool calls from the rest.
@@ -651,17 +634,26 @@ mod tests {
     // --- Reasoning -----------------------------------------------------------
 
     #[test]
-    fn reasoning_closed_block() {
-        let (r, rest) = split_reasoning("\x3cthinking\x3elet me see</think>The answer is 4.", false);
+    fn reasoning_leading_block() {
+        let (r, rest) = split_reasoning("\n<think>\nlet me see\n</think>\n\nThe answer is 4.", false);
         assert_eq!(r.as_deref(), Some("let me see"));
         assert_eq!(rest, "The answer is 4.");
     }
 
     #[test]
-    fn reasoning_unclosed_block() {
-        let (r, rest) = split_reasoning("pre text \x3cthinking\x3epartial reasoning", false);
+    fn reasoning_unclosed_leading_block() {
+        let (r, rest) = split_reasoning("<think>partial reasoning", false);
         assert_eq!(r.as_deref(), Some("partial reasoning"));
         assert_eq!(rest, "");
+    }
+
+    #[test]
+    fn think_tag_mid_text_is_content() {
+        // A reply that merely mentions the tag must not be swallowed as reasoning.
+        let text = "Wrap it in a <think> tag like this, and close it later.";
+        assert_eq!(split_reasoning(text, false), (None, text.to_string()));
+        let text = "Sure. <think>not reasoning</think> done";
+        assert_eq!(split_reasoning(text, false), (None, text.to_string()));
     }
 
     #[test]
@@ -669,6 +661,9 @@ mod tests {
         let (r, rest) = split_reasoning("hidden chain</think>visible", true);
         assert_eq!(r.as_deref(), Some("hidden chain"));
         assert_eq!(rest, "visible");
+        // Opened by the prompt and cut off: all reasoning (matches the stream filter).
+        let (r, rest) = split_reasoning("still thinking", true);
+        assert_eq!((r.as_deref(), rest.as_str()), (Some("still thinking"), ""));
         let (r2, rest2) = split_reasoning("hidden chain</think>visible", false);
         assert_eq!(r2, None);
         assert_eq!(rest2, "hidden chain</think>visible");
@@ -683,7 +678,7 @@ mod tests {
 
     #[test]
     fn parse_output_combines_reasoning_and_calls() {
-        let text = "\x3cthinking\x3eneed weather</think>Sure!<tool_call>{\"name\":\"w\",\"arguments\":{\"city\":\"Rome\"}}</tool_call>";
+        let text = "<think>need weather</think>Sure!<tool_call>{\"name\":\"w\",\"arguments\":{\"city\":\"Rome\"}}</tool_call>";
         let p = parse_output(ToolFormat::Hermes, text, false);
         assert_eq!(p.reasoning.as_deref(), Some("need weather"));
         assert_eq!(p.content, "Sure!");
