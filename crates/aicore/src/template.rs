@@ -78,7 +78,9 @@ fn rewrite_hf_extensions(src: &str) -> String {
     let mut out = String::with_capacity(src.len());
     let mut rest = src;
     while let Some(start) = rest.find("{%") {
-        let Some(len) = rest[start..].find("%}") else { break };
+        // Search for the closing "%}" after the opening "{%" (they must not overlap: "{%}").
+        let Some(close) = rest[start + 2..].find("%}") else { break };
+        let len = close + 2;
         let tag = &rest[start..start + len + 2];
         let inner = &tag[2..tag.len() - 2];
         let (lead, trail) = (inner.starts_with('-'), inner.ends_with('-'));
@@ -337,6 +339,15 @@ mod tests {
         )
         .unwrap();
         assert_eq!(out, "False True False True False");
+    }
+
+    #[test]
+    fn malformed_tags_do_not_panic() {
+        for src in ["{%}", "{%%}", "a{%", "{% generation", "{%-}", "%}{%"] {
+            let _ = rewrite_hf_extensions(src);
+            let _ = ChatTemplate::new(src); // error or Ok, never a panic
+        }
+        assert_eq!(rewrite_hf_extensions("{%}x"), "{%}x");
     }
 
     #[test]
