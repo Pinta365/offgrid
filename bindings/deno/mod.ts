@@ -482,9 +482,18 @@ export async function imagePart(image: Uint8Array | string): Promise<ContentPart
  */
 export async function audioPart(audio: Uint8Array | string): Promise<ContentPart> {
   const bytes = typeof audio === "string" ? await Deno.readFile(audio) : audio;
-  const head = new TextDecoder().decode(bytes.subarray(0, 4));
-  const format = head === "fLaC" ? "flac" : head === "RIFF" ? "wav" : "mp3";
+  const format = audioFormat(bytes);
+  if (!format) throw new AiCoreError("audioPart: data is not WAV, MP3 or FLAC");
   return { type: "input_audio", input_audio: { data: toBase64(bytes), format } };
+}
+
+/** Container from magic bytes; same rules as the native library (and llama.cpp mtmd). */
+function audioFormat(b: Uint8Array): "wav" | "mp3" | "flac" | null {
+  const ascii = (from: number, to: number) => String.fromCharCode(...b.subarray(from, to));
+  if (b.length >= 12 && ascii(0, 4) === "RIFF" && ascii(8, 12) === "WAVE") return "wav";
+  if (ascii(0, 4) === "fLaC") return "flac";
+  if (ascii(0, 3) === "ID3" || (b[0] === 0xff && (b[1] & 0xe0) === 0xe0)) return "mp3";
+  return null;
 }
 
 function toBase64(bytes: Uint8Array): string {

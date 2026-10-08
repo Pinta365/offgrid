@@ -351,3 +351,31 @@ async fn audio_over_http() {
     let r = reqwest::Client::new().post(format!("{url}/v1/chat/completions")).json(&bad).send().await.unwrap();
     assert_eq!(r.status(), 400);
 }
+
+#[tokio::test]
+async fn large_bodies_and_body_errors() {
+    let Ok(model) = std::env::var("AICORE_TEST_MODEL") else { return };
+    let url = spawn(ServerConfig { model: Some(model.into()), parallel: 1, max_body_bytes: 8 << 20, ..Default::default() });
+    // 5 MB body (over axum's 2 MB default, under our 8 MB limit) reaches the handler.
+    let filler = "x".repeat(5 << 20);
+    let body = json!({"max_tokens": 1, "messages": [{"role": "user", "content": "hi"}], "pad": filler});
+    let r = reqwest::Client::new().post(format!("{url}/v1/chat/completions")).json(&body).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+    // Over the limit: 413 with an OpenAI-style JSON error.
+    let huge = json!({"messages": [{"role": "user", "content": "hi"}], "pad": "x".repeat(9 << 20)});
+    let r = reqwest::Client::new().post(format!("{url}/v1/chat/completions")).json(&huge).send().await.unwrap();
+    assert_eq!(r.status(), 413);
+    let e: Value = r.json().await.unwrap();
+    assert_eq!(e["error"]["type"], "request_too_large");
+    // Malformed embeddings JSON: JSON error, not plain text.
+    let r = reqwest::Client::new()
+        .post(format!("{url}/v1/embeddings"))
+        .header("content-type", "application/json")
+        .body("{nope")
+        .send()
+        .await
+        .unwrap();
+    assert!(r.status().is_client_error());
+    let e: Value = r.json().await.unwrap();
+    assert!(e["error"]["message"].is_string());
+}

@@ -47,6 +47,9 @@ struct Args {
     /// CPU threads (default: half the hardware threads).
     #[arg(long)]
     threads: Option<i32>,
+    /// Max request body size in MiB (base64 images/audio are large).
+    #[arg(long, default_value_t = 64)]
+    max_body_mb: usize,
     /// Require `Authorization: Bearer <key>`.
     #[arg(long, env = "AICORE_API_KEY", hide_env_values = true)]
     api_key: Option<String>,
@@ -70,6 +73,7 @@ fn main() {
         session: SessionParams { n_ctx: args.ctx, n_threads: args.threads, ..Default::default() },
         parallel: args.parallel,
         api_key: args.api_key,
+        max_body_bytes: args.max_body_mb << 20,
     };
     let addr: SocketAddr = match format!("{}:{}", args.host, args.port).parse() {
         Ok(a) => a,

@@ -101,7 +101,10 @@ impl TryFrom<WireMessage> for ChatMessage {
                         }
                         Some("input_audio") => {
                             let data = part.pointer("/input_audio/data").and_then(|d| d.as_str()).ok_or("input_audio part without data")?;
-                            let format = part.pointer("/input_audio/format").and_then(|f| f.as_str()).unwrap_or("wav");
+                            let format = part
+                                .pointer("/input_audio/format")
+                                .and_then(|f| f.as_str())
+                                .ok_or("input_audio part without format (wav, mp3 or flac)")?;
                             media.push(Media::from_input_audio(data, format).map_err(|e| e.to_string())?);
                             texts.push(media_marker().to_string());
                         }
@@ -186,12 +189,16 @@ impl ChatMessage {
         let markers: String = media.iter().map(|_| format!("{}\n", media_marker())).collect();
         Self { media, ..Self::new("user", format!("{markers}{}", text.into())) }
     }
-    /// A user message with images (each placed before the text).
+    /// A user message with images (each placed before the text). Same as
+    /// [`Self::user_with_media`]; debug builds assert every item is an image.
     pub fn user_with_images(text: impl Into<String>, images: Vec<Media>) -> Self {
+        debug_assert!(images.iter().all(|m| m.kind == MediaKind::Image), "user_with_images given non-image media");
         Self::user_with_media(text, images)
     }
-    /// A user message with audio clips (each placed before the text).
+    /// A user message with audio clips (each placed before the text). Same as
+    /// [`Self::user_with_media`]; debug builds assert every item is audio.
     pub fn user_with_audio(text: impl Into<String>, audio: Vec<Media>) -> Self {
+        debug_assert!(audio.iter().all(|m| m.kind == MediaKind::Audio), "user_with_audio given non-audio media");
         Self::user_with_media(text, audio)
     }
     /// Result of a tool call, answering `call`.

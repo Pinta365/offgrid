@@ -45,9 +45,15 @@ pub struct ServerConfig {
     pub parallel: usize,
     /// Require `Authorization: Bearer <key>` on /v1/*.
     pub api_key: Option<String>,
+    /// Max request body in bytes (base64 images/audio are large). 0 = default (64 MiB).
+    pub max_body_bytes: usize,
 }
 
+/// Default request size limit: room for base64-encoded photos and minutes of audio.
+pub const DEFAULT_MAX_BODY_BYTES: usize = 64 << 20;
+
 pub struct AppState {
+    max_body_bytes: usize,
     chat: Option<(String, Arc<ChatPool>)>,
     embed: Option<(String, Arc<Mutex<Embedder>>)>,
     api_key: Option<String>,
@@ -86,7 +92,13 @@ impl AppState {
         if chat.is_none() && embed.is_none() {
             return Err(aicore::Error::InvalidArgument("no model configured (--model / --embedding-model)".into()));
         }
-        Ok(Arc::new(Self { chat, embed, api_key: config.api_key.clone().filter(|k| !k.is_empty()), created: now() }))
+        Ok(Arc::new(Self {
+            max_body_bytes: if config.max_body_bytes == 0 { DEFAULT_MAX_BODY_BYTES } else { config.max_body_bytes },
+            chat,
+            embed,
+            api_key: config.api_key.clone().filter(|k| !k.is_empty()),
+            created: now(),
+        }))
     }
 
     /// Cancel all running generations (for shutdown).
@@ -103,7 +115,9 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/embeddings", post(embeddings))
         .route("/models", get(list_models))
         .route("/models/{id}", get(get_model))
-        .layer(middleware::from_fn_with_state(state.clone(), auth));
+        .layer(middleware::from_fn_with_state(state.clone(), auth))
+        // axum's default is 2 MB, too small for base64 media.
+        .layer(axum::extract::DefaultBodyLimit::max(state.max_body_bytes));
     Router::new()
         .route("/health", get(|| async { Json(json!({"status": "ok"})) }))
         .nest("/v1", v1)
@@ -155,7 +169,20 @@ impl Drop for ClientGone {
     }
 }
 
-async fn chat_completions(State(state): State<Arc<AppState>>, body: axum::body::Bytes) -> Response {
+/// Body rejections (too large, unreadable) as OpenAI-style errors instead of plain text.
+fn body_error(status: StatusCode, detail: String) -> Response {
+    let kind = if status == StatusCode::PAYLOAD_TOO_LARGE { "request_too_large" } else { "invalid_request_error" };
+    ApiError::new(status, kind, detail).into_response()
+}
+
+async fn chat_completions(
+    State(state): State<Arc<AppState>>,
+    body: Result<axum::body::Bytes, axum::extract::rejection::BytesRejection>,
+) -> Response {
+    let body = match body {
+        Ok(b) => b,
+        Err(e) => return body_error(e.status(), e.body_text()),
+    };
     let Some((model_id, pool)) = state.chat.clone() else {
         return ApiError::bad_request("no chat model loaded").into_response();
     };
@@ -228,7 +255,14 @@ async fn chat_completions(State(state): State<Arc<AppState>>, body: axum::body::
     }
 }
 
-async fn embeddings(State(state): State<Arc<AppState>>, Json(body): Json<Value>) -> Response {
+async fn embeddings(
+    State(state): State<Arc<AppState>>,
+    body: Result<Json<Value>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    let body = match body {
+        Ok(Json(b)) => b,
+        Err(e) => return body_error(e.status(), e.body_text()),
+    };
     let Some((model_id, embedder)) = state.embed.clone() else {
         return ApiError::bad_request("no embedding model loaded (--embedding-model)").into_response();
     };

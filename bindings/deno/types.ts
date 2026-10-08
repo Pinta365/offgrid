@@ -42,7 +42,10 @@ export interface SamplingParams {
 /** Usually "system" | "user" | "assistant"; templates may accept others. */
 export type Role = string;
 
-/** OpenAI content parts. Images must be `data:` URLs (see `imagePart` / `audioPart`). */
+/**
+ * OpenAI content parts. Images: `image_url` with a `data:` URL (see `imagePart`); audio:
+ * `input_audio` with base64 data and its format (see `audioPart`). Remote URLs are refused.
+ */
 export type ContentPart =
   | { type: "text"; text: string }
   | { type: "image_url"; image_url: { url: string } }

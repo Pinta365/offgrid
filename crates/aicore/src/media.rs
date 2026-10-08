@@ -64,12 +64,17 @@ impl Media {
     }
 
     /// Parse an OpenAI `input_audio` part: base64 `data` in `format` (`wav`, `mp3`, `flac`).
+    /// The data must actually be in the declared format.
     pub fn from_input_audio(data: &str, format: &str) -> Result<Self> {
         if !matches!(format, "wav" | "mp3" | "flac") {
             return Err(Error::InvalidArgument(format!("unsupported audio format '{format}' (wav, mp3, flac)")));
         }
         let bytes = base64_decode(data).ok_or_else(|| Error::InvalidArgument("invalid base64 in input_audio".into()))?;
-        Ok(Self::audio(bytes))
+        match audio_format(&bytes) {
+            Some(detected) if detected == format => Ok(Self::audio(bytes)),
+            Some(detected) => Err(Error::InvalidArgument(format!("input_audio declared '{format}' but the data is {detected}"))),
+            None => Err(Error::InvalidArgument(format!("input_audio data is not {format}"))),
+        }
     }
 
     /// Image as a `data:` URL (mime type guessed from magic bytes).
@@ -90,12 +95,15 @@ impl Media {
     }
 }
 
-/// Audio container from magic bytes.
+/// Audio container from magic bytes (same rules as mtmd's `is_audio_file`, so our
+/// declared kind agrees with how mtmd decodes the data).
 fn audio_format(data: &[u8]) -> Option<&'static str> {
     match data {
         [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'A', b'V', b'E', ..] => Some("wav"),
         [b'f', b'L', b'a', b'C', ..] => Some("flac"),
-        [b'I', b'D', b'3', ..] | [0xFF, 0xFB | 0xF3 | 0xF2, ..] => Some("mp3"),
+        // ID3 tag, or an MPEG frame sync (11 set bits: any MPEG version / layer / CRC flag).
+        [b'I', b'D', b'3', ..] => Some("mp3"),
+        [0xFF, b1, _, ..] if b1 & 0xE0 == 0xE0 => Some("mp3"),
         _ => None,
     }
 }
@@ -246,6 +254,9 @@ impl Chunks {
     pub fn segments(&self) -> Vec<Segment> {
         use std::sync::atomic::{AtomicU64, Ordering};
         static UNHASHED: AtomicU64 = AtomicU64::new(0);
+        // mtmd splits long audio into several chunks that share the clip's hash; number
+        // repeated ids so each chunk has a distinct cache identity (deterministic per prompt).
+        let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
         let n = unsafe { sys::mtmd_input_chunks_size(self.0.as_ptr()) };
         (0..n)
             .map(|i| unsafe {
@@ -260,7 +271,10 @@ impl Chunks {
                         // No content hash: never matches a cached entry.
                         format!("unhashed-{}", UNHASHED.fetch_add(1, Ordering::Relaxed))
                     } else {
-                        CStr::from_ptr(id_ptr).to_string_lossy().into_owned()
+                        let hash = CStr::from_ptr(id_ptr).to_string_lossy().into_owned();
+                        let k = seen.entry(hash.clone()).or_insert(0);
+                        *k += 1;
+                        format!("{hash}#{k}")
                     };
                     Segment::Media(MediaChunk {
                         ptr: chunk,
@@ -356,5 +370,13 @@ mod tests {
         assert_eq!(audio_format(b"fLaC...."), Some("flac"));
         assert_eq!(audio_format(b"ID3\x04"), Some("mp3"));
         assert_eq!(audio_format(&[0x89, b'P', b'N', b'G']), None);
+        // Frame syncs mtmd accepts: MPEG-1 L3 with/without CRC, MPEG-2, MPEG-2.5.
+        for b1 in [0xFB, 0xFA, 0xF3, 0xF2, 0xE3] {
+            assert_eq!(audio_format(&[0xFF, b1, 0x90, 0x00]), Some("mp3"), "{b1:#x}");
+        }
+        assert_eq!(audio_format(&[0xFF, 0xD8, 0xFF, 0xE0]), None, "JPEG is not mp3");
+        // Declared format must match the data.
+        assert!(Media::from_input_audio(&b64, "mp3").is_err());
+        assert!(Media::from_input_audio(&base64_encode(b"not audio at all"), "wav").is_err());
     }
 }

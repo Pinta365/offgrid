@@ -94,7 +94,8 @@ pub extern "C" fn aicore_devices_json() -> *mut c_char {
 // ---------------------------------------------------------------- model
 
 /// Load a GGUF model. `params_json` (nullable): `{"gpu_layers":"all"|"none"|{"count":N},"devices":["Vulkan0"],
-/// "mmproj":"/path/mmproj.gguf"}` (`mmproj` = vision projector, enables image input).
+/// "mmproj":"/path/mmproj.gguf"}` (`mmproj` = multimodal projector: enables image and/or audio
+/// input, see `"vision"` / `"audio"` in [`aicore_model_info_json`]).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn aicore_model_load(
     path: *const c_char,
@@ -110,7 +111,7 @@ pub unsafe extern "C" fn aicore_model_load(
     })
 }
 
-/// Model metadata as JSON.
+/// Model metadata as JSON (name, size, context, chat template, `vision` / `audio` support).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn aicore_model_info_json(model: *const AicoreModel) -> *mut c_char {
     guard(std::ptr::null_mut(), std::ptr::null_mut(), || json_out(&handle(model, "model")?.0.info()))
@@ -152,9 +153,10 @@ pub unsafe extern "C" fn aicore_chat_new(
 /// and `"finish_reason":"tool_calls"`. Send results back as `{"role":"tool","tool_call_id":...,
 /// "content":"..."}` after the assistant message (with its `tool_calls`). The callback streams
 /// reply text only (no reasoning / tool-call markup); `reasoning_content` is in the response.
-/// Images: message `content` as OpenAI parts, `[{"type":"text","text":"..."},
-/// {"type":"image_url","image_url":{"url":"data:image/png;base64,..."}}]` (data: URLs only;
-/// needs a model loaded with `mmproj`).
+/// Images / audio: message `content` as OpenAI parts, `[{"type":"text","text":"..."},
+/// {"type":"image_url","image_url":{"url":"data:image/png;base64,..."}},
+/// {"type":"input_audio","input_audio":{"data":"<base64>","format":"wav"|"mp3"|"flac"}}]`
+/// (images as data: URLs only; needs a model loaded with a matching `mmproj`).
 /// Structured output: `"response_format":{"type":"json_object"}` or
 /// `{"type":"json_schema","json_schema":{"schema":{...}}}`. Template: `"chat_template"`
 /// (Jinja text or built-in name) and `"chat_template_kwargs":{...}`.
