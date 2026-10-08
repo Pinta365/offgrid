@@ -1,199 +1,295 @@
-# aicore — embeddable offline AI
+# aicore: embeddable offline AI
 
-A small native library that gives any application local, offline LLM chat and
-embeddings. No daemon, no Docker, no network: link a library, ship a GGUF model.
+aicore is a small native library that adds local, offline AI to an application: chat, tool
+calling, structured JSON output, embeddings, and image and audio input. You link a library,
+ship a GGUF model next to your app, and that's it. No daemon, no Docker, no cloud, and no
+network access at runtime.
 
-Built in Rust on top of [llama.cpp](https://github.com/ggml-org/llama.cpp)
-(statically linked, Vulkan GPU backend + CPU fallback).
+It is written in Rust on top of [llama.cpp](https://github.com/ggml-org/llama.cpp). It runs
+on any GPU through Vulkan, falls back to the CPU automatically, and is packaged for Linux and
+Windows.
 
 ```
-   Rust/Tauri ──── aicore crate ─────┐
-   C / C++ ───┐                      │
-   Deno ──────┼── C ABI (libaicore) ─┤
-   Python/Go/C# ┘   JSON in/out      │
-                              aicore (safe Rust API)
-                                     │
-                         aicore-sys ─ llama.cpp (vendor/, pinned)
-                                     └─ Vulkan · CPU · (CUDA)
+  Rust / Tauri ─────── aicore crate ───────────┐
+  C / C++ ────────┐                            │
+  Deno ───────────┼── C ABI: libaicore ────────┤   JSON in/out, streaming callbacks
+  Python / Go / C#┘   (aicore.h)               │
+  any HTTP client ─── aicore-server ───────────┤   OpenAI-compatible API (optional sidecar)
+                                               │
+                                  aicore  (safe Rust core)
+                   sessions · KV-cache reuse · templates · grammars · tools · media
+                                               │
+                     aicore-sys ── llama.cpp + mtmd (vendor/, pinned commit)
+                                   └─ backends loaded at runtime:
+                                      Vulkan · 14 CPU variants · (CUDA)
 ```
 
-## Sidecar server (OpenAI-compatible)
+## What it does
 
-For apps that would rather talk HTTP than link a library, or several apps sharing one
-loaded model: `aicore-server` (in `bin/` of both packages).
+| Capability | Details |
+|---|---|
+| **Chat** | Streaming generation with stop strings, token limits, sampling options and seeds. Requests follow the OpenAI format and are stateless; the session reuses the matching prefix of its KV cache, so follow-up turns only process new tokens. |
+| **Chat templates** | Each model's own Jinja template (stored in the GGUF) is rendered with minijinja the way Hugging Face does it. 69 of the 72 real-world templates in llama.cpp's test corpus render; the other 3 refuse by design (for example, Gemma 2 has no system role). If a template can't be used, llama.cpp's built-in formats are the fallback. |
+| **Structured output** | OpenAI `response_format` (`json_object` or `json_schema`) is compiled into a llama.cpp grammar, so the output is valid by construction. The converter handles objects, arrays, enums, `anyOf` / `oneOf` / `allOf`, `$ref` / `$defs`, and string formats, patterns and lengths. Properties are generated in the order they are declared. |
+| **Tool calling** | OpenAI `tools`, `tool_choice` and `parallel_tool_calls`. Tool calls are parsed from the model's native format: Hermes/Qwen, Llama 3.x, Mistral, Qwen3-Coder XML, or generic JSON. A grammar keeps the arguments valid against each tool's schema. Loop helpers (`run_tools`, `runTools`) handle the call, execute and feed-back cycle. |
+| **Reasoning** | Thinking models' `<think>` blocks are separated into `reasoning_content` and streamed as their own events. |
+| **Vision and audio** | Images (PNG, JPEG, …) and audio (WAV, MP3, FLAC) are sent as OpenAI content parts. Several items per message and mixed image and audio both work. Encoded media is reused across turns from the KV cache and is not decoded again. |
+| **Embeddings** | Batched and L2-normalized, with float or base64 output. |
+| **Cancellation** | Requests can be cancelled from any thread. Cancellation is scoped to one request and never affects a later one. |
+| **Server** | `aicore-server`: OpenAI-compatible HTTP with SSE streaming, a session pool, cancellation when the client disconnects, an optional API key, and graceful shutdown. |
+
+## Using it
+
+### Rust (or Tauri)
+
+```rust
+use aicore::*;
+
+let model = Model::load("qwen3-4b.gguf", &ModelParams::default())?;
+let mut chat = ChatSession::new(model, &SessionParams::default())?;
+
+let req = ChatRequest::new(vec![ChatMessage::user("Name three rivers.")]);
+let resp = chat.complete(&req, |piece| { print!("{piece}"); true })?;   // return false to cancel
+println!("\n{:?} {:?}", resp.finish_reason, resp.usage);
+```
+
+Images or audio need the model's projector:
+
+```rust
+let model = Model::load("qwen2.5-vl-3b.gguf", &ModelParams { mmproj: Some("mmproj.gguf".into()), ..Default::default() })?;
+let msg = ChatMessage::user_with_media("What's in this picture?", vec![Media::from_path("photo.jpg")?]);
+```
+
+The main entry points are `ChatSession::complete_stream` (content, reasoning and tool-call
+events), `run_tools` (the tool loop) and `Embedder::embed`. See `crates/aicore/examples/`.
+
+### C / C++ (and anything with a C FFI)
+
+`include/aicore.h` exposes 22 functions. Requests and results are JSON in the OpenAI format,
+so new features don't change the ABI.
+
+```c
+char *err = NULL;
+aicore_model *m = aicore_model_load("qwen3-4b.gguf", NULL, &err);
+aicore_chat  *c = aicore_chat_new(m, NULL, &err);
+char *resp = aicore_chat_complete(c,
+    "{\"messages\":[{\"role\":\"user\",\"content\":\"Hi!\"}],\"max_tokens\":100}",
+    on_token, NULL, &err);          /* bool on_token(const char *piece, size_t len, void *user) */
+/* ... */
+aicore_string_free(resp); aicore_chat_free(c); aicore_model_free(m);
+```
+
+Conventions:
+- Fallible functions take a trailing `char **error_out`.
+- Returned strings belong to the caller and are freed with `aicore_string_free`.
+- Panics never cross the FFI boundary.
+- `aicore_chat_cancel` and `aicore_chat_cancel_request` are safe to call from any thread.
+
+ABI version: `aicore_abi_version()` (currently 1). Examples are in `examples/c/`.
+
+### Deno
+
+```ts
+import { AiCore, imagePart } from "./bindings/deno/mod.ts";
+
+using core = AiCore.open();                       // finds libaicore next to the repo, or $AICORE_LIB
+using model = await core.loadModel("qwen3-4b.gguf");
+using chat = await model.createChat();
+
+const res = await chat.complete(
+  { messages: [{ role: "user", content: "Hi!" }] },
+  { onToken: (t) => Deno.stdout.writeSync(new TextEncoder().encode(t)), signal: AbortSignal.timeout(30_000) },
+);
+```
+
+Calls are nonblocking, so the event loop keeps running. The binding also offers:
+- streaming through `onToken` and `onReasoning`, or as an async iterator with `chat.stream()`
+- the tool loop `chat.runTools(request, handlers)`
+- `imagePart()` and `audioPart()` helpers
+- `Disposable` handles that guard against freeing while a call is in flight
+
+Examples are in `examples/deno/`.
+
+### HTTP (any language): `aicore-server`
 
 ```sh
-bin/aicore-server --model qwen3-4b.gguf --embedding-model embed.gguf --port 8080 \
-                  [--mmproj mmproj.gguf] [--parallel 2] [--ctx 8192] [--api-key KEY] [--alias qwen3-4b]
+bin/aicore-server --model qwen3-4b.gguf [--embedding-model embed.gguf] [--mmproj mmproj.gguf] \
+                  [--port 8080] [--parallel 2] [--ctx 8192] [--api-key KEY]
 ```
 
-Point any OpenAI client at `http://127.0.0.1:8080/v1`:
+Point any OpenAI client at `http://127.0.0.1:8080/v1`. The server provides:
+- `POST /v1/chat/completions`, with or without SSE streaming, including
+  `delta.reasoning_content` and `delta.tool_calls`
+- `POST /v1/embeddings`
+- `GET /v1/models` and `GET /health`
 
-- `POST /v1/chat/completions` — non-stream and SSE `stream: true` (with
-  `stream_options.include_usage`); `delta.reasoning_content` for thinking models,
-  `delta.tool_calls` for calls; `tools`/`tool_choice`, `response_format`, `stop`, `seed`,
-  sampling params, `chat_template_kwargs` (e.g. `{"enable_thinking": false}`).
-- `POST /v1/embeddings` — `float` or `base64` (the OpenAI SDKs' default).
-- `GET /v1/models`, `GET /v1/models/{id}`, `GET /health`.
-- `--parallel N` sessions (requests beyond N queue; the last-used session is reused to
-  keep a client's KV-cache prefix). A client disconnect cancels its generation.
-- Binds `127.0.0.1` by default; `--api-key` (or `AICORE_API_KEY`) requires a Bearer token.
-- Verified with the official `openai` npm SDK: `scripts/openai-compat.ts` (9 checks).
+Compatibility has been checked with the official `openai` npm SDK (`scripts/openai-compat.ts`).
+The server binds to localhost by default; use `--api-key` before exposing it.
 
-## Layout
+## Tested models
 
-| Path | What |
-|---|---|
-| `crates/aicore-sys` | Raw bindgen bindings; builds `vendor/llama.cpp` statically with CMake |
-| `crates/aicore` | Safe Rust API: `Model`, `ChatSession`, `Embedder`, `devices()` |
-| `crates/aicore-ffi` | C ABI → `libaicore.so` / `aicore.dll` / `libaicore.a`, header in `include/aicore.h` |
-| `crates/aicore-server` | OpenAI-compatible HTTP sidecar (`aicore-server`) |
-| `bindings/deno` | Deno FFI bindings (async, streaming, AbortSignal) |
-| `examples/c`, `examples/deno` | Runnable examples |
-| `spike/` | Phase 0 notes and benchmarks |
+Every model below was exercised end to end by the test suites on an RX 9070 XT (Vulkan).
 
-## Quick start
+| Model | Used for | Notes |
+|---|---|---|
+| Qwen3-4B-Instruct-2507 Q4_K_M | Chat, JSON schema, tools, server | Reference model; all tool-calling scenarios pass |
+| Llama-3.2-3B-Instruct Q4_K_M | Llama 3 tool format | Formats calls correctly but judges poorly when to call tools (llama-server behaves the same) |
+| Qwen3-0.6B Q8_0 | Reasoning streaming | Use temperature 0.6 in thinking mode; greedy decoding loops |
+| Qwen3-Embedding-0.6B Q8_0 | Embeddings | |
+| Qwen2.5-VL-3B + mmproj | Vision (M-RoPE) | Colors, counting, OCR, JPEG, multiple images |
+| Gemma 3 4B + mmproj | Vision | |
+| Qwen2.5-Omni-3B + mmproj | Audio and vision | Word-perfect transcription from WAV, MP3 and FLAC |
+| Ultravox 0.5 (Llama 3.2 1B) + mmproj | Audio | |
 
-Requirements (Linux): Rust, cmake, ninja, a C++ compiler, Vulkan headers + `glslc`
-(`omarchy pkg add cmake ninja vulkan-headers spirv-headers shaderc`). Then:
+Performance with Qwen3-4B Q4_K_M:
+
+| Hardware | Prompt processing | Generation |
+|---|---|---|
+| RX 9070 XT (Vulkan) | ~5,000 tokens/s | ~150–175 tokens/s |
+| Ryzen 7 9800X3D (CPU) | ~300 tokens/s | ~21 tokens/s |
+
+## Platforms and packaging
+
+| Platform | Status | Package |
+|---|---|---|
+| Linux x86_64 | Tested | `scripts/package-linux.sh` → `aicore-<ver>-linux-x86_64.tar.gz` (~25 MB) |
+| Windows x86_64 | Cross-compiled; passes static checks; **not yet run on Windows** | `scripts/package-windows.sh` → `.zip` (~31 MB) |
+| macOS, ARM | Not attempted yet | |
+
+A package is a relocatable folder: `lib/` or `bin/` with `libaicore`, llama.cpp/ggml/mtmd and
+the backends, plus `include/aicore.h` and `aicore-server`. Keep the folder together.
+
+- **Runs on any x86_64 CPU.** It ships 14 CPU variants (from baseline x64 up to zen4 and
+  sapphirerapids), and the best one for the machine is chosen at load time.
+- **The GPU is optional.** Vulkan is a plugin module. Without a GPU, without a Vulkan driver,
+  or with the module deleted, the library falls back to the CPU.
+- **Linux: glibc 2.28.** That covers Ubuntu 20.04+, Debian 10+ and RHEL 8+. The build uses zig
+  (`cargo-zigbuild`) with a static C++ runtime. The only runtime dependencies are glibc and
+  libm, plus libvulkan for the GPU module. `$ORIGIN` RPATHs make the folder relocatable.
+- **Windows** is built from Linux with llvm-mingw.
+  - It depends only on Windows system DLLs, plus `vulkan-1.dll` from the GPU driver.
+  - `aicore.dll` delay-loads its dependencies from its own folder, so hosts such as Deno,
+    Python or C# can load it by path from anywhere.
+  - Import libraries are included for both MSVC and MinGW.
+
+`scripts/check-portable.sh` and `scripts/check-windows.sh` verify each package. The Linux
+checks:
+- every binary's dependencies resolve from inside the package
+- no system C++ runtime is needed
+- a relocated copy still works
+- the CPU fallback works
+- the packaged server and the Deno binding run against the package
+
+## Building from source
+
+Requirements:
+- Rust 1.88+
+- cmake, ninja and a C/C++ compiler
+- Vulkan headers and `glslc`, for example
+  `omarchy pkg add cmake ninja vulkan-headers spirv-headers shaderc` on Arch/Omarchy
 
 ```sh
 git submodule update --init
-cargo build --release -p aicore-ffi        # → target/release/libaicore.{so,a}
-
-# Rust
+cargo build --release -p aicore-ffi            # libaicore.{so,a} (static llama.cpp, dev build)
 cargo run --release -p aicore --example chat -- model.gguf
-# C
-make -C examples/c && examples/c/chat model.gguf "Hello"
-# Deno
-deno run --allow-ffi --allow-env --allow-read examples/deno/chat.ts model.gguf
-# Tool calling (Rust / Deno)
-cargo run --release -p aicore --example tools -- model.gguf "What's 1234 * 5678?"
-deno run --allow-ffi --allow-env --allow-read examples/deno/tools.ts model.gguf
 ```
 
-CPU-only build: add `--no-default-features`. CUDA: `--features cuda`.
+Features:
+- `--no-default-features`: CPU only
+- `--features cuda`: CUDA backend
+- `--features dynamic-backends`: the portable runtime-loaded layout used by the packages
 
-## Portable / distributable build
+For Windows you also need [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) in
+`~/.local/share` and `rustup target add x86_64-pc-windows-gnullvm`. The Linux package uses zig
+(`mise install zig@0.16.0`) and `cargo install cargo-zigbuild` when they are available.
 
-```sh
-scripts/package-linux.sh            # → dist/aicore-<ver>-linux-x86_64{/,.tar.gz}
-scripts/check-portable.sh dist/aicore-<ver>-linux-x86_64 model.gguf
-```
-
-Built with `--features dynamic-backends`: llama.cpp as shared libs with backends loaded
-at runtime from the library's own directory (`$AICORE_BACKEND_DIR` overrides):
-
-- 14 CPU variants (x64 → sse42 → … → zen4/sapphirerapids); the best for the running CPU is
-  picked at load time, so old CPUs work and new ones are fast.
-- Vulkan is an optional module: no GPU, no Vulkan driver, or the module deleted → CPU fallback.
-- libstdc++/libgcc are linked statically (symbols hidden); runtime deps are only glibc/libm
-  (+ libvulkan for the Vulkan module). All libs use `$ORIGIN` RPATH, so the folder is relocatable.
-- Ship the whole `lib/` folder; ~25 MB compressed (the Vulkan module is ~47 MB of shaders).
-
-**glibc baseline:** with `cargo-zigbuild` + zig available (used automatically; zig may come
-from `mise install zig@0.16.0`), the package targets **glibc 2.28** — Ubuntu 20.04+, Debian 10+,
-RHEL 8+ — using zig's static libc++. Override with `AICORE_GLIBC=2.31`, or force the host
-toolchain with `AICORE_TOOLCHAIN=host` (then the build host's glibc is required).
-Measured: zig and host builds run at the same speed (GPU prompt ~5,000 tok/s, generation
-~150 tok/s; CPU generation ~21 tok/s on a 9800X3D, Qwen3-4B Q4_K_M).
-
-Backend modules are linked `-z nodelete`: ggml dlopens every module to probe it and closes the
-unused ones, and unmapping them left dangling exit handlers (crash at process exit, CPU-only).
-
-Note: the default (static) dev build and the dynamic build both write
-`target/release/libaicore.so`; after packaging, point consumers at the dist folder
-(e.g. `AICORE_LIB=dist/.../lib/libaicore.so`) or rebuild without the feature.
-
-## Windows (cross-compiled from Linux)
+## Testing
 
 ```sh
-# one-time: llvm-mingw (clang+lld+mingw-w64, UCRT) unpacked into ~/.local/share
-#   https://github.com/mstorsjo/llvm-mingw/releases  (ucrt-ubuntu-…-x86_64.tar.xz)
-rustup target add x86_64-pc-windows-gnullvm
-scripts/package-windows.sh          # → dist/aicore-<ver>-windows-x86_64{/,.zip}
-scripts/check-windows.sh dist/aicore-<ver>-windows-x86_64
-```
-
-- `bin/`: `aicore.dll` + llama/ggml DLLs, 14 CPU variants, `ggml-vulkan.dll`; keep them together.
-  Only Windows system DLLs are needed (UCRT, kernel32; `vulkan-1.dll` from the GPU driver
-  for the optional Vulkan module). libc++/libunwind are linked statically.
-- Windows doesn't search a DLL's own folder for its dependencies, so `aicore.dll`
-  **delay-loads** llama/ggml and preloads them by full path from its own folder. Hosts can
-  `LoadLibrary`/`dlopen` it from anywhere (Deno, Python, C#, …).
-- `lib/`: `libaicore.dll.a` (MinGW), `aicore.lib` (MSVC), `aicore.def`; `include/aicore.h`.
-- Vulkan without an SDK: Vulkan/SPIR-V headers come from the Linux host, the `vulkan-1`
-  import library is generated from `crates/aicore-sys/windows/vulkan-1.def`.
-- zig is **not** used for Windows: ggml relies on MinGW auto-export, and zig's CRT object
-  naming makes lld export `atexit` too (duplicate symbols).
-
-Status: builds and passes static checks (imports, delay-loads, exports, examples link).
-**Not yet run on real Windows.**
-
-## API at a glance
-
-- **Model**: `load(path, {gpu_layers, devices})`, `info()` (name, size, context, template).
-- **ChatSession**: stateless OpenAI-style requests (`messages`, `max_tokens`, `stop`,
-  `temperature`, `top_p`, …, `grammar`), streamed through a callback; reuses the KV-cache
-  prefix between calls so follow-up turns only process new tokens. Cancel from any thread.
-  - **Chat templates**: the model's own Jinja template (from the GGUF) rendered with
-    minijinja in Hugging Face style (Python string methods, `tojson` à la `json.dumps`,
-    `strftime_now`, `raise_exception`, `{% generation %}`); falls back to llama.cpp's
-    built-in formats if a template can't be used. 69/72 templates in llama.cpp's corpus
-    render (the other 3 refuse by design, e.g. Gemma 2 has no system role).
-    `chat_template` (Jinja text or built-in name) and `chat_template_kwargs` override.
-  - **Structured output**: OpenAI `response_format` — `{"type":"json_object"}` or
-    `{"type":"json_schema","json_schema":{"schema":{…}}}` — compiled to a llama.cpp grammar
-    (port of llama.cpp's json-schema-to-grammar: objects, arrays, enums/const, anyOf/oneOf/allOf,
-    `$ref`/`$defs`, string formats/patterns/lengths). Properties are generated in declared
-    order (put `reasoning` before `answer`). Not supported: remote `$ref`, numeric min/max.
-  - **Tool calling** (OpenAI `tools` / `tool_choice` / `parallel_tool_calls`): tools and tool
-    history are rendered through the model's own template; output is parsed from the model's
-    native format into `tool_calls` (`finish_reason: "tool_calls"`). Formats, detected from the
-    template: Hermes/Qwen `<tool_call>`, Llama 3.x JSON, Mistral `[TOOL_CALLS]` (list and
-    `[ARGS]`), Qwen3-Coder XML, generic JSON. Calls are grammar-constrained to the tool's
-    argument schema for Hermes/generic/Llama 3 (`required`/named: from the first token; `auto`:
-    lazily, once the model starts a call); Mistral and XML formats are parsed only.
-    Streaming shows reply text only; calls arrive parsed in the response.
-    `run_tools` (Rust) / `runTools` (Deno) run the call → execute → feed back loop.
-  - **Reasoning**: `<think>…</think>` is split into `reasoning_content` and streamed as its
-    own event: Rust `complete_stream` (`StreamEvent::{Content, Reasoning, ToolCall}`), C
-    `aicore_chat_complete_events` (`AICORE_EVENT_*` kinds), Deno `onReasoning`, server
-    `delta.reasoning_content`. `complete` / `aicore_chat_complete` / `onToken` stay content-only.
-  - Tested end-to-end with Qwen3-4B-Instruct-2507 (all scenarios) and Llama-3.2-3B-Instruct
-    (format/plumbing). Note: Llama 3.2 3B over-calls tools and re-calls instead of answering;
-    llama.cpp's llama-server behaves the same with it — prefer Qwen3-class models for agents.
-  - **Vision & audio**: load a multimodal model with its projector (`ModelParams.mmproj`,
-    server `--mmproj`, Deno `{ mmproj }`) and send OpenAI content parts: `image_url` with a
-    `data:` URL, or `input_audio` (`wav`, `mp3`, `flac`). Deno `imagePart(file)` /
-    `audioPart(file)`, Rust `ChatMessage::user_with_media` / `Media::from_path` (kind detected).
-    Several items per message, mixed image + audio, and media in earlier turns work; a
-    projector that lacks a modality refuses it clearly. Remote URLs are never fetched. Uses
-    llama.cpp's mtmd. Tested: images with Qwen2.5-VL-3B (M-RoPE) and Gemma 3 4B (color,
-    counting, OCR, JPEG, multi-image); audio with Qwen2.5-Omni-3B (word-perfect transcription
-    from WAV/MP3/FLAC, image+audio together) and Ultravox 0.5 1B.
-    KV-cache prefix reuse covers media too: identical images/audio (by content hash) are kept
-    across turns instead of re-encoded (follow-up turns 5–19× faster to prompt in tests),
-    a changed item invalidates the cache from that point on.
-- **Embedder**: batched, L2-normalized vectors.
-
-The C ABI passes parameters and results as JSON; see `crates/aicore-ffi/include/aicore.h`
-for conventions (ownership, `error_out`, thread rules). ABI version: `aicore_abi_version()`.
-
-## Tests
-
-```sh
-export AICORE_TEST_MODEL=/path/chat-model.gguf AICORE_TEST_EMBED_MODEL=/path/embed-model.gguf
-cargo test --workspace
+cargo test --workspace                          # unit tests; model tests skip without models
 (cd bindings/deno && deno task test)
 ```
 
+Model-backed tests are enabled through environment variables pointing at GGUF files:
+
+| Variable | Enables tests for |
+|---|---|
+| `AICORE_TEST_MODEL` | chat, JSON, tools, server |
+| `AICORE_TEST_LLAMA_MODEL` | the Llama 3 tool format |
+| `AICORE_TEST_THINKING_MODEL` | reasoning |
+| `AICORE_TEST_EMBED_MODEL` | embeddings |
+| `AICORE_TEST_VL_MODEL` / `AICORE_TEST_VL_MMPROJ` | vision |
+| `AICORE_TEST_VL2_MODEL` / `AICORE_TEST_VL2_MMPROJ` | vision, second model |
+| `AICORE_TEST_AUDIO_MODEL` / `AICORE_TEST_AUDIO_MMPROJ` | audio |
+| `AICORE_TEST_OMNI_MODEL` / `AICORE_TEST_OMNI_MMPROJ` | combined image and audio |
+| `AICORE_TEST_IMAGES`, `AICORE_TEST_AUDIO` | sample inputs (`spike/images`, `spike/audio`) |
+
+The suites cover:
+- KV-cache reuse, checked by comparing answers against a fresh session at temperature 0
+- tool calling on two model families
+- schema-validated JSON output
+- image and audio recognition
+- cancellation races
+- client disconnects
+- the OpenAI wire format
+
+## Design notes
+
+- **One core, several front ends.** Rust uses the crate directly. The C ABI is a thin JSON
+  layer over the same types, so adding a feature means adding a JSON field, not a new symbol.
+  The server is a thin HTTP layer over the same core.
+- **Stateless requests, stateful sessions.** Every request carries the whole conversation, as
+  the OpenAI API does. The session compares it with what is already in its KV cache: tokens
+  match by token, images and audio by content hash. It then evaluates only what changed.
+- **llama.cpp is vendored at a tested commit**, with bindings generated by our own `aicore-sys`
+  crate. That gives us control over build flags, which the portable packages depend on.
+- **Media is never fetched from the network.** Images and audio arrive as `data:` URLs or
+  base64, which keeps the core offline and the server safe from server-side request forgery.
+- **Concurrency.**
+  - llama.cpp's backend setup isn't thread-safe, so a process-wide lock serializes model
+    loading and context creation.
+  - Inference runs in parallel across sessions.
+  - Cancellation is scoped to one request, so a late cancel can never hit the next request.
+
+## Limitations
+
+- Windows builds have not been run on real Windows yet. macOS and ARM aren't built.
+- Tool calls stream as one complete fragment each, not argument by argument. That is valid
+  OpenAI streaming.
+- Mistral and Qwen3-Coder tool formats are parsed but not grammar-constrained. They are
+  covered by unit tests only, not by end-to-end tests with those models.
+- The JSON-schema converter doesn't support remote `$ref`, and it ignores numeric
+  minimum/maximum.
+- Cached audio still pays mtmd's spectrogram computation on later turns (an upstream TODO).
+  Decoding and resampling are skipped.
+- The server serves one chat model and one embedding model; there's no per-request model
+  switching. Only `n=1` is supported, and there is no legacy `/v1/completions`.
+- Embeddings are text-only. Rerankers are rejected.
+
+## Project layout
+
+| Path | Contents |
+|---|---|
+| `crates/aicore-sys` | bindgen bindings to llama.cpp and mtmd; builds `vendor/llama.cpp` with CMake |
+| `crates/aicore` | Safe Rust core: models, sessions, templates, grammars, tools, media, embeddings |
+| `crates/aicore-ffi` | C ABI (`libaicore`) and the generated `include/aicore.h` |
+| `crates/aicore-server` | OpenAI-compatible HTTP server |
+| `bindings/deno` | Deno binding and its tests |
+| `examples/` | C and Deno examples (Rust examples are in `crates/aicore/examples/`) |
+| `scripts/` | Packaging and check scripts, cross-compile environment, OpenAI SDK compatibility check |
+| `vendor/llama.cpp` | Pinned llama.cpp submodule |
+| `spike/` | Phase 0 notes and benchmarks, plus test images and audio (models are gitignored) |
+
 ## Status
 
-Phase 0 (spike) ✔ · Phase 1 (core crate) ✔ · Phase 2 (C ABI, C + Deno examples) ✔ ·
-Phase 3a (portable Linux package, glibc 2.28 via zig) ✔ ·
-Phase 3b (Windows cross-build, static-checked; untested on Windows) ·
-Phase 4 (templates, JSON output, tool calling, reasoning streaming, sidecar server) ✔ ·
-Phase 5 (vision, audio input, media KV reuse) ✔
+| Phase | Scope | |
+|---|---|---|
+| 0 | Spike: llama.cpp + Vulkan benchmarks | ✔ |
+| 1 | Rust core: chat, streaming, cancellation, embeddings | ✔ |
+| 2 | C ABI, C and Deno bindings | ✔ |
+| 3 | Portable Linux package (glibc 2.28), Windows cross-build | ✔ / Windows untested |
+| 4 | Jinja templates, JSON output, tool calling, reasoning streaming, HTTP server | ✔ |
+| 5 | Vision, audio, media KV-cache reuse | ✔ |
+| — | Code review passes (high, high, partial max, xhigh), all findings fixed | ✔ |
 
-Next: run on real Windows; macOS/ARM builds.
+Next: run on real Windows, then macOS and ARM builds.
