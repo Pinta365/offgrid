@@ -33,7 +33,7 @@ use pool::ChatPool;
 #[derive(Debug, Clone, Default)]
 pub struct ServerConfig {
     pub model: Option<PathBuf>,
-    /// Vision projector for `model`.
+    /// Multimodal projector (image/audio) for `model`.
     pub mmproj: Option<PathBuf>,
     pub embedding_model: Option<PathBuf>,
     /// Model id reported to clients (default: file stem).

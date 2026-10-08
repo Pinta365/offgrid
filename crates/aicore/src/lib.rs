@@ -28,7 +28,7 @@ mod template;
 mod text;
 mod tool_parse;
 mod tools;
-mod vision;
+mod media;
 
 pub use backend::{DeviceInfo, DeviceKind, devices, system_info, version};
 pub use chat::{
@@ -40,4 +40,4 @@ pub use error::{Error, Result};
 pub use model::{GpuLayers, Model, ModelInfo, ModelParams};
 pub use sampling::SamplingParams;
 pub use tools::{FunctionCall, FunctionDef, Tool, ToolCall, ToolChoice};
-pub use vision::{Image, media_marker};
+pub use media::{Media, MediaKind, media_marker};

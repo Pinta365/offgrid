@@ -13,8 +13,8 @@ use crate::template::{ChatTemplate, RenderArgs, is_jinja};
 use crate::text::{PieceKind, Push, StreamFilter, TextStream};
 use crate::tool_parse::{self, ToolFormat};
 use crate::tools::{GrammarSpec, Tool, ToolCall, ToolChoice, tool_grammar};
-use crate::vision::{Chunks, Segment, media_marker};
-use crate::{Error, Image, Model, Result, SamplingParams};
+use crate::media::{Chunks, Segment, media_marker};
+use crate::{Error, Media, MediaKind, Model, Result, SamplingParams};
 
 const DEFAULT_MAX_CTX: u32 = 8192;
 
@@ -39,18 +39,19 @@ impl Default for SessionParams {
 /// An OpenAI-style chat message.
 ///
 /// On the wire `content` may be a string, `null`, or an array of parts
-/// (`{"type":"text","text":...}` / `{"type":"image_url","image_url":{"url":"data:..."}}`).
-/// Internally the text holds one [`media_marker`] per image, in order, and the images are
-/// in `images`.
+/// (`{"type":"text","text":...}`, `{"type":"image_url","image_url":{"url":"data:..."}}`,
+/// `{"type":"input_audio","input_audio":{"data":"<base64>","format":"wav"}}`).
+/// Internally the text holds one [`media_marker`] per media item, in order, and the items
+/// are in `media`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "WireMessage", into = "WireMessage")]
 pub struct ChatMessage {
     /// `system`, `user`, `assistant` or `tool` (templates may accept others).
     pub role: String,
-    /// Message text (with a media marker where each image goes).
+    /// Message text (with a media marker where each image / audio clip goes).
     pub content: String,
-    /// Images referenced by the markers in `content`, in order.
-    pub images: Vec<Image>,
+    /// Images and audio referenced by the markers in `content`, in order.
+    pub media: Vec<Media>,
     /// Model reasoning (`<think>` content) of an earlier assistant turn.
     pub reasoning_content: Option<String>,
     /// Tool calls made by an assistant turn.
@@ -81,11 +82,11 @@ impl TryFrom<WireMessage> for ChatMessage {
     type Error = String;
 
     fn try_from(w: WireMessage) -> std::result::Result<Self, String> {
-        let (content, images) = match w.content {
+        let (content, media) = match w.content {
             serde_json::Value::Null => (String::new(), Vec::new()),
             serde_json::Value::String(s) => (s, Vec::new()),
             serde_json::Value::Array(parts) => {
-                let (mut texts, mut images) = (Vec::new(), Vec::new());
+                let (mut texts, mut media) = (Vec::new(), Vec::new());
                 for part in parts {
                     match part.get("type").and_then(|t| t.as_str()) {
                         Some("text") => texts.push(part.get("text").and_then(|t| t.as_str()).unwrap_or("").to_string()),
@@ -95,20 +96,26 @@ impl TryFrom<WireMessage> for ChatMessage {
                                 .or_else(|| part.get("image_url"))
                                 .and_then(|u| u.as_str())
                                 .ok_or("image_url part without url")?;
-                            images.push(Image::from_data_url(url).map_err(|e| e.to_string())?);
+                            media.push(Media::from_data_url(url).map_err(|e| e.to_string())?);
+                            texts.push(media_marker().to_string());
+                        }
+                        Some("input_audio") => {
+                            let data = part.pointer("/input_audio/data").and_then(|d| d.as_str()).ok_or("input_audio part without data")?;
+                            let format = part.pointer("/input_audio/format").and_then(|f| f.as_str()).unwrap_or("wav");
+                            media.push(Media::from_input_audio(data, format).map_err(|e| e.to_string())?);
                             texts.push(media_marker().to_string());
                         }
                         other => return Err(format!("unsupported content part type {other:?}")),
                     }
                 }
-                (texts.join("\n"), images)
+                (texts.join("\n"), media)
             }
             other => return Err(format!("content must be a string, null or an array of parts, got {other}")),
         };
         Ok(Self {
             role: w.role,
             content,
-            images,
+            media,
             reasoning_content: w.reasoning_content,
             tool_calls: w.tool_calls,
             tool_call_id: w.tool_call_id,
@@ -119,17 +126,23 @@ impl TryFrom<WireMessage> for ChatMessage {
 
 impl From<ChatMessage> for WireMessage {
     fn from(m: ChatMessage) -> Self {
-        let content = if m.images.is_empty() {
+        let content = if m.media.is_empty() {
             serde_json::Value::String(m.content)
         } else {
-            // Back to OpenAI parts: text segments around each marker, images in between.
+            // Back to OpenAI parts: text segments around each marker, media in between.
             let mut parts = Vec::new();
-            let mut images = m.images.iter();
+            let mut media = m.media.iter();
             for (i, segment) in m.content.split(media_marker()).enumerate() {
                 if i > 0
-                    && let Some(img) = images.next()
+                    && let Some(item) = media.next()
                 {
-                    parts.push(serde_json::json!({"type": "image_url", "image_url": {"url": img.to_data_url()}}));
+                    parts.push(match item.kind {
+                        MediaKind::Image => serde_json::json!({"type": "image_url", "image_url": {"url": item.to_data_url()}}),
+                        MediaKind::Audio => {
+                            let (data, format) = item.to_input_audio();
+                            serde_json::json!({"type": "input_audio", "input_audio": {"data": data, "format": format}})
+                        }
+                    });
                 }
                 let text = segment.trim_matches('\n');
                 if !text.is_empty() {
@@ -168,10 +181,18 @@ impl ChatMessage {
     pub fn new(role: impl Into<String>, content: impl Into<String>) -> Self {
         Self { role: role.into(), content: content.into(), ..Default::default() }
     }
-    /// A user message with images (each shown before the text).
-    pub fn user_with_images(text: impl Into<String>, images: Vec<Image>) -> Self {
-        let markers: String = images.iter().map(|_| format!("{}\n", media_marker())).collect();
-        Self { images, ..Self::new("user", format!("{markers}{}", text.into())) }
+    /// A user message with images and/or audio (each placed before the text).
+    pub fn user_with_media(text: impl Into<String>, media: Vec<Media>) -> Self {
+        let markers: String = media.iter().map(|_| format!("{}\n", media_marker())).collect();
+        Self { media, ..Self::new("user", format!("{markers}{}", text.into())) }
+    }
+    /// A user message with images (each placed before the text).
+    pub fn user_with_images(text: impl Into<String>, images: Vec<Media>) -> Self {
+        Self::user_with_media(text, images)
+    }
+    /// A user message with audio clips (each placed before the text).
+    pub fn user_with_audio(text: impl Into<String>, audio: Vec<Media>) -> Self {
+        Self::user_with_media(text, audio)
     }
     /// Result of a tool call, answering `call`.
     pub fn tool_result(call: &ToolCall, content: impl Into<String>) -> Self {
@@ -599,8 +620,8 @@ impl ChatSession {
         // Some templates open the reasoning block in the generation prompt.
         let think_open = prompt.trim_end().ends_with("<think>");
 
-        let images: Vec<&Image> = req.messages.iter().flat_map(|m| &m.images).collect();
-        let (tokens, chunks) = if images.is_empty() {
+        let media: Vec<&Media> = req.messages.iter().flat_map(|m| &m.media).collect();
+        let (tokens, chunks) = if media.is_empty() {
             let mut tokens = self.model.tokenize(&prompt, true, true)?;
             // Templates often include BOS text themselves; avoid a doubled BOS.
             let bos = unsafe { sys::llama_vocab_bos(self.model.vocab()) };
@@ -609,12 +630,12 @@ impl ChatSession {
             }
             (tokens, None)
         } else {
-            let vision = self.model.vision().ok_or_else(|| {
-                Error::InvalidArgument("request has images but the model has no vision projector (mmproj)".into())
+            let projector = self.model.projector().ok_or_else(|| {
+                Error::InvalidArgument("request has images/audio but the model has no multimodal projector (mmproj)".into())
             })?;
             let bos = self.model.token_text(unsafe { sys::llama_vocab_bos(self.model.vocab()) });
             let add_bos = bos.is_empty() || !prompt.starts_with(&bos);
-            (Vec::new(), Some(vision.tokenize(&prompt, &images, add_bos)?))
+            (Vec::new(), Some(projector.tokenize(&prompt, &media, add_bos)?))
         };
         let prompt_input = match &chunks {
             Some(c) => Prompt::Media(c),
@@ -849,8 +870,8 @@ impl ChatSession {
                     if self.cancel.is_cancelled() {
                         return Ok(false);
                     }
-                    let vision = self.model.vision().expect("media segments imply a projector");
-                    let new_pos = vision.eval_chunk(self.ctx.as_ptr(), m, self.n_past as i32, self.n_batch as i32, item == last)?;
+                    let projector = self.model.projector().expect("media segments imply a projector");
+                    let new_pos = projector.eval_chunk(self.ctx.as_ptr(), m, self.n_past as i32, self.n_batch as i32, item == last)?;
                     let n_pos = (new_pos as usize).saturating_sub(self.n_past);
                     if n_pos != m.n_pos {
                         log::debug!(target: "aicore", "media chunk used {n_pos} positions, expected {}", m.n_pos);

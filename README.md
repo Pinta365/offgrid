@@ -163,15 +163,18 @@ Status: builds and passes static checks (imports, delay-loads, exports, examples
   - Tested end-to-end with Qwen3-4B-Instruct-2507 (all scenarios) and Llama-3.2-3B-Instruct
     (format/plumbing). Note: Llama 3.2 3B over-calls tools and re-calls instead of answering;
     llama.cpp's llama-server behaves the same with it — prefer Qwen3-class models for agents.
-  - **Vision**: load a multimodal model with its projector (`ModelParams.mmproj`, server
-    `--mmproj`, Deno `{ mmproj }`) and send images as OpenAI content parts
-    (`image_url` with a `data:` URL; Deno `imagePart(file)`, Rust
-    `ChatMessage::user_with_images`). Several images per message and images in earlier turns
-    work. Remote URLs are never fetched. Uses llama.cpp's mtmd; tested with Qwen2.5-VL-3B
-    (M-RoPE) and Gemma 3 4B (color, counting, OCR, JPEG, multi-image, follow-ups).
-    KV-cache prefix reuse covers images too: identical images (by content hash) are kept
+  - **Vision & audio**: load a multimodal model with its projector (`ModelParams.mmproj`,
+    server `--mmproj`, Deno `{ mmproj }`) and send OpenAI content parts: `image_url` with a
+    `data:` URL, or `input_audio` (`wav`, `mp3`, `flac`). Deno `imagePart(file)` /
+    `audioPart(file)`, Rust `ChatMessage::user_with_media` / `Media::from_path` (kind detected).
+    Several items per message, mixed image + audio, and media in earlier turns work; a
+    projector that lacks a modality refuses it clearly. Remote URLs are never fetched. Uses
+    llama.cpp's mtmd. Tested: images with Qwen2.5-VL-3B (M-RoPE) and Gemma 3 4B (color,
+    counting, OCR, JPEG, multi-image); audio with Qwen2.5-Omni-3B (word-perfect transcription
+    from WAV/MP3/FLAC, image+audio together) and Ultravox 0.5 1B.
+    KV-cache prefix reuse covers media too: identical images/audio (by content hash) are kept
     across turns instead of re-encoded (follow-up turns 5–19× faster to prompt in tests),
-    a changed image invalidates the cache from that point on.
+    a changed item invalidates the cache from that point on.
 - **Embedder**: batched, L2-normalized vectors.
 
 The C ABI passes parameters and results as JSON; see `crates/aicore-ffi/include/aicore.h`
@@ -191,6 +194,6 @@ Phase 0 (spike) ✔ · Phase 1 (core crate) ✔ · Phase 2 (C ABI, C + Deno exam
 Phase 3a (portable Linux package, glibc 2.28 via zig) ✔ ·
 Phase 3b (Windows cross-build, static-checked; untested on Windows) ·
 Phase 4 (templates, JSON output, tool calling, reasoning streaming, sidecar server) ✔ ·
-Phase 5 (vision / image input) ✔
+Phase 5 (vision, audio input, media KV reuse) ✔
 
-Next: run on real Windows; macOS/ARM builds; audio input (mtmd).
+Next: run on real Windows; macOS/ARM builds.

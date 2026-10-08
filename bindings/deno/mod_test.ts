@@ -1,13 +1,16 @@
 // deno test --allow-ffi --allow-env --allow-read bindings/deno/mod_test.ts
 // Model tests need AICORE_TEST_MODEL / AICORE_TEST_EMBED_MODEL; they are skipped otherwise.
 import { assert, assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
-import { AiCore, type ChatRequest, dot, imagePart } from "./mod.ts";
+import { AiCore, audioPart, type ChatRequest, dot, imagePart } from "./mod.ts";
 
 const chatModel = Deno.env.get("AICORE_TEST_MODEL");
 const thinkingModel = Deno.env.get("AICORE_TEST_THINKING_MODEL");
 const vlModel = Deno.env.get("AICORE_TEST_VL_MODEL");
 const vlMmproj = Deno.env.get("AICORE_TEST_VL_MMPROJ");
 const testImages = Deno.env.get("AICORE_TEST_IMAGES");
+const audioModel = Deno.env.get("AICORE_TEST_AUDIO_MODEL");
+const audioMmproj = Deno.env.get("AICORE_TEST_AUDIO_MMPROJ");
+const testAudio = Deno.env.get("AICORE_TEST_AUDIO");
 const embedModel = Deno.env.get("AICORE_TEST_EMBED_MODEL");
 
 const greedy = (content: string, max_tokens: number): ChatRequest => ({
@@ -193,6 +196,22 @@ Deno.test({ name: "chat: image input", ignore: !vlModel || !vlMmproj || !testIma
     }],
   });
   assertStringIncludes(res.content.toUpperCase(), "HELLO 42");
+});
+
+Deno.test({ name: "chat: audio input", ignore: !audioModel || !audioMmproj || !testAudio }, async () => {
+  using core = AiCore.open();
+  using model = await core.loadModel(audioModel!, { mmproj: audioMmproj });
+  assert(model.info().audio);
+  using chat = await model.createChat();
+  const res = await chat.complete({
+    temperature: 0,
+    max_tokens: 60,
+    messages: [{
+      role: "user",
+      content: [{ type: "text", text: "Transcribe this audio exactly." }, await audioPart(`${testAudio}/jfk.wav`)],
+    }],
+  });
+  assertStringIncludes(res.content.toLowerCase(), "ask not");
 });
 
 Deno.test({ name: "embeddings", ignore: !embedModel }, async () => {

@@ -6,7 +6,7 @@ export interface ModelParams {
   gpu_layers?: GpuLayers;
   /** Restrict offloading to these device names, e.g. `["Vulkan0"]`. */
   devices?: string[] | null;
-  /** Vision projector (`mmproj-*.gguf`) for multimodal models; enables image input. */
+  /** Multimodal projector (`mmproj-*.gguf`); enables image and/or audio input. */
   mmproj?: string | null;
 }
 
@@ -42,10 +42,11 @@ export interface SamplingParams {
 /** Usually "system" | "user" | "assistant"; templates may accept others. */
 export type Role = string;
 
-/** OpenAI content parts. Images must be `data:` URLs (see `imagePart`). */
+/** OpenAI content parts. Images must be `data:` URLs (see `imagePart` / `audioPart`). */
 export type ContentPart =
   | { type: "text"; text: string }
-  | { type: "image_url"; image_url: { url: string } };
+  | { type: "image_url"; image_url: { url: string } }
+  | { type: "input_audio"; input_audio: { data: string; format: "wav" | "mp3" | "flac" } };
 
 export interface ChatMessage {
   role: Role;
@@ -155,8 +156,10 @@ export interface ModelInfo {
   has_encoder: boolean;
   has_decoder: boolean;
   chat_template: string | null;
-  /** Image input available (vision projector loaded). */
+  /** Image input available. */
   vision: boolean;
+  /** Audio input available. */
+  audio: boolean;
 }
 
 export interface VersionInfo {

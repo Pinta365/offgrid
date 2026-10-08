@@ -27,6 +27,6 @@ pub enum Error {
     Decode(i32),
     #[error("model does not produce embeddings")]
     NoEmbeddings,
-    #[error("image input: {0}")]
-    Image(String),
+    #[error("media input: {0}")]
+    Media(String),
 }

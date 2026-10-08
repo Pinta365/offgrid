@@ -1,4 +1,4 @@
-//! Image input via llama.cpp's mtmd (multimodal projector, the model's `mmproj` file).
+//! Image and audio input via llama.cpp's mtmd (multimodal projector, the model's `mmproj` file).
 
 use std::ffi::{CStr, CString};
 use std::path::Path;
@@ -10,28 +10,45 @@ use aicore_sys as sys;
 use crate::backend::setup_lock;
 use crate::{Error, Result};
 
-/// An encoded image (PNG, JPEG, BMP, GIF, ... anything stb_image decodes).
+/// What a [`Media`] item is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaKind {
+    /// PNG, JPEG, BMP, GIF, ... (anything stb_image decodes).
+    Image,
+    /// WAV, MP3 or FLAC (decoded by miniaudio, resampled for the model).
+    Audio,
+}
+
+/// An encoded image or audio clip attached to a message.
 #[derive(Clone, PartialEq, Eq)]
-pub struct Image {
+pub struct Media {
+    pub kind: MediaKind,
     pub data: Vec<u8>,
 }
 
-impl std::fmt::Debug for Image {
+impl std::fmt::Debug for Media {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Image({} bytes)", self.data.len())
+        write!(f, "{:?}({} bytes)", self.kind, self.data.len())
     }
 }
 
-impl Image {
-    pub fn from_bytes(data: impl Into<Vec<u8>>) -> Self {
-        Self { data: data.into() }
+impl Media {
+    pub fn image(data: impl Into<Vec<u8>>) -> Self {
+        Self { kind: MediaKind::Image, data: data.into() }
     }
 
+    pub fn audio(data: impl Into<Vec<u8>>) -> Self {
+        Self { kind: MediaKind::Audio, data: data.into() }
+    }
+
+    /// Read a file; the kind is detected from its magic bytes (WAV/MP3/FLAC = audio).
     pub fn from_path(path: impl AsRef<Path>) -> std::io::Result<Self> {
-        Ok(Self { data: std::fs::read(path)? })
+        let data = std::fs::read(path)?;
+        let kind = if audio_format(&data).is_some() { MediaKind::Audio } else { MediaKind::Image };
+        Ok(Self { kind, data })
     }
 
-    /// Parse a `data:image/...;base64,...` URL (the OpenAI `image_url` form).
+    /// Parse an image `data:image/...;base64,...` URL (the OpenAI `image_url` form).
     /// Remote URLs are rejected: this is an offline core.
     pub fn from_data_url(url: &str) -> Result<Self> {
         let rest = url.strip_prefix("data:").ok_or_else(|| {
@@ -43,10 +60,19 @@ impl Image {
             return Err(Error::InvalidArgument("data: URL must be base64-encoded".into()));
         }
         let data = base64_decode(payload).ok_or_else(|| Error::InvalidArgument("invalid base64 in data: URL".into()))?;
-        Ok(Self { data })
+        Ok(Self::image(data))
     }
 
-    /// `data:` URL for this image (mime type guessed from magic bytes).
+    /// Parse an OpenAI `input_audio` part: base64 `data` in `format` (`wav`, `mp3`, `flac`).
+    pub fn from_input_audio(data: &str, format: &str) -> Result<Self> {
+        if !matches!(format, "wav" | "mp3" | "flac") {
+            return Err(Error::InvalidArgument(format!("unsupported audio format '{format}' (wav, mp3, flac)")));
+        }
+        let bytes = base64_decode(data).ok_or_else(|| Error::InvalidArgument("invalid base64 in input_audio".into()))?;
+        Ok(Self::audio(bytes))
+    }
+
+    /// Image as a `data:` URL (mime type guessed from magic bytes).
     pub fn to_data_url(&self) -> String {
         let mime = match self.data.as_slice() {
             [0x89, b'P', b'N', b'G', ..] => "image/png",
@@ -57,33 +83,50 @@ impl Image {
         };
         format!("data:{mime};base64,{}", base64_encode(&self.data))
     }
+
+    /// Audio as OpenAI `input_audio` fields: (base64 data, format).
+    pub fn to_input_audio(&self) -> (String, &'static str) {
+        (base64_encode(&self.data), audio_format(&self.data).unwrap_or("wav"))
+    }
 }
 
-/// The text marker standing for one image in a prompt (mtmd's default `<__media__>`).
+/// Audio container from magic bytes.
+fn audio_format(data: &[u8]) -> Option<&'static str> {
+    match data {
+        [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'A', b'V', b'E', ..] => Some("wav"),
+        [b'f', b'L', b'a', b'C', ..] => Some("flac"),
+        [b'I', b'D', b'3', ..] | [0xFF, 0xFB | 0xF3 | 0xF2, ..] => Some("mp3"),
+        _ => None,
+    }
+}
+
+/// The text marker standing for one media item in a prompt (mtmd's default `<__media__>`).
 pub fn media_marker() -> &'static str {
     static MARKER: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     MARKER.get_or_init(|| unsafe { CStr::from_ptr(sys::mtmd_default_marker()) }.to_string_lossy().into_owned())
 }
 
-/// A loaded projector bound to its text model.
-pub(crate) struct Vision {
+/// A loaded multimodal projector (`mmproj`) bound to its text model.
+pub(crate) struct Projector {
     ctx: NonNull<sys::mtmd_context>,
+    pub vision: bool,
+    pub audio: bool,
     /// Encoding/eval is not thread-safe; tokenizing is.
     eval_lock: Mutex<()>,
 }
 
 // mtmd_context is used from several sessions; mutating calls are serialized by eval_lock.
-unsafe impl Send for Vision {}
-unsafe impl Sync for Vision {}
+unsafe impl Send for Projector {}
+unsafe impl Sync for Projector {}
 
-impl Drop for Vision {
+impl Drop for Projector {
     fn drop(&mut self) {
         let _guard = setup_lock();
         unsafe { sys::mtmd_free(self.ctx.as_ptr()) };
     }
 }
 
-impl Vision {
+impl Projector {
     pub fn load(path: &Path, model: *const sys::llama_model, use_gpu: bool, n_threads: i32) -> Result<Self> {
         if !path.is_file() {
             return Err(Error::ModelNotFound(path.to_path_buf()));
@@ -99,23 +142,42 @@ impl Vision {
             unsafe { sys::mtmd_init_from_file(c_path.as_ptr(), model, params) }
         };
         let ctx = NonNull::new(ctx).ok_or_else(|| Error::ModelLoad(path.to_path_buf()))?;
-        if !unsafe { sys::mtmd_support_vision(ctx.as_ptr()) } {
+        let (vision, audio) = unsafe { (sys::mtmd_support_vision(ctx.as_ptr()), sys::mtmd_support_audio(ctx.as_ptr())) };
+        if !vision && !audio {
             unsafe { sys::mtmd_free(ctx.as_ptr()) };
-            return Err(Error::InvalidArgument(format!("{} is not a vision projector", path.display())));
+            return Err(Error::InvalidArgument(format!("{} supports neither images nor audio", path.display())));
         }
-        Ok(Self { ctx, eval_lock: Mutex::new(()) })
+        Ok(Self { ctx, vision, audio, eval_lock: Mutex::new(()) })
     }
 
-    /// Tokenize a prompt containing one media marker per image.
-    pub fn tokenize(&self, prompt: &str, images: &[&Image], add_bos: bool) -> Result<Chunks> {
-        let mut bitmaps = Vec::with_capacity(images.len());
-        for (i, img) in images.iter().enumerate() {
+    /// Tokenize a prompt containing one media marker per media item.
+    pub fn tokenize(&self, prompt: &str, media: &[&Media], add_bos: bool) -> Result<Chunks> {
+        let mut bitmaps = Vec::with_capacity(media.len());
+        for (i, item) in media.iter().enumerate() {
+            match item.kind {
+                MediaKind::Image if !self.vision => {
+                    return Err(Error::InvalidArgument("this model's projector does not accept images".into()));
+                }
+                MediaKind::Audio if !self.audio => {
+                    return Err(Error::InvalidArgument("this model's projector does not accept audio".into()));
+                }
+                _ => {}
+            }
             let opt = unsafe { sys::mtmd_helper_init_opt_default() };
             let w = unsafe {
-                sys::mtmd_helper_bitmap_init_from_buf(self.ctx.as_ptr(), img.data.as_ptr(), img.data.len(), false, opt)
+                sys::mtmd_helper_bitmap_init_from_buf(self.ctx.as_ptr(), item.data.as_ptr(), item.data.len(), false, opt)
             };
-            let bitmap = NonNull::new(w.bitmap).ok_or_else(|| Error::Image(format!("image {i} could not be decoded")))?;
-            bitmaps.push(Bitmap(bitmap));
+            let what = match item.kind {
+                MediaKind::Image => "image",
+                MediaKind::Audio => "audio",
+            };
+            let bitmap = NonNull::new(w.bitmap).ok_or_else(|| Error::Media(format!("{what} {i} could not be decoded")))?;
+            let bitmap = Bitmap(bitmap);
+            // mtmd detects the real type from the bytes; it must match what was declared.
+            if unsafe { sys::mtmd_bitmap_is_audio(bitmap.0.as_ptr()) } != (item.kind == MediaKind::Audio) {
+                return Err(Error::Media(format!("media {i} was sent as {what} but its data is not {what}")));
+            }
+            bitmaps.push(bitmap);
         }
         let text = CString::new(prompt).map_err(|_| Error::InvalidArgument("prompt contains NUL".into()))?;
         let input = sys::mtmd_input_text { text: text.as_ptr(), text_len: prompt.len(), add_special: add_bos, parse_special: true };
@@ -123,16 +185,16 @@ impl Vision {
         let ptrs: Vec<*const sys::mtmd_bitmap> = bitmaps.iter().map(|b| b.0.as_ptr() as *const _).collect();
         match unsafe { sys::mtmd_tokenize(self.ctx.as_ptr(), chunks.0.as_ptr(), &input, ptrs.as_ptr() as *mut _, ptrs.len()) } {
             0 => Ok(chunks),
-            1 => Err(Error::Image(format!(
-                "{} image(s) but the prompt has a different number of image markers",
-                images.len()
+            1 => Err(Error::Media(format!(
+                "{} media item(s) but the prompt has a different number of media markers",
+                media.len()
             ))),
-            2 => Err(Error::Image("image preprocessing failed".into())),
-            code => Err(Error::Image(format!("mtmd_tokenize failed ({code})"))),
+            2 => Err(Error::Media("media preprocessing failed".into())),
+            code => Err(Error::Media(format!("mtmd_tokenize failed ({code})"))),
         }
     }
 
-    /// Encode one media chunk and decode it into `lctx` at `n_past`; returns the new position.
+    /// Encode one media chunk (image or audio) and decode it into `lctx` at `n_past`; returns the new position.
     pub fn eval_chunk(
         &self,
         lctx: *mut sys::llama_context,
@@ -153,7 +215,7 @@ impl Vision {
     }
 }
 
-/// One piece of a tokenized prompt: text tokens, or a media chunk (an encoded image).
+/// One piece of a tokenized prompt: text tokens, or a media chunk (an image or audio clip).
 pub(crate) enum Segment {
     Text(Vec<sys::llama_token>),
     Media(MediaChunk),
@@ -162,7 +224,7 @@ pub(crate) enum Segment {
 /// A media chunk inside a [`Chunks`] (valid while the `Chunks` lives).
 pub(crate) struct MediaChunk {
     ptr: *const sys::mtmd_input_chunk,
-    /// Content hash of the image (SHA-256, set by mtmd); used for KV-cache reuse.
+    /// Content hash of the media (SHA-256, set by mtmd); used for KV-cache reuse.
     pub id: String,
     pub n_tokens: usize,
     /// Positions consumed (differs from tokens for M-RoPE models).
@@ -275,12 +337,24 @@ mod tests {
 
     #[test]
     fn data_urls() {
-        let png = Image::from_bytes(vec![0x89, b'P', b'N', b'G', 1, 2, 3]);
+        let png = Media::image(vec![0x89, b'P', b'N', b'G', 1, 2, 3]);
         let url = png.to_data_url();
         assert!(url.starts_with("data:image/png;base64,"));
-        assert_eq!(Image::from_data_url(&url).unwrap(), png);
-        assert!(Image::from_data_url("https://example.com/cat.png").is_err());
-        assert!(Image::from_data_url("data:image/png,rawbytes").is_err());
-        assert!(Image::from_data_url("data:image/png;base64,***").is_err());
+        assert_eq!(Media::from_data_url(&url).unwrap(), png);
+        assert!(Media::from_data_url("https://example.com/cat.png").is_err());
+        assert!(Media::from_data_url("data:image/png,rawbytes").is_err());
+        assert!(Media::from_data_url("data:image/png;base64,***").is_err());
+    }
+
+    #[test]
+    fn input_audio() {
+        let wav = Media::audio(b"RIFF\0\0\0\0WAVEfmt ".to_vec());
+        let (b64, format) = wav.to_input_audio();
+        assert_eq!(format, "wav");
+        assert_eq!(Media::from_input_audio(&b64, "wav").unwrap(), wav);
+        assert!(Media::from_input_audio(&b64, "ogg").is_err());
+        assert_eq!(audio_format(b"fLaC...."), Some("flac"));
+        assert_eq!(audio_format(b"ID3\x04"), Some("mp3"));
+        assert_eq!(audio_format(&[0x89, b'P', b'N', b'G']), None);
     }
 }

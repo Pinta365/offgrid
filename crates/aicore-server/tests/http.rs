@@ -316,3 +316,38 @@ async fn vision_over_http() {
     let e: Value = r.json().await.unwrap();
     assert!(e["error"]["message"].as_str().unwrap().contains("data: URL"), "{e}");
 }
+
+#[tokio::test]
+async fn audio_over_http() {
+    let (Ok(model), Ok(mmproj), Ok(audio)) = (
+        std::env::var("AICORE_TEST_OMNI_MODEL"),
+        std::env::var("AICORE_TEST_OMNI_MMPROJ"),
+        std::env::var("AICORE_TEST_AUDIO"),
+    ) else {
+        return;
+    };
+    let url = spawn(ServerConfig { model: Some(model.into()), mmproj: Some(mmproj.into()), parallel: 1, ..Default::default() });
+    let mp3 = std::fs::read(std::path::Path::new(&audio).join("jfk.mp3")).unwrap();
+    let body = json!({"temperature": 0, "max_tokens": 60, "stream": true, "messages": [{"role": "user", "content": [
+        {"type": "text", "text": "Transcribe this audio exactly."},
+        {"type": "input_audio", "input_audio": {"data": base64::engine::general_purpose::STANDARD.encode(mp3), "format": "mp3"}}
+    ]}]});
+    let r = reqwest::Client::new().post(format!("{url}/v1/chat/completions")).json(&body).send().await.unwrap();
+    assert_eq!(r.status(), 200);
+    let text: String = r
+        .text()
+        .await
+        .unwrap()
+        .lines()
+        .filter_map(|l| l.strip_prefix("data: "))
+        .filter(|d| *d != "[DONE]")
+        .filter_map(|d| serde_json::from_str::<Value>(d).ok())
+        .filter_map(|c| c["choices"][0]["delta"]["content"].as_str().map(String::from))
+        .collect();
+    println!("audio reply (streamed): {text:?}");
+    assert!(text.to_lowercase().contains("ask not"), "{text}");
+
+    let bad = json!({"messages": [{"role": "user", "content": [{"type": "input_audio", "input_audio": {"data": "AAAA", "format": "ogg"}}]}]});
+    let r = reqwest::Client::new().post(format!("{url}/v1/chat/completions")).json(&bad).send().await.unwrap();
+    assert_eq!(r.status(), 400);
+}

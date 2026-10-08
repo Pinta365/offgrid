@@ -139,7 +139,7 @@ impl ApiError {
     pub fn from_core(e: aicore::Error) -> Self {
         use aicore::Error::*;
         match e {
-            InvalidArgument(_) | ContextOverflow { .. } | ChatTemplate(_) | Grammar | JsonSchema(_) | Tokenize | Image(_) => {
+            InvalidArgument(_) | ContextOverflow { .. } | ChatTemplate(_) | Grammar | JsonSchema(_) | Tokenize | Media(_) => {
                 Self::bad_request(e.to_string())
             }
             other => Self::internal(other.to_string()),

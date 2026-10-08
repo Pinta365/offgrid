@@ -137,3 +137,18 @@ Deterministic vision test images in `spike/images/` (generated with ImageMagick)
 | `three_circles.png` | 384x256 | 4268 | white bg, three solid blue #0000FF circles r=40 |
 | `text_hello.png` | 512x160 | 3010 | white bg, large black "HELLO 42" |
 | `stripes.jpg` | 320x240 | 1397 | left half green #00FF00, right half yellow #FFFF00 |
+
+## Audio test models
+
+Speech/audio multimodal models with their `mmproj` projectors. All verified:
+first 4 bytes are `GGUF`. Source repos are `ggml-org`.
+
+| File | Size (bytes) | Source URL |
+|---|---|---|
+| `Llama-3.2-1B-Instruct-Q4_K_M.gguf` | 807,694,464 | https://huggingface.co/ggml-org/ultravox-v0_5-llama-3_2-1b-GGUF/resolve/main/Llama-3.2-1B-Instruct-Q4_K_M.gguf |
+| `mmproj-ultravox-v0_5-llama-3_2-1b-f16.gguf` | 1,371,123,616 | https://huggingface.co/ggml-org/ultravox-v0_5-llama-3_2-1b-GGUF/resolve/main/mmproj-ultravox-v0_5-llama-3_2-1b-f16.gguf |
+| `Qwen2.5-Omni-3B-Q4_K_M.gguf` | 2,104,931,648 | https://huggingface.co/ggml-org/Qwen2.5-Omni-3B-GGUF/resolve/main/Qwen2.5-Omni-3B-Q4_K_M.gguf |
+| `mmproj-Qwen2.5-Omni-3B-f16.gguf` | 2,623,983,328 | https://huggingface.co/ggml-org/Qwen2.5-Omni-3B-GGUF/resolve/main/mmproj-Qwen2.5-Omni-3B-f16.gguf |
+
+Audio assets in `spike/audio/` (see `spike/audio/README.md`): `jfk.wav`,
+`jfk.mp3`, `jfk.flac`, `tone.wav`.

@@ -22,9 +22,9 @@ fn vision_models() -> Vec<(String, Arc<Model>)> {
         .collect()
 }
 
-fn image(name: &str) -> Image {
+fn image(name: &str) -> Media {
     let dir = std::env::var("AICORE_TEST_IMAGES").expect("AICORE_TEST_IMAGES");
-    Image::from_path(PathBuf::from(dir).join(name)).unwrap()
+    Media::from_path(PathBuf::from(dir).join(name)).unwrap()
 }
 
 fn ask(chat: &mut ChatSession, messages: Vec<ChatMessage>) -> ChatResponse {
@@ -97,7 +97,7 @@ fn errors_and_wire_format() {
         {"type": "image_url", "image_url": {"url": png.to_data_url()}}
     ]});
     let msg: ChatMessage = serde_json::from_value(wire).unwrap();
-    assert_eq!(msg.images.len(), 1);
+    assert_eq!(msg.media.len(), 1);
     assert_eq!(msg.content, format!("Describe:\n{}", media_marker()));
     let back = serde_json::to_value(&msg).unwrap();
     assert_eq!(back["content"][0]["text"], "Describe:");
@@ -114,23 +114,23 @@ fn errors_and_wire_format() {
         let mut chat = ChatSession::new(model, &SessionParams::default()).unwrap();
         let req = ChatRequest::new(vec![ChatMessage::user_with_images("hi", vec![png.clone()])]);
         let err = chat.complete(&req, |_| true).unwrap_err();
-        assert!(err.to_string().contains("vision projector"), "{err}");
+        assert!(err.to_string().contains("multimodal projector"), "{err}");
     }
     for (name, model) in vision_models().into_iter().take(1) {
         let mut chat = ChatSession::new(model, &SessionParams::default()).unwrap();
-        let req = ChatRequest::new(vec![ChatMessage::user_with_images("hi", vec![Image::from_bytes(b"not an image".to_vec())])]);
+        let req = ChatRequest::new(vec![ChatMessage::user_with_images("hi", vec![Media::image(b"not an image".to_vec())])]);
         let err = chat.complete(&req, |_| true).unwrap_err();
-        assert!(matches!(err, Error::Image(_)), "[{name}] {err}");
+        assert!(matches!(err, Error::Media(_)), "[{name}] {err}");
         // Session still works afterwards.
         let r = ask(&mut chat, vec![ChatMessage::user("Say OK.")]);
         assert!(!r.content.is_empty());
     }
 }
 
-fn image_or_dummy() -> Image {
+fn image_or_dummy() -> Media {
     std::env::var("AICORE_TEST_IMAGES")
-        .map(|d| Image::from_path(PathBuf::from(d).join("red_square.png")).unwrap())
-        .unwrap_or_else(|_| Image::from_bytes(vec![0x89, b'P', b'N', b'G', 0, 1, 2]))
+        .map(|d| Media::from_path(PathBuf::from(d).join("red_square.png")).unwrap())
+        .unwrap_or_else(|_| Media::image(vec![0x89, b'P', b'N', b'G', 0, 1, 2]))
 }
 
 /// KV-cache reuse across image prompts: identical images are reused (not re-encoded),

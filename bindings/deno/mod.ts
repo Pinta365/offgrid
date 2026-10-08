@@ -473,9 +473,24 @@ export async function imagePart(image: Uint8Array | string): Promise<ContentPart
     : bytes[0] === 0x47
     ? "image/gif"
     : "image/bmp";
+  return { type: "image_url", image_url: { url: `data:${mime};base64,${toBase64(bytes)}` } };
+}
+
+/**
+ * An `input_audio` content part from WAV / MP3 / FLAC bytes or a file path (format detected).
+ * @example `{ role: "user", content: [{ type: "text", text: "Transcribe" }, await audioPart("clip.wav")] }`
+ */
+export async function audioPart(audio: Uint8Array | string): Promise<ContentPart> {
+  const bytes = typeof audio === "string" ? await Deno.readFile(audio) : audio;
+  const head = new TextDecoder().decode(bytes.subarray(0, 4));
+  const format = head === "fLaC" ? "flac" : head === "RIFF" ? "wav" : "mp3";
+  return { type: "input_audio", input_audio: { data: toBase64(bytes), format } };
+}
+
+function toBase64(bytes: Uint8Array): string {
   let binary = "";
   for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-  return { type: "image_url", image_url: { url: `data:${mime};base64,${btoa(binary)}` } };
+  return btoa(binary);
 }
 
 /** Dot product; equals cosine similarity for normalized vectors. */
