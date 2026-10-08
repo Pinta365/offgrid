@@ -53,6 +53,8 @@ pub const DEFAULT_MAX_BODY_BYTES: usize = 64 << 20;
 
 pub struct AppState {
     max_body_bytes: usize,
+    /// Set on shutdown: queued requests are refused instead of starting generation.
+    shutting_down: std::sync::atomic::AtomicBool,
     chat: Option<(String, Arc<ChatPool>)>,
     embed: Option<(String, Arc<Mutex<Embedder>>)>,
     api_key: Option<String>,
@@ -92,6 +94,7 @@ impl AppState {
             return Err(aicore::Error::InvalidArgument("no model configured (--model / --embedding-model)".into()));
         }
         Ok(Arc::new(Self {
+            shutting_down: std::sync::atomic::AtomicBool::new(false),
             max_body_bytes: if config.max_body_bytes == 0 { DEFAULT_MAX_BODY_BYTES } else { config.max_body_bytes },
             chat,
             embed,
@@ -100,11 +103,16 @@ impl AppState {
         }))
     }
 
-    /// Cancel all running generations (for shutdown).
-    pub fn cancel_all(&self) {
+    /// Begin shutdown: cancel running generations and refuse queued/new requests.
+    pub fn shutdown(&self) {
+        self.shutting_down.store(true, std::sync::atomic::Ordering::SeqCst);
         if let Some((_, pool)) = &self.chat {
             pool.cancel_all();
         }
+    }
+
+    fn is_shutting_down(&self) -> bool {
+        self.shutting_down.load(std::sync::atomic::Ordering::SeqCst)
     }
 }
 
@@ -220,6 +228,10 @@ async fn chat_completions(
     }
     let meta = openai::Meta::new(model_id);
     let lease = pool.acquire().await;
+    // Requests that waited in the queue during shutdown must not start a generation.
+    if state.is_shutting_down() {
+        return ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "server_error", "server is shutting down").into_response();
+    }
 
     let cancel = CancelOnDrop(lease.next_request_cancel());
 

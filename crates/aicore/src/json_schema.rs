@@ -330,7 +330,13 @@ impl Converter {
     }
 
     fn resolve_pointer(&self, ref_str: &str) -> Result<Value, String> {
-        let rest = &ref_str[1..];
+        // Only local refs: "#" (root) or "#/...".
+        let Some(rest) = ref_str.strip_prefix('#') else {
+            return Err("only local refs (#/...) are supported".into());
+        };
+        if !rest.is_empty() && !rest.starts_with('/') {
+            return Err("only local refs (#/...) are supported".into());
+        }
         let mut cur = &self.root;
         for sel in rest.split('/').skip(1) {
             match cur {
@@ -643,10 +649,16 @@ impl Converter {
         enum_values: &mut BTreeMap<String, usize>,
     ) {
         if let Some(r) = comp.get("$ref").and_then(|v| v.as_str()) {
+            // allOf members are inlined, so a self-referencing $ref here would recurse forever.
+            if !self.refs_being_resolved.insert(r.to_string()) {
+                self.errors.push(format!("recursive $ref {r} inside allOf"));
+                return;
+            }
             match self.resolve_pointer(r) {
                 Ok(target) => self.add_component(&target, is_required, properties, required, enum_values),
                 Err(e) => self.errors.push(format!("Unresolved $ref {r}: {e}")),
             }
+            self.refs_being_resolved.remove(r);
             return;
         }
         let is_object =
@@ -1451,5 +1463,19 @@ mod tests {
         let root = g.lines().find(|l| l.starts_with("root ::=")).unwrap();
         let (r, a) = (root.find("reasoning-kv").unwrap(), root.find("answer-kv").unwrap());
         assert!(r < a, "{root}");
+    }
+
+    #[test]
+    fn hostile_refs_error_instead_of_crashing() {
+        for schema in [
+            r##"{"allOf":[{"$ref":"#/$defs/a"}],"$defs":{"a":{"$ref":"#/$defs/a"}}}"##,
+            r##"{"allOf":[{"$ref":"#/$defs/a"}],"$defs":{"a":{"allOf":[{"$ref":"#/$defs/b"}]},"b":{"allOf":[{"$ref":"#/$defs/a"}]}}}"##,
+            r##"{"allOf":[{"$ref":""}]}"##,
+            r##"{"allOf":[{"$ref":"é"}]}"##,
+            r##"{"$ref":"x"}"##,
+        ] {
+            let v: Value = serde_json::from_str(schema).unwrap();
+            let _ = json_schema_to_grammar(&v); // Err or Ok; must not overflow or panic
+        }
     }
 }

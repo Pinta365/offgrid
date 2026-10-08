@@ -393,6 +393,12 @@ impl CancelToken {
         RequestCancel { state: self.0.clone(), epoch: self.0.epoch.load(Ordering::SeqCst) + 1 }
     }
 
+    /// A canceller for request number `id` (from [`RequestCancel::id`]), e.g. across an FFI
+    /// boundary where only the number is passed around.
+    pub fn request(&self, id: u64) -> RequestCancel {
+        RequestCancel { state: self.0.clone(), epoch: id }
+    }
+
     /// Start a new request (called at the top of every public generation entry point).
     fn begin(&self) {
         self.0.epoch.fetch_add(1, Ordering::SeqCst);
@@ -409,6 +415,11 @@ pub struct RequestCancel {
 impl RequestCancel {
     pub fn cancel(&self) {
         self.state.cancelled.fetch_max(self.epoch, Ordering::SeqCst);
+    }
+
+    /// The request number this cancels (see [`CancelToken::request`]).
+    pub fn id(&self) -> u64 {
+        self.epoch
     }
 }
 
@@ -613,6 +624,9 @@ impl ChatSession {
         };
         match req.chat_template.as_deref() {
             Some(t) if is_jinja(t) => ChatTemplate::new(t)?.render(&args),
+            Some(_) if tools.is_some() => Err(Error::InvalidArgument(
+                "built-in chat templates can't show tools to the model; use the model's template or Jinja text".into(),
+            )),
             Some(name) => self.apply_builtin_template(&req.messages, Some(name)),
             None => {
                 if self.model_template.is_none() {
@@ -760,6 +774,9 @@ impl ChatSession {
             ));
         }
 
+        // A strict grammar forces JSON / a tool call from the first token, so a reasoning
+        // block opened by the prompt can never close: don't treat the output as reasoning.
+        let think_open = think_open && !grammars.first().is_some_and(|g| g.lazy_patterns.is_empty());
         let marker = if use_tools { tool_parse::tool_call_start_marker(format) } else { None };
         let mut filter = StreamFilter::new(marker, use_tools && format == ToolFormat::Llama3Json, think_open);
         let mut cancelled_by_callback = false;
@@ -800,7 +817,15 @@ impl ChatSession {
         }
 
         let parsed = if use_tools {
-            tool_parse::parse_output(format, &resp.content, think_open)
+            let parsed = tool_parse::parse_output(format, &resp.content, think_open);
+            // Calls to functions that weren't offered (e.g. a plain `{"name": ...}` JSON reply
+            // in the generic format) are not tool calls: keep the text as content.
+            if parsed.calls.iter().all(|c| req.tools.iter().any(|t| t.function.name == c.name)) {
+                parsed
+            } else {
+                let (reasoning, content) = tool_parse::split_reasoning(&resp.content, think_open);
+                tool_parse::Parsed { content: content.trim().to_string(), reasoning, calls: Vec::new() }
+            }
         } else {
             let (reasoning, content) = tool_parse::split_reasoning(&resp.content, think_open);
             tool_parse::Parsed { content: content.trim().to_string(), reasoning, calls: Vec::new() }
@@ -955,6 +980,12 @@ impl ChatSession {
         if items.is_empty() {
             return Err(Error::InvalidArgument("empty prompt".into()));
         }
+        if matches!(items.last(), Some(CacheItem::Media { .. })) {
+            // Media chunks produce no logits to sample from.
+            return Err(Error::InvalidArgument(
+                "the prompt ends with an image/audio item; the chat template must add text after it".into(),
+            ));
+        }
         // Capacity is in KV cells = tokens (M-RoPE images use fewer positions than tokens).
         let total_tokens: usize = items.iter().map(CacheItem::n_tokens).sum();
         if total_tokens >= n_ctx {
@@ -1016,7 +1047,12 @@ impl ChatSession {
                         return Ok(false);
                     }
                     let projector = self.model.projector().expect("media segments imply a projector");
-                    let new_pos = projector.eval_chunk(self.ctx.as_ptr(), m, self.n_past as i32, self.n_batch as i32, item == last)?;
+                    let new_pos = match projector.eval_chunk(self.ctx.as_ptr(), m, self.n_past as i32, self.n_batch as i32, item == last) {
+                        Ok(pos) => pos,
+                        // Aborted by the cancel callback while decoding the media embeddings.
+                        Err(Error::Decode(2)) if self.cancel.is_cancelled() => return Ok(false),
+                        Err(e) => return Err(e),
+                    };
                     let n_pos = (new_pos as usize).saturating_sub(self.n_past);
                     if n_pos != m.n_pos {
                         log::debug!(target: "aicore", "media chunk used {n_pos} positions, expected {}", m.n_pos);

@@ -11,6 +11,8 @@ use serde_json::Value as Json;
 use crate::{Error, Result};
 
 const NAME: &str = "chat_template";
+/// minijinja fuel per render (roughly instructions executed).
+const TEMPLATE_FUEL: u64 = 2_000_000;
 
 /// Values passed to a template besides the messages.
 pub(crate) struct RenderArgs<'a> {
@@ -40,6 +42,9 @@ impl ChatTemplate {
         env.set_lstrip_blocks(true);
         // Python string/list/dict methods: .strip(), .split(), .startswith(), .items(), ...
         env.set_unknown_method_callback(minijinja_contrib::pycompat::unknown_method_callback);
+        // Bound the work a template may do (request-supplied templates are untrusted):
+        // real chat templates use a few thousand units; a runaway loop fails fast.
+        env.set_fuel(Some(TEMPLATE_FUEL));
         env.add_filter("tojson", tojson);
         // `is iterable` as templates intend it: lists/dicts, not none (minijinja iterates
         // none as empty; templates test `tools is iterable` with tools=None) and not strings
@@ -356,5 +361,14 @@ mod tests {
         let out = render("{% for m in messages %}{% generation %}{{ m.content }}{% endgeneration %}{% endfor %}",
             json!([{"role": "user", "content": "x"}])).unwrap();
         assert_eq!(out, "x");
+    }
+
+    #[test]
+    fn runaway_template_is_stopped() {
+        let t = std::time::Instant::now();
+        let err = render("{% for i in range(99999) %}{% for j in range(99999) %}{% endfor %}{% endfor %}", json!([]))
+            .unwrap_err();
+        assert!(err.to_string().contains("fuel"), "{err}");
+        assert!(t.elapsed() < std::time::Duration::from_secs(5));
     }
 }

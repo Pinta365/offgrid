@@ -20,6 +20,15 @@ fn main() {
         "cargo:rerun-if-changed={}",
         llama_dir.join("ggml/include/ggml-backend.h").display()
     );
+    // Other headers bindgen reads, and the pinned submodule commit (a bump changes sources
+    // cmake must rebuild even when these headers don't change).
+    for header in ["tools/mtmd/mtmd.h", "tools/mtmd/mtmd-helper.h", "ggml/include/ggml.h"] {
+        println!("cargo:rerun-if-changed={}", llama_dir.join(header).display());
+    }
+    let submodule_head = manifest_dir.join("../../.git/modules/vendor/llama.cpp/HEAD");
+    if submodule_head.exists() {
+        println!("cargo:rerun-if-changed={}", submodule_head.display());
+    }
 
     let vulkan = env::var_os("CARGO_FEATURE_VULKAN").is_some();
     let cuda = env::var_os("CARGO_FEATURE_CUDA").is_some();

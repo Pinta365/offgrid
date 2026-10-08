@@ -38,6 +38,9 @@ echo "model: $MODEL"
 echo
 
 # --- a) ldd: everything resolved from lib/, no libstdc++ ---------------------
+# Every shipped ELF: versioned core libs (libllama.so.0, ...), backend modules and the server.
+mapfile -t ELFS < <(find "$DIST/lib" "$DIST/bin" -type f \( -name '*.so' -o -name '*.so.*' -o -name 'aicore-server' \) 2>/dev/null | sort)
+info "checking ${#ELFS[@]} binaries"
 missing=0
 stdcxx=0
 while IFS= read -r so; do
@@ -50,7 +53,7 @@ while IFS= read -r so; do
         stdcxx=1
         echo "      $(basename "$so"): depends on libstdc++"
     fi
-done < <(find "$DIST/lib" -name '*.so' -type f | sort)
+done < <(printf '%s\n' "${ELFS[@]}")
 
 if [ "$missing" -eq 0 ]; then
     pass "ldd: all .so dependencies resolve from lib/ (no LD_LIBRARY_PATH)"
@@ -65,7 +68,7 @@ else
 fi
 
 # --- b) max required GLIBC version (report only) -----------------------------
-glibc_max="$(for so in "$DIST"/lib/*.so; do
+glibc_max="$(for so in "${ELFS[@]}"; do
     objdump -T "$so" 2>/dev/null
 done | grep -oE 'GLIBC_[0-9]+\.[0-9]+(\.[0-9]+)?' | sort -Vu | tail -1 || true)"
 info "max required GLIBC symbol version: ${glibc_max:-<none>}"

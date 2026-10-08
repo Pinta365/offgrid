@@ -271,6 +271,23 @@ pub unsafe extern "C" fn aicore_chat_cancel(chat: *const AicoreChat) {
     }
 }
 
+/// Id of the next request this session will run (pass it to [`aicore_chat_cancel_request`]).
+/// Only meaningful while the caller has exclusive use of the session until that request
+/// starts (no other thread starts a request on it in between).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn aicore_chat_next_request_id(chat: *const AicoreChat) -> u64 {
+    unsafe { chat.as_ref() }.map_or(0, |c| c.cancel.next_request().id())
+}
+
+/// Cancel one specific request by id, even before it has started (e.g. an abort that
+/// races the start of a nonblocking call). Never affects other requests. Safe from any thread.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn aicore_chat_cancel_request(chat: *const AicoreChat, request_id: u64) {
+    if let Some(chat) = unsafe { chat.as_ref() } {
+        chat.cancel.request(request_id).cancel();
+    }
+}
+
 /// Clear the session's KV cache.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn aicore_chat_reset(chat: *const AicoreChat) {

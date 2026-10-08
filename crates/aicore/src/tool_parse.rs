@@ -278,11 +278,10 @@ fn parse_mistral_list(text: &str) -> (String, Vec<ParsedCall>) {
     if let Some(Value::Array(arr)) = parse_first_json(rest) {
         let mut calls = Vec::new();
         for item in &arr {
-            if let Some(obj) = item.as_object() {
-                if let Some(c) = call_from_object(obj) {
+            if let Some(obj) = item.as_object()
+                && let Some(c) = call_from_object(obj) {
                     calls.push(c);
                 }
-            }
         }
         return (content, calls);
     }
@@ -329,21 +328,19 @@ fn parse_generic(text: &str) -> (String, Vec<ParsedCall>) {
     if let Some(call) = call_from_json(trimmed) {
         return (String::new(), vec![call]);
     }
-    if let Ok(Value::Object(obj)) = serde_json::from_str::<Value>(trimmed) {
-        if let Some(Value::Array(arr)) = obj.get("tool_calls") {
+    if let Ok(Value::Object(obj)) = serde_json::from_str::<Value>(trimmed)
+        && let Some(Value::Array(arr)) = obj.get("tool_calls") {
             let mut calls = Vec::new();
             for item in arr {
-                if let Some(o) = item.as_object() {
-                    if let Some(c) = call_from_object(o) {
+                if let Some(o) = item.as_object()
+                    && let Some(c) = call_from_object(o) {
                         calls.push(c);
                     }
-                }
             }
             if !calls.is_empty() {
                 return (String::new(), calls);
             }
         }
-    }
     (text.to_string(), Vec::new())
 }
 
@@ -357,8 +354,8 @@ mod tests {
     fn repo_root() -> PathBuf {
         let mut cands: Vec<PathBuf> = Vec::new();
         let f = std::path::Path::new(file!());
-        if f.is_absolute() {
-            if let Some(b) = f
+        if f.is_absolute()
+            && let Some(b) = f
                 .parent()
                 .and_then(|p| p.parent())
                 .and_then(|p| p.parent())
@@ -366,7 +363,6 @@ mod tests {
             {
                 cands.push(b.to_path_buf());
             }
-        }
         let m = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         cands.push(m.join("../.."));
         cands.push(m.clone());

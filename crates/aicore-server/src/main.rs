@@ -2,7 +2,7 @@
 //!
 //!   aicore-server --model qwen3-4b.gguf --embedding-model embed.gguf --port 8080
 
-use std::net::SocketAddr;
+use std::net::{SocketAddr, ToSocketAddrs};
 use std::path::PathBuf;
 
 use aicore::{GpuLayers, ModelParams, SessionParams};
@@ -75,8 +75,14 @@ fn main() {
         api_key: args.api_key,
         max_body_bytes: args.max_body_mb << 20,
     };
-    let addr: SocketAddr = match format!("{}:{}", args.host, args.port).parse() {
-        Ok(a) => a,
+    // IPv4/IPv6 literals ("::1" or "[::1]") and hostnames ("localhost").
+    let host = args.host.trim_start_matches('[').trim_end_matches(']').to_string();
+    // A hostname may resolve to both families; prefer IPv4 ("localhost" -> 127.0.0.1), which
+    // is what most local clients connect to.
+    let pick = |addrs: Vec<SocketAddr>| addrs.iter().find(|a| a.is_ipv4()).or(addrs.first()).copied();
+    let addr: SocketAddr = match (host.as_str(), args.port).to_socket_addrs().map(|a| pick(a.collect())) {
+        Ok(Some(a)) => a,
+        Ok(None) => fail(format!("--host {} resolved to no address", args.host)),
         Err(e) => fail(format!("invalid --host/--port: {e}")),
     };
     if !addr.ip().is_loopback() && config.api_key.is_none() {
@@ -92,8 +98,13 @@ fn main() {
         axum::serve(listener, router(state))
             .with_graceful_shutdown(async move {
                 shutdown_signal().await;
-                log::info!("shutting down");
-                shutdown_state.cancel_all();
+                log::info!("shutting down (Ctrl-C again to exit immediately)");
+                shutdown_state.shutdown();
+                tokio::spawn(async {
+                    shutdown_signal().await;
+                    log::warn!("second signal: exiting now");
+                    std::process::exit(130);
+                });
             })
             .await
             .unwrap_or_else(|e| fail(e.to_string()));

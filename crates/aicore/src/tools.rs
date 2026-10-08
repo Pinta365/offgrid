@@ -189,19 +189,41 @@ pub(crate) fn tool_grammar(
         }
     };
 
-    let calls: Vec<Value> = selected
-        .iter()
-        .map(|t| {
-            let params = t.function.parameters.clone().unwrap_or_else(|| json!({"type": "object"}));
-            json!({
-                "type": "object",
-                "properties": {"name": {"const": t.function.name}, (args_key): params},
-                "required": ["name", args_key],
-                "additionalProperties": false
-            })
-        })
-        .collect();
-    let schema = if calls.len() == 1 { calls.into_iter().next().unwrap() } else { json!({"anyOf": calls}) };
+    // Parameter schemas are nested inside a call wrapper, which becomes the root that local
+    // `#/$defs/...` refs resolve against, so their definitions move up to the wrapper root.
+    let mut defs: serde_json::Map<String, Value> = serde_json::Map::new();
+    let mut calls: Vec<Value> = Vec::with_capacity(selected.len());
+    for t in &selected {
+        let mut params = t.function.parameters.clone().unwrap_or_else(|| json!({"type": "object"}));
+        if let Value::Object(map) = &mut params {
+            for key in ["$defs", "definitions"] {
+                let Some(Value::Object(local)) = map.remove(key) else { continue };
+                let section = defs.entry(key.to_string()).or_insert_with(|| json!({}));
+                for (name, def) in local {
+                    match section.get(&name) {
+                        Some(existing) if *existing != def => {
+                            return Err(Error::InvalidArgument(format!(
+                                "tools define different schemas named {key}/{name}; rename one"
+                            )));
+                        }
+                        _ => {
+                            section[&name] = def;
+                        }
+                    }
+                }
+            }
+        }
+        calls.push(json!({
+            "type": "object",
+            "properties": {"name": {"const": t.function.name}, (args_key): params},
+            "required": ["name", args_key],
+            "additionalProperties": false
+        }));
+    }
+    let mut schema = if calls.len() == 1 { calls.into_iter().next().unwrap() } else { json!({"anyOf": calls}) };
+    if let Value::Object(root) = &mut schema {
+        root.extend(defs);
+    }
     let mut text = crate::json_schema::json_schema_to_grammar(&schema).map_err(Error::JsonSchema)?;
 
     // Llama 3 has no call delimiter, so only a single call is constrained.
@@ -281,5 +303,23 @@ mod tests {
         assert!(tool_grammar(ToolFormat::Hermes, &tools, &ToolChoice::None, true).unwrap().is_none());
         assert!(tool_grammar(ToolFormat::Hermes, &tools, &ToolChoice::Function("zzz".into()), true).is_err());
         assert!(tool_grammar(ToolFormat::MistralList, &tools, &ToolChoice::Required, true).unwrap().is_none());
+    }
+
+    #[test]
+    fn tool_schema_defs_are_hoisted() {
+        // Pydantic-style schema with local $defs references.
+        let tool = Tool::function(
+            "save",
+            "x",
+            json!({"$defs": {"Addr": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}},
+                   "type": "object", "properties": {"a": {"$ref": "#/$defs/Addr"}}, "required": ["a"]}),
+        );
+        let g = tool_grammar(ToolFormat::Hermes, std::slice::from_ref(&tool), &ToolChoice::Required, false).unwrap().unwrap();
+        assert!(g.text.contains("city"), "{}", g.text);
+        // Two tools sharing an identical definition is fine; conflicting ones are an error.
+        let other = Tool::function("other", "y", json!({"$defs": {"Addr": {"type": "string"}}, "type": "object",
+            "properties": {"b": {"$ref": "#/$defs/Addr"}}}));
+        assert!(tool_grammar(ToolFormat::Hermes, &[tool.clone(), tool.clone()], &ToolChoice::Auto, true).is_ok());
+        assert!(tool_grammar(ToolFormat::Hermes, &[tool, other], &ToolChoice::Auto, true).is_err());
     }
 }

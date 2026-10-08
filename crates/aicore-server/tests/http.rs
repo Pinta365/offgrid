@@ -218,7 +218,7 @@ async fn embeddings_float_and_base64() {
     let f: Vec<f32> = serde_json::from_value(r["data"][1]["embedding"].clone()).unwrap();
     let (_, r) = post(url, "/v1/embeddings", json!({"input": ["a cat", "a kitten"], "encoding_format": "base64"})).await;
     let bytes = base64::engine::general_purpose::STANDARD.decode(r["data"][1]["embedding"].as_str().unwrap()).unwrap();
-    let b: Vec<f32> = bytes.chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect();
+    let b: Vec<f32> = bytes.as_chunks::<4>().0.iter().map(|c| f32::from_le_bytes(*c)).collect();
     assert_eq!(f, b);
     assert!(r["usage"]["prompt_tokens"].as_u64().unwrap() > 0);
     let (s, _) = post(url, "/v1/embeddings", json!({"input": ""})).await;

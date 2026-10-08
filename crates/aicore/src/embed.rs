@@ -76,7 +76,11 @@ impl Embedder {
         };
         let ctx = NonNull::new(ctx).ok_or(Error::ContextCreate)?;
         let this_pooling = unsafe { sys::llama_pooling_type(ctx.as_ptr()) };
-        if this_pooling == sys::llama_pooling_type_LLAMA_POOLING_TYPE_NONE {
+        // NONE gives per-token vectors and RANK (rerankers) gives n_cls_out scores per
+        // sequence, not n_embd floats: reading `dim` floats would overrun the buffer.
+        if this_pooling == sys::llama_pooling_type_LLAMA_POOLING_TYPE_NONE
+            || this_pooling == sys::llama_pooling_type_LLAMA_POOLING_TYPE_RANK
+        {
             let _guard = crate::backend::setup_lock();
             unsafe { sys::llama_free(ctx.as_ptr()) };
             return Err(Error::NoEmbeddings);

@@ -65,6 +65,14 @@ Deno.test({ name: "chat: stream, prefix reuse, cancel", ignore: !chatModel }, as
   const r3 = await chat.complete(greedy("Count from 1 to 100.", 300), { onToken: () => ++n < 3 });
   assertEquals(r3.finish_reason, "cancelled");
 
+  // Abort issued before the native call can start must still cancel this request...
+  const early = new AbortController();
+  const pEarly = chat.complete(greedy("Count from 1 to 100.", 300), { signal: early.signal });
+  early.abort();
+  assertEquals((await pEarly).finish_reason, "cancelled");
+  // ...and must not leak into the next request.
+  assertEquals((await chat.complete(greedy("Say OK.", 3))).finish_reason !== "cancelled", true);
+
   // Cancel via AbortSignal.
   const ac = new AbortController();
   const r4 = await chat.complete(greedy("Count from 1 to 100.", 300), {

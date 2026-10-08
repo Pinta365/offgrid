@@ -65,6 +65,8 @@ const symbols = {
     nonblocking: true,
   },
   aicore_chat_cancel: { parameters: ["pointer"], result: "void" },
+  aicore_chat_next_request_id: { parameters: ["pointer"], result: "u64" },
+  aicore_chat_cancel_request: { parameters: ["pointer", "u64"], result: "void" },
   aicore_chat_reset: { parameters: ["pointer"], result: "void" },
   aicore_chat_free: { parameters: ["pointer"], result: "void" },
   aicore_embedder_new: { parameters: ["pointer", "buffer", "buffer"], result: "pointer", nonblocking: true },
@@ -433,7 +435,10 @@ export class ChatSession extends Handle {
           (piecePtr, len) => onToken(text(piecePtr, len)) !== false,
         );
       }
-      const onAbort = () => this.lib.aicore_chat_cancel(ptr);
+      // Cancel this specific request: works even if the abort fires before the native call
+      // has started (and can't hit a later request). Safe: the session is exclusive here.
+      const requestId = this.lib.aicore_chat_next_request_id(ptr);
+      const onAbort = () => this.lib.aicore_chat_cancel_request(ptr, requestId);
       signal?.addEventListener("abort", onAbort, { once: true });
       const err = new ErrorSlot();
       try {

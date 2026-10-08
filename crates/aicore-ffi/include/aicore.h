@@ -151,6 +151,19 @@ char *aicore_chat_generate(const aicore_chat *chat, const char *request_json, ai
 void aicore_chat_cancel(const aicore_chat *chat);
 
 /**
+ * Id of the next request this session will run (pass it to [`aicore_chat_cancel_request`]).
+ * Only meaningful while the caller has exclusive use of the session until that request
+ * starts (no other thread starts a request on it in between).
+ */
+uint64_t aicore_chat_next_request_id(const aicore_chat *chat);
+
+/**
+ * Cancel one specific request by id, even before it has started (e.g. an abort that
+ * races the start of a nonblocking call). Never affects other requests. Safe from any thread.
+ */
+void aicore_chat_cancel_request(const aicore_chat *chat, uint64_t request_id);
+
+/**
  * Clear the session's KV cache.
  */
 void aicore_chat_reset(const aicore_chat *chat);
