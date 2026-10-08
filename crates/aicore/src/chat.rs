@@ -13,7 +13,7 @@ use crate::template::{ChatTemplate, RenderArgs, is_jinja};
 use crate::text::{PieceKind, Push, StreamFilter, TextStream};
 use crate::tool_parse::{self, ToolFormat};
 use crate::tools::{GrammarSpec, Tool, ToolCall, ToolChoice, tool_grammar};
-use crate::vision::{Chunks, media_marker};
+use crate::vision::{Chunks, Segment, media_marker};
 use crate::{Error, Image, Model, Result, SamplingParams};
 
 const DEFAULT_MAX_CTX: u32 = 8192;
@@ -354,16 +354,48 @@ pub struct ChatSession {
     ctx: NonNull<sys::llama_context>,
     batch: Batch,
     n_batch: usize,
-    /// Tokens currently in the KV cache for sequence 0.
-    cached: Vec<sys::llama_token>,
+    /// What the KV cache of sequence 0 holds, in order (for prefix reuse).
+    cached: Vec<CacheItem>,
     cancel: CancelToken,
     /// The model's Jinja chat template, compiled on first use (`Err` = unusable, use built-in).
     model_template: Option<std::result::Result<ChatTemplate, String>>,
-    /// Next position in sequence 0 (== cached.len() unless media was evaluated; M-RoPE
-    /// images use a different number of positions than tokens).
+    /// Next position in sequence 0 (sum of the cached items' positions; M-RoPE images
+    /// use a different number of positions than tokens).
     n_past: usize,
-    /// The KV cache holds media chunks that `cached` doesn't mirror: no prefix reuse.
-    kv_untracked: bool,
+}
+
+/// One entry of the KV cache: a token, or a whole image identified by its content hash.
+#[derive(Debug, Clone)]
+enum CacheItem {
+    Token(sys::llama_token),
+    Media { id: String, n_tokens: usize, n_pos: usize },
+}
+
+/// Identity for prefix matching: token id, or image hash + token count. `n_pos` is
+/// bookkeeping (measured when evaluated) and deliberately not compared.
+impl PartialEq for CacheItem {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (CacheItem::Token(a), CacheItem::Token(b)) => a == b,
+            (CacheItem::Media { id: a, n_tokens: na, .. }, CacheItem::Media { id: b, n_tokens: nb, .. }) => a == b && na == nb,
+            _ => false,
+        }
+    }
+}
+
+impl CacheItem {
+    fn n_pos(&self) -> usize {
+        match self {
+            CacheItem::Token(_) => 1,
+            CacheItem::Media { n_pos, .. } => *n_pos,
+        }
+    }
+    fn n_tokens(&self) -> usize {
+        match self {
+            CacheItem::Token(_) => 1,
+            CacheItem::Media { n_tokens, .. } => *n_tokens,
+        }
+    }
 }
 
 /// What to evaluate before generating.
@@ -425,7 +457,6 @@ impl ChatSession {
             cancel,
             model_template: None,
             n_past: 0,
-            kv_untracked: false,
         })
     }
 
@@ -447,7 +478,6 @@ impl ChatSession {
         unsafe { sys::llama_memory_clear(sys::llama_get_memory(self.ctx.as_ptr()), true) };
         self.cached.clear();
         self.n_past = 0;
-        self.kv_untracked = false;
     }
 
     /// Render the request's messages into the prompt text the model will see.
@@ -732,69 +762,105 @@ impl ChatSession {
         special: bool,
         on_piece: impl FnMut(&str) -> bool,
     ) -> Result<ChatResponse> {
-        let n_ctx = self.n_ctx();
         let sampler = Sampler::new(&self.model, sampling, grammar)?;
         let t_prompt = Instant::now();
-        let tokens = match prompt {
-            Prompt::Tokens(t) => t,
-            Prompt::Media(chunks) => {
-                let n_pos = chunks.n_pos();
-                if n_pos >= n_ctx {
-                    return Err(Error::ContextOverflow { needed: n_pos + 1, n_ctx });
-                }
-                let mut usage = Usage { prompt_tokens: chunks.n_tokens() as u32, ..Default::default() };
-                self.reset();
-                self.kv_untracked = true;
-                let vision = self.model.vision().expect("checked by caller");
-                self.n_past = vision.eval(self.ctx.as_ptr(), chunks, 0, self.n_batch as i32)? as usize;
-                usage.prompt_ms = t_prompt.elapsed().as_secs_f64() * 1000.0;
-                return self.generate_tokens(sampler, usage, max_tokens, stop, special, on_piece);
-            }
+        let segments = match prompt {
+            Prompt::Tokens(t) => vec![Segment::Text(t.to_vec())],
+            Prompt::Media(chunks) => chunks.segments(),
         };
-        if tokens.is_empty() {
+        let mut usage = Usage::default();
+        if !self.eval_prompt(&segments, &mut usage)? {
+            self.reset();
+            return Ok(self.finish(String::new(), FinishReason::Cancelled, usage));
+        }
+        usage.prompt_ms = t_prompt.elapsed().as_secs_f64() * 1000.0;
+        self.generate_tokens(sampler, usage, max_tokens, stop, special, on_piece)
+    }
+
+    /// Bring the KV cache to `segments`, reusing the longest common prefix of cached items
+    /// (tokens, and images by content hash). Always re-evaluates at least the last item so
+    /// logits are available. Returns `false` if cancelled.
+    fn eval_prompt(&mut self, segments: &[Segment], usage: &mut Usage) -> Result<bool> {
+        let n_ctx = self.n_ctx();
+        let items: Vec<CacheItem> = segments
+            .iter()
+            .flat_map(|seg| match seg {
+                Segment::Text(t) => t.iter().map(|&t| CacheItem::Token(t)).collect::<Vec<_>>(),
+                Segment::Media(m) => vec![CacheItem::Media { id: m.id.clone(), n_tokens: m.n_tokens, n_pos: m.n_pos }],
+            })
+            .collect();
+        if items.is_empty() {
             return Err(Error::InvalidArgument("empty prompt".into()));
         }
-        if tokens.len() >= n_ctx {
-            return Err(Error::ContextOverflow { needed: tokens.len() + 1, n_ctx });
+        let total_pos: usize = items.iter().map(CacheItem::n_pos).sum();
+        if total_pos >= n_ctx {
+            return Err(Error::ContextOverflow { needed: total_pos + 1, n_ctx });
         }
-        if self.kv_untracked {
-            self.reset();
-        }
-        let mut usage = Usage { prompt_tokens: tokens.len() as u32, ..Default::default() };
+        usage.prompt_tokens = items.iter().map(CacheItem::n_tokens).sum::<usize>() as u32;
 
-        // Reuse the common prefix; always re-evaluate at least the last prompt token for logits.
-        let mut keep = self.cached.iter().zip(tokens).take_while(|(a, b)| a == b).count();
-        keep = keep.min(tokens.len() - 1);
+        let mut keep = self.cached.iter().zip(&items).take_while(|(a, b)| a == b).count();
+        keep = keep.min(items.len() - 1);
         if keep < self.cached.len() {
+            let pos: usize = self.cached[..keep].iter().map(CacheItem::n_pos).sum();
             let mem = unsafe { sys::llama_get_memory(self.ctx.as_ptr()) };
-            if !unsafe { sys::llama_memory_seq_rm(mem, 0, keep as i32, -1) } {
+            if unsafe { sys::llama_memory_seq_rm(mem, 0, pos as i32, -1) } {
+                self.cached.truncate(keep);
+            } else {
                 self.reset();
                 keep = 0;
             }
-            self.cached.truncate(keep);
         }
-        usage.cached_tokens = keep as u32;
+        self.n_past = self.cached.iter().map(CacheItem::n_pos).sum();
+        usage.cached_tokens = self.cached.iter().map(CacheItem::n_tokens).sum::<usize>() as u32;
 
-        let rest = &tokens[keep..];
-        for (ci, chunk) in rest.chunks(self.n_batch).enumerate() {
-            if self.cancel.is_cancelled() {
-                return Ok(self.finish(String::new(), FinishReason::Cancelled, usage));
-            }
-            let last_chunk = (ci + 1) * self.n_batch >= rest.len();
-            self.batch.clear();
-            for (i, &t) in chunk.iter().enumerate() {
-                let pos = self.cached.len() as i32;
-                self.batch.add(t, pos, &[0], last_chunk && i == chunk.len() - 1);
-                self.cached.push(t);
-            }
-            if !self.decode()? {
-                self.reset();
-                return Ok(self.finish(String::new(), FinishReason::Cancelled, usage));
+        let last = items.len() - 1;
+        let mut index = 0; // item index at the start of the current segment
+        for seg in segments {
+            match seg {
+                Segment::Text(tokens) => {
+                    let start = index;
+                    index += tokens.len();
+                    if index <= keep {
+                        continue;
+                    }
+                    let from = keep.saturating_sub(start);
+                    for (ci, chunk) in tokens[from..].chunks(self.n_batch).enumerate() {
+                        if self.cancel.is_cancelled() {
+                            return Ok(false);
+                        }
+                        self.batch.clear();
+                        for (j, &t) in chunk.iter().enumerate() {
+                            let item = start + from + ci * self.n_batch + j;
+                            self.batch.add(t, self.n_past as i32, &[0], item == last);
+                            self.n_past += 1;
+                            self.cached.push(CacheItem::Token(t));
+                        }
+                        if !self.decode()? {
+                            return Ok(false);
+                        }
+                    }
+                }
+                Segment::Media(m) => {
+                    let item = index;
+                    index += 1;
+                    if index <= keep {
+                        continue;
+                    }
+                    if self.cancel.is_cancelled() {
+                        return Ok(false);
+                    }
+                    let vision = self.model.vision().expect("media segments imply a projector");
+                    let new_pos = vision.eval_chunk(self.ctx.as_ptr(), m, self.n_past as i32, self.n_batch as i32, item == last)?;
+                    let n_pos = (new_pos as usize).saturating_sub(self.n_past);
+                    if n_pos != m.n_pos {
+                        log::debug!(target: "aicore", "media chunk used {n_pos} positions, expected {}", m.n_pos);
+                    }
+                    self.n_past = new_pos as usize;
+                    self.cached.push(CacheItem::Media { id: m.id.clone(), n_tokens: m.n_tokens, n_pos });
+                }
             }
         }
-        self.n_past = self.cached.len();
-        usage.prompt_ms = t_prompt.elapsed().as_secs_f64() * 1000.0;
-        self.generate_tokens(sampler, usage, max_tokens, stop, special, on_piece)
+        Ok(true)
     }
 
     /// Sample and decode until EOG, a stop string, the budget, or cancellation.
@@ -849,9 +915,7 @@ impl ChatSession {
                 break;
             }
             self.n_past += 1;
-            if !self.kv_untracked {
-                self.cached.push(tok);
-            }
+            self.cached.push(CacheItem::Token(tok));
         }
         let tail = stream.finish();
         if !tail.is_empty() && reason != FinishReason::Cancelled {

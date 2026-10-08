@@ -80,12 +80,11 @@ fn multiple_images_and_followups() {
         println!("[{name}] follow-up: {:?}", r.content);
         assert!(r.content.contains("42"), "[{name}] {}", r.content);
 
-        // A text-only request on the same session must not see stale image KV.
+        // A text-only request on the same session after media: correct, and reuse resumes.
         let r = ask(&mut chat, vec![ChatMessage::user("What is 6 times 7? Just the number.")]);
         assert!(r.content.contains("42"), "[{name}] {}", r.content);
-        assert_eq!(r.usage.cached_tokens, 0, "[{name}] KV after media must not be reused");
         let r2 = ask(&mut chat, vec![ChatMessage::user("What is 6 times 7? Just the number.")]);
-        assert!(r2.usage.cached_tokens > 0, "[{name}] text prefix reuse resumes after media");
+        assert!(r2.usage.cached_tokens as usize >= r2.usage.prompt_tokens as usize - 1, "[{name}] text prefix reuse");
     }
 }
 
@@ -132,4 +131,58 @@ fn image_or_dummy() -> Image {
     std::env::var("AICORE_TEST_IMAGES")
         .map(|d| Image::from_path(PathBuf::from(d).join("red_square.png")).unwrap())
         .unwrap_or_else(|_| Image::from_bytes(vec![0x89, b'P', b'N', b'G', 0, 1, 2]))
+}
+
+/// KV-cache reuse across image prompts: identical images are reused (not re-encoded),
+/// changed images are not, and answers match a fresh session exactly.
+#[test]
+fn image_prompt_cache_reuse() {
+    for (name, model) in vision_models() {
+        let mut chat = ChatSession::new(model.clone(), &SessionParams::default()).unwrap();
+        let q1 = vec![ChatMessage::user_with_images("What text is in this image?", vec![image("text_hello.png")])];
+        let r1 = ask(&mut chat, q1.clone());
+
+        // 1. Follow-up: the image and first turn are reused, answer identical to a fresh session.
+        let mut q2 = q1.clone();
+        q2.push(r1.to_message());
+        q2.push(ChatMessage::user("Now write only the number from that text, twice, separated by a space."));
+        let warm = ask(&mut chat, q2.clone());
+        let cold = ask(&mut ChatSession::new(model.clone(), &SessionParams::default()).unwrap(), q2.clone());
+        println!(
+            "[{name}] follow-up: cached {}/{} tokens, prompt {:.0} ms (cold {:.0} ms): {:?}",
+            warm.usage.cached_tokens, warm.usage.prompt_tokens, warm.usage.prompt_ms, cold.usage.prompt_ms, warm.content
+        );
+        assert_eq!(warm.content, cold.content, "[{name}] reused KV changed the answer");
+        assert!(warm.usage.cached_tokens >= r1.usage.prompt_tokens - 1, "[{name}] first turn incl. image not reused");
+        assert_eq!(cold.usage.cached_tokens, 0);
+        assert!(warm.content.contains("42"), "[{name}] {}", warm.content);
+
+        // 2. Same question, different image: must not reuse the old image.
+        let q3 = vec![ChatMessage::user_with_images("What text is in this image?", vec![image("red_square.png")])];
+        let mut chat2 = ChatSession::new(model.clone(), &SessionParams::default()).unwrap();
+        ask(&mut chat2, q1.clone());
+        let swapped = ask(&mut chat2, q3.clone());
+        let fresh = ask(&mut ChatSession::new(model.clone(), &SessionParams::default()).unwrap(), q3);
+        println!("[{name}] swapped image: cached {} tokens: {:?}", swapped.usage.cached_tokens, swapped.content);
+        assert_eq!(swapped.content, fresh.content, "[{name}] stale image leaked into the answer");
+        assert!(!swapped.content.to_uppercase().contains("HELLO"), "[{name}] answered about the old image");
+        assert!(swapped.usage.cached_tokens < 40, "[{name}] reused past the changed image");
+
+        // 3. Two images, swap only the second: the first is reused.
+        let two = |second: &str| {
+            vec![ChatMessage::user_with_images(
+                "Describe each of the two images in a few words.",
+                vec![image("three_circles.png"), image(second)],
+            )]
+        };
+        let mut chat3 = ChatSession::new(model.clone(), &SessionParams::default()).unwrap();
+        let a = ask(&mut chat3, two("red_square.png"));
+        let b = ask(&mut chat3, two("stripes.jpg"));
+        let b_fresh = ask(&mut ChatSession::new(model.clone(), &SessionParams::default()).unwrap(), two("stripes.jpg"));
+        println!("[{name}] second image swapped: cached {}/{} tokens: {:?}", b.usage.cached_tokens, b.usage.prompt_tokens, b.content);
+        assert!(b.usage.cached_tokens > 20, "[{name}] first image not reused");
+        assert!(b.usage.cached_tokens < b.usage.prompt_tokens - 20, "[{name}] second image wrongly reused");
+        assert_eq!(b.content, b_fresh.content, "[{name}] partial reuse changed the answer");
+        assert_ne!(a.content, b.content);
+    }
 }

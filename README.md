@@ -169,7 +169,9 @@ Status: builds and passes static checks (imports, delay-loads, exports, examples
     `ChatMessage::user_with_images`). Several images per message and images in earlier turns
     work. Remote URLs are never fetched. Uses llama.cpp's mtmd; tested with Qwen2.5-VL-3B
     (M-RoPE) and Gemma 3 4B (color, counting, OCR, JPEG, multi-image, follow-ups).
-    Requests with images re-encode them each turn (no KV-cache reuse for media yet).
+    KV-cache prefix reuse covers images too: identical images (by content hash) are kept
+    across turns instead of re-encoded (follow-up turns 5–19× faster to prompt in tests),
+    a changed image invalidates the cache from that point on.
 - **Embedder**: batched, L2-normalized vectors.
 
 The C ABI passes parameters and results as JSON; see `crates/aicore-ffi/include/aicore.h`
@@ -191,4 +193,4 @@ Phase 3b (Windows cross-build, static-checked; untested on Windows) ·
 Phase 4 (templates, JSON output, tool calling, reasoning streaming, sidecar server) ✔ ·
 Phase 5 (vision / image input) ✔
 
-Next: run on real Windows; macOS/ARM builds; KV-cache reuse for image prompts; audio input (mtmd).
+Next: run on real Windows; macOS/ARM builds; audio input (mtmd).

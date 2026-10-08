@@ -132,19 +132,41 @@ impl Vision {
         }
     }
 
-    /// Encode images and decode all chunks into `lctx` starting at `n_past`; returns the
-    /// new position. Logits are produced for the last token.
-    pub fn eval(&self, lctx: *mut sys::llama_context, chunks: &Chunks, n_past: i32, n_batch: i32) -> Result<i32> {
+    /// Encode one media chunk and decode it into `lctx` at `n_past`; returns the new position.
+    pub fn eval_chunk(
+        &self,
+        lctx: *mut sys::llama_context,
+        chunk: &MediaChunk,
+        n_past: i32,
+        n_batch: i32,
+        logits_last: bool,
+    ) -> Result<i32> {
         let _guard = self.eval_lock.lock().unwrap_or_else(|e| e.into_inner());
         let mut new_n_past = 0;
         let rc = unsafe {
-            sys::mtmd_helper_eval_chunks(self.ctx.as_ptr(), lctx, chunks.0.as_ptr(), n_past, 0, n_batch, true, &mut new_n_past)
+            sys::mtmd_helper_eval_chunk_single(self.ctx.as_ptr(), lctx, chunk.ptr, n_past, 0, n_batch, logits_last, &mut new_n_past)
         };
         if rc != 0 {
             return Err(Error::Decode(rc));
         }
         Ok(new_n_past)
     }
+}
+
+/// One piece of a tokenized prompt: text tokens, or a media chunk (an encoded image).
+pub(crate) enum Segment {
+    Text(Vec<sys::llama_token>),
+    Media(MediaChunk),
+}
+
+/// A media chunk inside a [`Chunks`] (valid while the `Chunks` lives).
+pub(crate) struct MediaChunk {
+    ptr: *const sys::mtmd_input_chunk,
+    /// Content hash of the image (SHA-256, set by mtmd); used for KV-cache reuse.
+    pub id: String,
+    pub n_tokens: usize,
+    /// Positions consumed (differs from tokens for M-RoPE models).
+    pub n_pos: usize,
 }
 
 struct Bitmap(NonNull<sys::mtmd_bitmap>);
@@ -159,12 +181,34 @@ impl Drop for Bitmap {
 pub(crate) struct Chunks(NonNull<sys::mtmd_input_chunks>);
 
 impl Chunks {
-    pub fn n_tokens(&self) -> usize {
-        unsafe { sys::mtmd_helper_get_n_tokens(self.0.as_ptr()) }
-    }
-    /// Positions consumed (differs from tokens for M-RoPE models).
-    pub fn n_pos(&self) -> usize {
-        unsafe { sys::mtmd_helper_get_n_pos(self.0.as_ptr()) }.max(0) as usize
+    pub fn segments(&self) -> Vec<Segment> {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static UNHASHED: AtomicU64 = AtomicU64::new(0);
+        let n = unsafe { sys::mtmd_input_chunks_size(self.0.as_ptr()) };
+        (0..n)
+            .map(|i| unsafe {
+                let chunk = sys::mtmd_input_chunks_get(self.0.as_ptr(), i);
+                if sys::mtmd_input_chunk_get_type(chunk) == sys::mtmd_input_chunk_type_MTMD_INPUT_CHUNK_TYPE_TEXT {
+                    let mut len = 0usize;
+                    let toks = sys::mtmd_input_chunk_get_tokens_text(chunk, &mut len);
+                    Segment::Text(if toks.is_null() { Vec::new() } else { std::slice::from_raw_parts(toks, len).to_vec() })
+                } else {
+                    let id_ptr = sys::mtmd_input_chunk_get_id(chunk);
+                    let id = if id_ptr.is_null() {
+                        // No content hash: never matches a cached entry.
+                        format!("unhashed-{}", UNHASHED.fetch_add(1, Ordering::Relaxed))
+                    } else {
+                        CStr::from_ptr(id_ptr).to_string_lossy().into_owned()
+                    };
+                    Segment::Media(MediaChunk {
+                        ptr: chunk,
+                        id,
+                        n_tokens: sys::mtmd_input_chunk_get_n_tokens(chunk),
+                        n_pos: sys::mtmd_input_chunk_get_n_pos(chunk).max(0) as usize,
+                    })
+                }
+            })
+            .collect()
     }
 }
 
