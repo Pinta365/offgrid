@@ -61,7 +61,8 @@ let msg = ChatMessage::user_with_media("What's in this picture?", vec![Media::fr
 ```
 
 The main entry points are `ChatSession::complete_stream` (content, reasoning and tool-call
-events), `run_tools` (the tool loop) and `Embedder::embed`. See `crates/aicore/examples/`.
+events), `run_tools` (the tool loop) and `Embedder::embed`. See `crates/aicore/examples/`, and
+`examples/tauri/` for a desktop chat app that embeds the crate.
 
 ### C / C++ (and anything with a C FFI)
 
@@ -275,7 +276,7 @@ The suites cover:
 | `crates/aicore-ffi` | C ABI (`libaicore`) and the generated `include/aicore.h` |
 | `crates/aicore-server` | OpenAI-compatible HTTP server |
 | `bindings/deno` | Deno binding and its tests |
-| `examples/` | C and Deno examples (Rust examples are in `crates/aicore/examples/`) |
+| `examples/` | C, Deno and Tauri examples (Rust examples are in `crates/aicore/examples/`) |
 | `scripts/` | Packaging and check scripts, cross-compile environment, OpenAI SDK compatibility check |
 | `vendor/llama.cpp` | Pinned llama.cpp submodule |
 | `spike/` | Phase 0 notes and benchmarks, plus test images and audio (models are gitignored) |

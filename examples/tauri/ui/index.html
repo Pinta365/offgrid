@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>aicore chat</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="main.js" defer></script>
+</head>
+<body>
+  <header>
+    <span id="status" class="status loading">Starting…</span>
+    <button id="new-chat" type="button">New chat</button>
+  </header>
+
+  <main id="messages"></main>
+
+  <form id="composer">
+    <textarea id="input" rows="2" placeholder="Message (Enter to send, Shift+Enter for a new line)" disabled></textarea>
+    <button id="send" type="submit" disabled>Send</button>
+  </form>
+</body>
+</html>
