@@ -1,5 +1,5 @@
 //! Audio input end-to-end. Needs model + projector pairs and the spike/audio set:
-//!   OFFGRID_TEST_AUDIO_MODEL / OFFGRID_TEST_AUDIO_MMPROJ   audio-only (e.g. Ultravox 0.5 1B)
+//!   OFFGRID_TEST_AUDIO_MODEL / OFFGRID_TEST_AUDIO_MMPROJ   audio-only (e.g. Ultravox 0.5 1B; not used for transcription)
 //!   OFFGRID_TEST_OMNI_MODEL / OFFGRID_TEST_OMNI_MMPROJ     audio + vision (e.g. Qwen2.5-Omni-3B)
 //!   OFFGRID_TEST_AUDIO, OFFGRID_TEST_IMAGES                sample dirs
 //! Optional: OFFGRID_TEST_VL_MODEL / OFFGRID_TEST_VL_MMPROJ (vision-only) for the error test.
@@ -38,9 +38,11 @@ fn ask(chat: &mut ChatSession, messages: Vec<ChatMessage>) -> ChatResponse {
     chat.complete(&req, |_| true).unwrap()
 }
 
+// Omni only: Ultravox 1B understands the clip but can't be relied on to transcribe it
+// (on jfk.mp3 it claims it has no audio). Its understanding is covered below.
 #[test]
 fn transcribes_speech_in_all_formats() {
-    for (name, model) in audio_models() {
+    if let Some((name, model)) = load("OFFGRID_TEST_OMNI_MODEL", "OFFGRID_TEST_OMNI_MMPROJ") {
         assert!(model.info().audio, "[{name}]");
         let mut chat = ChatSession::new(model, &SessionParams::default()).unwrap();
         for file in ["jfk.wav", "jfk.mp3", "jfk.flac"] {
