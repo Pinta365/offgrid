@@ -166,7 +166,7 @@ export interface ModelInfo {
 }
 
 export interface VersionInfo {
-  aicore: string;
+  offgrid: string;
   abi: number;
   llama_cpp: string;
 }

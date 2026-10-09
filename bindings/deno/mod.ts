@@ -1,5 +1,5 @@
 /**
- * Deno bindings for aicore (embeddable offline AI core).
+ * Deno bindings for offgrid (embeddable offline AI core).
  *
  * Long-running calls (model load, chat, embeddings) run off the JS thread via
  * `nonblocking` FFI, so they return Promises and never block the event loop.
@@ -8,8 +8,8 @@
  *
  * @example
  * ```ts
- * import { AiCore } from "./mod.ts";
- * using core = AiCore.open();
+ * import { Offgrid } from "./mod.ts";
+ * using core = Offgrid.open();
  * using model = await core.loadModel("model.gguf");
  * using chat = await model.createChat();
  * const res = await chat.complete(
@@ -41,42 +41,42 @@ export type * from "./types.ts";
 export const ABI_VERSION = 1;
 
 const symbols = {
-  aicore_abi_version: { parameters: [], result: "u32" },
-  aicore_version_json: { parameters: [], result: "pointer" },
-  aicore_string_free: { parameters: ["pointer"], result: "void" },
-  aicore_devices_json: { parameters: [], result: "pointer" },
-  aicore_model_load: { parameters: ["buffer", "buffer", "buffer"], result: "pointer", nonblocking: true },
-  aicore_model_info_json: { parameters: ["pointer"], result: "pointer" },
-  aicore_model_free: { parameters: ["pointer"], result: "void" },
-  aicore_chat_new: { parameters: ["pointer", "buffer", "buffer"], result: "pointer", nonblocking: true },
-  aicore_chat_complete: {
+  offgrid_abi_version: { parameters: [], result: "u32" },
+  offgrid_version_json: { parameters: [], result: "pointer" },
+  offgrid_string_free: { parameters: ["pointer"], result: "void" },
+  offgrid_devices_json: { parameters: [], result: "pointer" },
+  offgrid_model_load: { parameters: ["buffer", "buffer", "buffer"], result: "pointer", nonblocking: true },
+  offgrid_model_info_json: { parameters: ["pointer"], result: "pointer" },
+  offgrid_model_free: { parameters: ["pointer"], result: "void" },
+  offgrid_chat_new: { parameters: ["pointer", "buffer", "buffer"], result: "pointer", nonblocking: true },
+  offgrid_chat_complete: {
     parameters: ["pointer", "buffer", "function", "pointer", "buffer"],
     result: "pointer",
     nonblocking: true,
   },
-  aicore_chat_complete_events: {
+  offgrid_chat_complete_events: {
     parameters: ["pointer", "buffer", "function", "pointer", "buffer"],
     result: "pointer",
     nonblocking: true,
   },
-  aicore_chat_generate: {
+  offgrid_chat_generate: {
     parameters: ["pointer", "buffer", "function", "pointer", "buffer"],
     result: "pointer",
     nonblocking: true,
   },
-  aicore_chat_cancel: { parameters: ["pointer"], result: "void" },
-  aicore_chat_next_request_id: { parameters: ["pointer"], result: "u64" },
-  aicore_chat_cancel_request: { parameters: ["pointer", "u64"], result: "void" },
-  aicore_chat_reset: { parameters: ["pointer"], result: "void" },
-  aicore_chat_free: { parameters: ["pointer"], result: "void" },
-  aicore_embedder_new: { parameters: ["pointer", "buffer", "buffer"], result: "pointer", nonblocking: true },
-  aicore_embedder_dim: { parameters: ["pointer"], result: "i64" },
-  aicore_embed: {
+  offgrid_chat_cancel: { parameters: ["pointer"], result: "void" },
+  offgrid_chat_next_request_id: { parameters: ["pointer"], result: "u64" },
+  offgrid_chat_cancel_request: { parameters: ["pointer", "u64"], result: "void" },
+  offgrid_chat_reset: { parameters: ["pointer"], result: "void" },
+  offgrid_chat_free: { parameters: ["pointer"], result: "void" },
+  offgrid_embedder_new: { parameters: ["pointer", "buffer", "buffer"], result: "pointer", nonblocking: true },
+  offgrid_embedder_dim: { parameters: ["pointer"], result: "i64" },
+  offgrid_embed: {
     parameters: ["pointer", "buffer", "usize", "buffer", "usize", "buffer"],
     result: "i32",
     nonblocking: true,
   },
-  aicore_embedder_free: { parameters: ["pointer"], result: "void" },
+  offgrid_embedder_free: { parameters: ["pointer"], result: "void" },
 } as const satisfies Deno.ForeignLibraryInterface;
 
 type Lib = Deno.DynamicLibrary<typeof symbols>["symbols"];
@@ -91,7 +91,7 @@ const EVENT_CALLBACK = {
   result: "bool",
 } as const satisfies Deno.UnsafeCallbackDefinition;
 
-/** Event kinds of aicore_chat_complete_events. */
+/** Event kinds of offgrid_chat_complete_events. */
 const EVENT_CONTENT = 0;
 const EVENT_REASONING = 1;
 
@@ -99,8 +99,8 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
 /** Thrown for errors reported by the native library. */
-export class AiCoreError extends Error {
-  override name = "AiCoreError";
+export class OffgridError extends Error {
+  override name = "OffgridError";
 }
 
 function cstr(s: string): Uint8Array<ArrayBuffer> {
@@ -120,7 +120,7 @@ function takeString(lib: Lib, ptr: Deno.PointerValue): string | null {
   try {
     return Deno.UnsafePointerView.getCString(ptr);
   } finally {
-    lib.aicore_string_free(ptr);
+    lib.offgrid_string_free(ptr);
   }
 }
 
@@ -131,11 +131,11 @@ class ErrorSlot {
     const addr = this.buf[0];
     if (addr === 0n) return;
     const msg = takeString(lib, Deno.UnsafePointer.create(addr));
-    throw new AiCoreError(`${what}: ${msg ?? "unknown error"}`);
+    throw new OffgridError(`${what}: ${msg ?? "unknown error"}`);
   }
   fail(lib: Lib, what: string): never {
     this.throwIfSet(lib, what);
-    throw new AiCoreError(`${what} failed`);
+    throw new OffgridError(`${what} failed`);
   }
 }
 
@@ -146,13 +146,13 @@ function fromFileUrl(url: URL): string {
 }
 
 function defaultLibPath(): string {
-  const env = Deno.env.get("AICORE_LIB");
+  const env = Deno.env.get("OFFGRID_LIB");
   if (env) return env;
   const file = Deno.build.os === "windows"
-    ? "aicore.dll"
+    ? "offgrid.dll"
     : Deno.build.os === "darwin"
-    ? "libaicore.dylib"
-    : "libaicore.so";
+    ? "liboffgrid.dylib"
+    : "liboffgrid.so";
   for (const profile of ["release", "debug"]) {
     const url = new URL(`../../target/${profile}/${file}`, import.meta.url);
     try {
@@ -164,7 +164,7 @@ function defaultLibPath(): string {
 }
 
 /** Handle to the loaded native library. */
-export class AiCore implements Disposable {
+export class Offgrid implements Disposable {
   readonly #dylib: Deno.DynamicLibrary<typeof symbols>;
   /** @internal */
   readonly lib: Lib;
@@ -174,28 +174,28 @@ export class AiCore implements Disposable {
     this.lib = dylib.symbols;
   }
 
-  /** Load the native library. Path defaults to `$AICORE_LIB`, then the repo's target/ dir. */
-  static open(path: string = defaultLibPath()): AiCore {
+  /** Load the native library. Path defaults to `$OFFGRID_LIB`, then the repo's target/ dir. */
+  static open(path: string = defaultLibPath()): Offgrid {
     const dylib = Deno.dlopen(path, symbols);
-    const abi = dylib.symbols.aicore_abi_version();
+    const abi = dylib.symbols.offgrid_abi_version();
     if (abi !== ABI_VERSION) {
       dylib.close();
-      throw new AiCoreError(`ABI mismatch: library ${abi}, bindings ${ABI_VERSION}`);
+      throw new OffgridError(`ABI mismatch: library ${abi}, bindings ${ABI_VERSION}`);
     }
-    return new AiCore(dylib);
+    return new Offgrid(dylib);
   }
 
   version(): VersionInfo {
-    return JSON.parse(takeString(this.lib, this.lib.aicore_version_json())!);
+    return JSON.parse(takeString(this.lib, this.lib.offgrid_version_json())!);
   }
 
   devices(): DeviceInfo[] {
-    return JSON.parse(takeString(this.lib, this.lib.aicore_devices_json())!);
+    return JSON.parse(takeString(this.lib, this.lib.offgrid_devices_json())!);
   }
 
   async loadModel(path: string, params?: ModelParams): Promise<Model> {
     const err = new ErrorSlot();
-    const ptr = await this.lib.aicore_model_load(cstr(path), jsonArg(params), err.buf);
+    const ptr = await this.lib.offgrid_model_load(cstr(path), jsonArg(params), err.buf);
     if (ptr === null) return err.fail(this.lib, `load model ${path}`);
     return new Model(this, ptr);
   }
@@ -216,12 +216,12 @@ abstract class Handle implements Disposable {
   /** Native calls in flight that use this handle (it must not be freed meanwhile). */
   #pending = 0;
 
-  constructor(readonly core: AiCore, ptr: Deno.PointerObject) {
+  constructor(readonly core: Offgrid, ptr: Deno.PointerObject) {
     this.#ptr = ptr;
   }
 
   protected get ptr(): Deno.PointerObject {
-    if (this.#ptr === null) throw new AiCoreError(`${this.constructor.name} is disposed`);
+    if (this.#ptr === null) throw new OffgridError(`${this.constructor.name} is disposed`);
     return this.#ptr;
   }
 
@@ -231,7 +231,7 @@ abstract class Handle implements Disposable {
 
   /** Run a native call exclusively (one request at a time); the handle cannot be freed meanwhile. */
   protected async exclusive<T>(fn: (ptr: Deno.PointerObject) => Promise<T>): Promise<T> {
-    if (this.#busy) throw new AiCoreError(`${this.constructor.name} is busy with another request`);
+    if (this.#busy) throw new OffgridError(`${this.constructor.name} is busy with another request`);
     this.#busy = true;
     try {
       return await this.pinned(fn);
@@ -254,7 +254,7 @@ abstract class Handle implements Disposable {
   /** Throw if a native call is running (sync calls that take the native lock would deadlock). */
   protected assertIdle(what: string): void {
     if (this.#busy || this.#pending > 0) {
-      throw new AiCoreError(`cannot ${what} ${this.constructor.name} while a request is running`);
+      throw new OffgridError(`cannot ${what} ${this.constructor.name} while a request is running`);
     }
   }
 
@@ -276,13 +276,13 @@ abstract class Handle implements Disposable {
 /** A loaded GGUF model. Sessions/embedders keep it alive natively, so it may be freed first. */
 export class Model extends Handle {
   info(): ModelInfo {
-    return JSON.parse(takeString(this.lib, this.lib.aicore_model_info_json(this.ptr))!);
+    return JSON.parse(takeString(this.lib, this.lib.offgrid_model_info_json(this.ptr))!);
   }
 
   createChat(params?: SessionParams): Promise<ChatSession> {
     return this.pinned(async (model) => {
       const err = new ErrorSlot();
-      const ptr = await this.lib.aicore_chat_new(model, jsonArg(params), err.buf);
+      const ptr = await this.lib.offgrid_chat_new(model, jsonArg(params), err.buf);
       if (ptr === null) return err.fail(this.lib, "create chat session");
       return new ChatSession(this.core, ptr);
     });
@@ -291,15 +291,15 @@ export class Model extends Handle {
   createEmbedder(params?: EmbedParams): Promise<Embedder> {
     return this.pinned(async (model) => {
       const err = new ErrorSlot();
-      const ptr = await this.lib.aicore_embedder_new(model, jsonArg(params), err.buf);
+      const ptr = await this.lib.offgrid_embedder_new(model, jsonArg(params), err.buf);
       if (ptr === null) return err.fail(this.lib, "create embedder");
-      const dim = Number(this.lib.aicore_embedder_dim(ptr));
+      const dim = Number(this.lib.offgrid_embedder_dim(ptr));
       return new Embedder(this.core, ptr, dim);
     });
   }
 
   protected release(ptr: Deno.PointerObject): void {
-    this.lib.aicore_model_free(ptr);
+    this.lib.offgrid_model_free(ptr);
   }
 }
 
@@ -354,17 +354,17 @@ export class ChatSession extends Handle {
         messages.push({ role: "tool", tool_call_id: call.id, name: call.function.name, content: result });
       }
     }
-    throw new AiCoreError("unreachable: last round runs with tool_choice none");
+    throw new OffgridError("unreachable: last round runs with tool_choice none");
   }
 
   /** Chat completion using the model's chat template. */
   complete(request: ChatRequest, options: CompleteOptions = {}): Promise<ChatResponse> {
-    return this.#run("aicore_chat_complete_events", request, options);
+    return this.#run("offgrid_chat_complete_events", request, options);
   }
 
   /** Raw text completion without a chat template. */
   generate(request: GenerateRequest, options: CompleteOptions = {}): Promise<ChatResponse> {
-    return this.#run("aicore_chat_generate", request, options);
+    return this.#run("offgrid_chat_generate", request, options);
   }
 
   /** Stream pieces as an async iterator. Breaking out of the loop cancels generation. */
@@ -400,17 +400,17 @@ export class ChatSession extends Handle {
 
   /** Cancel the running request (safe to call any time). */
   cancel(): void {
-    this.lib.aicore_chat_cancel(this.ptr);
+    this.lib.offgrid_chat_cancel(this.ptr);
   }
 
   /** Clear the KV cache. Throws while a request is running (cancel and await it first). */
   reset(): void {
     this.assertIdle("reset");
-    this.lib.aicore_chat_reset(this.ptr);
+    this.lib.offgrid_chat_reset(this.ptr);
   }
 
   async #run(
-    fn: "aicore_chat_complete_events" | "aicore_chat_generate",
+    fn: "offgrid_chat_complete_events" | "offgrid_chat_generate",
     request: unknown,
     { onToken, onReasoning, signal }: CompleteOptions,
   ): Promise<ChatResponse> {
@@ -423,7 +423,7 @@ export class ChatSession extends Handle {
         | Deno.UnsafeCallback<typeof EVENT_CALLBACK>
         | Deno.UnsafeCallback<typeof TOKEN_CALLBACK>
         | null = null;
-      if (fn === "aicore_chat_complete_events" && (onToken || onReasoning)) {
+      if (fn === "offgrid_chat_complete_events" && (onToken || onReasoning)) {
         callback = Deno.UnsafeCallback.threadSafe(EVENT_CALLBACK, (kind, piecePtr, len) => {
           if (kind === EVENT_CONTENT) return onToken?.(text(piecePtr, len)) !== false;
           if (kind === EVENT_REASONING) return onReasoning?.(text(piecePtr, len)) !== false;
@@ -437,8 +437,8 @@ export class ChatSession extends Handle {
       }
       // Cancel this specific request: works even if the abort fires before the native call
       // has started (and can't hit a later request). Safe: the session is exclusive here.
-      const requestId = this.lib.aicore_chat_next_request_id(ptr);
-      const onAbort = () => this.lib.aicore_chat_cancel_request(ptr, requestId);
+      const requestId = this.lib.offgrid_chat_next_request_id(ptr);
+      const onAbort = () => this.lib.offgrid_chat_cancel_request(ptr, requestId);
       signal?.addEventListener("abort", onAbort, { once: true });
       const err = new ErrorSlot();
       try {
@@ -453,13 +453,13 @@ export class ChatSession extends Handle {
   }
 
   protected release(ptr: Deno.PointerObject): void {
-    this.lib.aicore_chat_free(ptr);
+    this.lib.offgrid_chat_free(ptr);
   }
 }
 
 /** Computes embedding vectors (L2-normalized by default). */
 export class Embedder extends Handle {
-  constructor(core: AiCore, ptr: Deno.PointerObject, readonly dim: number) {
+  constructor(core: Offgrid, ptr: Deno.PointerObject, readonly dim: number) {
     super(core, ptr);
   }
 
@@ -471,7 +471,7 @@ export class Embedder extends Handle {
       const ptrs = new BigUint64Array(strings.map((s) => BigInt(Deno.UnsafePointer.value(Deno.UnsafePointer.of(s)))));
       const out = new Float32Array(texts.length * this.dim);
       const err = new ErrorSlot();
-      const rc = await this.lib.aicore_embed(ptr, ptrs, BigInt(texts.length), out, BigInt(out.length), err.buf);
+      const rc = await this.lib.offgrid_embed(ptr, ptrs, BigInt(texts.length), out, BigInt(out.length), err.buf);
       void strings; // keep input buffers alive until the call returns
       if (rc !== 0) err.fail(this.lib, "embed");
       return texts.map((_, i) => out.subarray(i * this.dim, (i + 1) * this.dim));
@@ -479,7 +479,7 @@ export class Embedder extends Handle {
   }
 
   protected release(ptr: Deno.PointerObject): void {
-    this.lib.aicore_embedder_free(ptr);
+    this.lib.offgrid_embedder_free(ptr);
   }
 }
 
@@ -518,7 +518,7 @@ export async function imagePart(image: Uint8Array | string): Promise<ContentPart
 export async function audioPart(audio: Uint8Array | string): Promise<ContentPart> {
   const bytes = typeof audio === "string" ? await Deno.readFile(audio) : audio;
   const format = audioFormat(bytes);
-  if (!format) throw new AiCoreError("audioPart: data is not WAV, MP3 or FLAC");
+  if (!format) throw new OffgridError("audioPart: data is not WAV, MP3 or FLAC");
   return { type: "input_audio", input_audio: { data: toBase64(bytes), format } };
 }
 

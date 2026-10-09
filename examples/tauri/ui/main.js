@@ -11,7 +11,7 @@ const input = document.getElementById("input");
 const sendBtn = document.getElementById("send");
 const newChatBtn = document.getElementById("new-chat");
 
-// The whole conversation, in OpenAI format. aicore is stateless per request, so every turn
+// The whole conversation, in OpenAI format. offgrid is stateless per request, so every turn
 // sends all of it; the session's KV cache makes that cheap.
 let history = [SYSTEM];
 let ready = false;

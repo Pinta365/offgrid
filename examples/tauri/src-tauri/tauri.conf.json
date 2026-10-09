@@ -1,14 +1,14 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "aicore-chat",
+  "productName": "offgrid-chat",
   "version": "0.1.0",
-  "identifier": "dev.aicore.chat-example",
+  "identifier": "dev.offgrid.chat-example",
   "build": {
     "frontendDist": "../ui"
   },
   "app": {
     "withGlobalTauri": true,
-    "windows": [{ "title": "aicore chat", "width": 900, "height": 720, "minWidth": 420, "minHeight": 400 }],
+    "windows": [{ "title": "offgrid chat", "width": 900, "height": 720, "minWidth": 420, "minHeight": 400 }],
     "security": {
       "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost"
     }

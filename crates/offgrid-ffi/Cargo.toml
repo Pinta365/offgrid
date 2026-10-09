@@ -1,0 +1,27 @@
+[package]
+name = "offgrid-ffi"
+description = "C ABI for offgrid: JSON in/out, streaming callbacks"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+# Produces liboffgrid.so / offgrid.dll / liboffgrid.a
+name = "offgrid"
+crate-type = ["cdylib", "staticlib"]
+
+[features]
+default = ["vulkan"]
+vulkan = ["offgrid/vulkan"]
+cuda = ["offgrid/cuda"]
+dynamic-backends = ["offgrid/dynamic-backends"]
+
+[dependencies]
+offgrid = { workspace = true }
+log = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[build-dependencies]
+cbindgen = "0.29"

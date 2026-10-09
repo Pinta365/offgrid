@@ -1,5 +1,5 @@
 {
-  "name": "@pinta365/aicore",
+  "name": "@pinta365/offgrid",
   "version": "0.1.0",
   "exports": "./mod.ts",
   "tasks": {

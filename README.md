@@ -1,6 +1,6 @@
-# aicore: embeddable offline AI
+# offgrid: embeddable offline AI
 
-aicore is a small native library that adds local, offline AI to an application: chat, tool
+offgrid is a small native library that adds local, offline AI to an application: chat, tool
 calling, structured JSON output, embeddings, and image and audio input. You link a library,
 ship a GGUF model next to your app, and that's it. No daemon, no Docker, no cloud, and no
 network access at runtime.
@@ -10,16 +10,16 @@ on any GPU through Vulkan, falls back to the CPU automatically, and is packaged 
 Windows.
 
 ```
-  Rust / Tauri ─────── aicore crate ───────────┐
+  Rust / Tauri ─────── offgrid crate ───────────┐
   C / C++ ────────┐                            │
-  Deno ───────────┼── C ABI: libaicore ────────┤   JSON in/out, streaming callbacks
-  Python / Go / C#┘   (aicore.h)               │
-  any HTTP client ─── aicore-server ───────────┤   OpenAI-compatible API (optional sidecar)
+  Deno ───────────┼── C ABI: liboffgrid ────────┤   JSON in/out, streaming callbacks
+  Python / Go / C#┘   (offgrid.h)               │
+  any HTTP client ─── offgrid-server ───────────┤   OpenAI-compatible API (optional sidecar)
                                                │
-                                  aicore  (safe Rust core)
+                                  offgrid  (safe Rust core)
                    sessions · KV-cache reuse · templates · grammars · tools · media
                                                │
-                     aicore-sys ── llama.cpp + mtmd (vendor/, pinned commit)
+                     offgrid-sys ── llama.cpp + mtmd (vendor/, pinned commit)
                                    └─ backends loaded at runtime:
                                       Vulkan · 14 CPU variants · (CUDA)
 ```
@@ -36,14 +36,14 @@ Windows.
 | **Vision and audio** | Images (PNG, JPEG, …) and audio (WAV, MP3, FLAC) are sent as OpenAI content parts. Several items per message and mixed image and audio both work. Encoded media is reused across turns from the KV cache and is not decoded again. |
 | **Embeddings** | Batched and L2-normalized, with float or base64 output. |
 | **Cancellation** | Requests can be cancelled from any thread. Cancellation is scoped to one request and never affects a later one. |
-| **Server** | `aicore-server`: OpenAI-compatible HTTP with SSE streaming, a session pool, cancellation when the client disconnects, an optional API key, and graceful shutdown. |
+| **Server** | `offgrid-server`: OpenAI-compatible HTTP with SSE streaming, a session pool, cancellation when the client disconnects, an optional API key, and graceful shutdown. |
 
 ## Using it
 
 ### Rust (or Tauri)
 
 ```rust
-use aicore::*;
+use offgrid::*;
 
 let model = Model::load("qwen3-4b.gguf", &ModelParams::default())?;
 let mut chat = ChatSession::new(model, &SessionParams::default())?;
@@ -61,39 +61,39 @@ let msg = ChatMessage::user_with_media("What's in this picture?", vec![Media::fr
 ```
 
 The main entry points are `ChatSession::complete_stream` (content, reasoning and tool-call
-events), `run_tools` (the tool loop) and `Embedder::embed`. See `crates/aicore/examples/`, and
+events), `run_tools` (the tool loop) and `Embedder::embed`. See `crates/offgrid/examples/`, and
 `examples/tauri/` for a desktop chat app that embeds the crate.
 
 ### C / C++ (and anything with a C FFI)
 
-`include/aicore.h` exposes 22 functions. Requests and results are JSON in the OpenAI format,
+`include/offgrid.h` exposes 22 functions. Requests and results are JSON in the OpenAI format,
 so new features don't change the ABI.
 
 ```c
 char *err = NULL;
-aicore_model *m = aicore_model_load("qwen3-4b.gguf", NULL, &err);
-aicore_chat  *c = aicore_chat_new(m, NULL, &err);
-char *resp = aicore_chat_complete(c,
+offgrid_model *m = offgrid_model_load("qwen3-4b.gguf", NULL, &err);
+offgrid_chat  *c = offgrid_chat_new(m, NULL, &err);
+char *resp = offgrid_chat_complete(c,
     "{\"messages\":[{\"role\":\"user\",\"content\":\"Hi!\"}],\"max_tokens\":100}",
     on_token, NULL, &err);          /* bool on_token(const char *piece, size_t len, void *user) */
 /* ... */
-aicore_string_free(resp); aicore_chat_free(c); aicore_model_free(m);
+offgrid_string_free(resp); offgrid_chat_free(c); offgrid_model_free(m);
 ```
 
 Conventions:
 - Fallible functions take a trailing `char **error_out`.
-- Returned strings belong to the caller and are freed with `aicore_string_free`.
+- Returned strings belong to the caller and are freed with `offgrid_string_free`.
 - Panics never cross the FFI boundary.
-- `aicore_chat_cancel` and `aicore_chat_cancel_request` are safe to call from any thread.
+- `offgrid_chat_cancel` and `offgrid_chat_cancel_request` are safe to call from any thread.
 
-ABI version: `aicore_abi_version()` (currently 1). Examples are in `examples/c/`.
+ABI version: `offgrid_abi_version()` (currently 1). Examples are in `examples/c/`.
 
 ### Deno
 
 ```ts
-import { AiCore, imagePart } from "./bindings/deno/mod.ts";
+import { Offgrid, imagePart } from "./bindings/deno/mod.ts";
 
-using core = AiCore.open();                       // finds libaicore next to the repo, or $AICORE_LIB
+using core = Offgrid.open();                       // finds liboffgrid next to the repo, or $OFFGRID_LIB
 using model = await core.loadModel("qwen3-4b.gguf");
 using chat = await model.createChat();
 
@@ -111,10 +111,10 @@ Calls are nonblocking, so the event loop keeps running. The binding also offers:
 
 Examples are in `examples/deno/`.
 
-### HTTP (any language): `aicore-server`
+### HTTP (any language): `offgrid-server`
 
 ```sh
-bin/aicore-server --model qwen3-4b.gguf [--embedding-model embed.gguf] [--mmproj mmproj.gguf] \
+bin/offgrid-server --model qwen3-4b.gguf [--embedding-model embed.gguf] [--mmproj mmproj.gguf] \
                   [--port 8080] [--parallel 2] [--ctx 8192] [--api-key KEY]
 ```
 
@@ -153,12 +153,12 @@ Performance with Qwen3-4B Q4_K_M:
 
 | Platform | Status | Package |
 |---|---|---|
-| Linux x86_64 | Tested | `scripts/package-linux.sh` → `aicore-<ver>-linux-x86_64.tar.gz` (~25 MB) |
+| Linux x86_64 | Tested | `scripts/package-linux.sh` → `offgrid-<ver>-linux-x86_64.tar.gz` (~25 MB) |
 | Windows x86_64 | Cross-compiled; passes static checks; **not yet run on Windows** | `scripts/package-windows.sh` → `.zip` (~31 MB) |
 | macOS, ARM | Not attempted yet | |
 
-A package is a relocatable folder: `lib/` or `bin/` with `libaicore`, llama.cpp/ggml/mtmd and
-the backends, plus `include/aicore.h` and `aicore-server`. Keep the folder together.
+A package is a relocatable folder: `lib/` or `bin/` with `liboffgrid`, llama.cpp/ggml/mtmd and
+the backends, plus `include/offgrid.h` and `offgrid-server`. Keep the folder together.
 
 - **Runs on any x86_64 CPU.** It ships 14 CPU variants (from baseline x64 up to zen4 and
   sapphirerapids), and the best one for the machine is chosen at load time.
@@ -169,7 +169,7 @@ the backends, plus `include/aicore.h` and `aicore-server`. Keep the folder toget
   libm, plus libvulkan for the GPU module. `$ORIGIN` RPATHs make the folder relocatable.
 - **Windows** is built from Linux with llvm-mingw.
   - It depends only on Windows system DLLs, plus `vulkan-1.dll` from the GPU driver.
-  - `aicore.dll` delay-loads its dependencies from its own folder, so hosts such as Deno,
+  - `offgrid.dll` delay-loads its dependencies from its own folder, so hosts such as Deno,
     Python or C# can load it by path from anywhere.
   - Import libraries are included for both MSVC and MinGW.
 
@@ -191,8 +191,8 @@ Requirements:
 
 ```sh
 git submodule update --init
-cargo build --release -p aicore-ffi            # libaicore.{so,a} (static llama.cpp, dev build)
-cargo run --release -p aicore --example chat -- model.gguf
+cargo build --release -p offgrid-ffi            # liboffgrid.{so,a} (static llama.cpp, dev build)
+cargo run --release -p offgrid --example chat -- model.gguf
 ```
 
 Features:
@@ -215,16 +215,16 @@ Model-backed tests are enabled through environment variables pointing at GGUF fi
 
 | Variable | Enables tests for |
 |---|---|
-| `AICORE_TEST_MODEL` | chat, JSON, tools, server |
-| `AICORE_TEST_LLAMA_MODEL` | the Llama 3 tool format |
-| `AICORE_TEST_GEMMA_MODEL` | tools on a template without tool support (Gemma 3) |
-| `AICORE_TEST_THINKING_MODEL` | reasoning |
-| `AICORE_TEST_EMBED_MODEL` | embeddings |
-| `AICORE_TEST_VL_MODEL` / `AICORE_TEST_VL_MMPROJ` | vision |
-| `AICORE_TEST_VL2_MODEL` / `AICORE_TEST_VL2_MMPROJ` | vision, second model |
-| `AICORE_TEST_AUDIO_MODEL` / `AICORE_TEST_AUDIO_MMPROJ` | audio |
-| `AICORE_TEST_OMNI_MODEL` / `AICORE_TEST_OMNI_MMPROJ` | combined image and audio |
-| `AICORE_TEST_IMAGES`, `AICORE_TEST_AUDIO` | sample inputs (`spike/images`, `spike/audio`) |
+| `OFFGRID_TEST_MODEL` | chat, JSON, tools, server |
+| `OFFGRID_TEST_LLAMA_MODEL` | the Llama 3 tool format |
+| `OFFGRID_TEST_GEMMA_MODEL` | tools on a template without tool support (Gemma 3) |
+| `OFFGRID_TEST_THINKING_MODEL` | reasoning |
+| `OFFGRID_TEST_EMBED_MODEL` | embeddings |
+| `OFFGRID_TEST_VL_MODEL` / `OFFGRID_TEST_VL_MMPROJ` | vision |
+| `OFFGRID_TEST_VL2_MODEL` / `OFFGRID_TEST_VL2_MMPROJ` | vision, second model |
+| `OFFGRID_TEST_AUDIO_MODEL` / `OFFGRID_TEST_AUDIO_MMPROJ` | audio |
+| `OFFGRID_TEST_OMNI_MODEL` / `OFFGRID_TEST_OMNI_MMPROJ` | combined image and audio |
+| `OFFGRID_TEST_IMAGES`, `OFFGRID_TEST_AUDIO` | sample inputs (`spike/images`, `spike/audio`) |
 
 The suites cover:
 - KV-cache reuse, checked by comparing answers against a fresh session at temperature 0
@@ -243,7 +243,7 @@ The suites cover:
 - **Stateless requests, stateful sessions.** Every request carries the whole conversation, as
   the OpenAI API does. The session compares it with what is already in its KV cache: tokens
   match by token, images and audio by content hash. It then evaluates only what changed.
-- **llama.cpp is vendored at a tested commit**, with bindings generated by our own `aicore-sys`
+- **llama.cpp is vendored at a tested commit**, with bindings generated by our own `offgrid-sys`
   crate. That gives us control over build flags, which the portable packages depend on.
 - **Media is never fetched from the network.** Images and audio arrive as `data:` URLs or
   base64, which keeps the core offline and the server safe from server-side request forgery.
@@ -272,12 +272,12 @@ The suites cover:
 
 | Path | Contents |
 |---|---|
-| `crates/aicore-sys` | bindgen bindings to llama.cpp and mtmd; builds `vendor/llama.cpp` with CMake |
-| `crates/aicore` | Safe Rust core: models, sessions, templates, grammars, tools, media, embeddings |
-| `crates/aicore-ffi` | C ABI (`libaicore`) and the generated `include/aicore.h` |
-| `crates/aicore-server` | OpenAI-compatible HTTP server |
+| `crates/offgrid-sys` | bindgen bindings to llama.cpp and mtmd; builds `vendor/llama.cpp` with CMake |
+| `crates/offgrid` | Safe Rust core: models, sessions, templates, grammars, tools, media, embeddings |
+| `crates/offgrid-ffi` | C ABI (`liboffgrid`) and the generated `include/offgrid.h` |
+| `crates/offgrid-server` | OpenAI-compatible HTTP server |
 | `bindings/deno` | Deno binding and its tests |
-| `examples/` | C, Deno and Tauri examples (Rust examples are in `crates/aicore/examples/`) |
+| `examples/` | C, Deno and Tauri examples (Rust examples are in `crates/offgrid/examples/`) |
 | `scripts/` | Packaging and check scripts, cross-compile environment, OpenAI SDK compatibility check |
 | `vendor/llama.cpp` | Pinned llama.cpp submodule |
 | `spike/` | Phase 0 notes and benchmarks, plus test images and audio (models are gitignored) |

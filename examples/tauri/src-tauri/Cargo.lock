@@ -18,38 +18,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "aicore"
-version = "0.1.0"
-dependencies = [
- "aicore-sys",
- "log",
- "minijinja",
- "minijinja-contrib",
- "serde",
- "serde_json",
- "thiserror 2.0.21",
-]
-
-[[package]]
-name = "aicore-sys"
-version = "0.1.0"
-dependencies = [
- "bindgen",
- "cmake",
-]
-
-[[package]]
-name = "aicore-tauri-chat"
-version = "0.1.0"
-dependencies = [
- "aicore",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
-]
-
-[[package]]
 name = "alloc-no-stdlib"
 version = "3.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2210,6 +2178,38 @@ dependencies = [
  "objc2-app-kit",
  "objc2-core-foundation",
  "objc2-foundation",
+]
+
+[[package]]
+name = "offgrid"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "minijinja",
+ "minijinja-contrib",
+ "offgrid-sys",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "offgrid-sys"
+version = "0.1.0"
+dependencies = [
+ "bindgen",
+ "cmake",
+]
+
+[[package]]
+name = "offgrid-tauri-chat"
+version = "0.1.0"
+dependencies = [
+ "offgrid",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
 ]
 
 [[package]]

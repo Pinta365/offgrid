@@ -1,6 +1,6 @@
 // Tool calling from Deno with local tools.
 // deno run --allow-ffi --allow-env --allow-read examples/deno/tools.ts <model.gguf> ["question"]
-import { AiCore } from "../../bindings/deno/mod.ts";
+import { Offgrid } from "../../bindings/deno/mod.ts";
 
 const [path, question = "What time is it in UTC, and what is 1234 * 5678?"] = Deno.args;
 if (!path) {
@@ -8,7 +8,7 @@ if (!path) {
   Deno.exit(1);
 }
 
-using core = AiCore.open();
+using core = Offgrid.open();
 using model = await core.loadModel(path);
 using chat = await model.createChat();
 const out = new TextEncoder();

@@ -1,7 +1,7 @@
-//! Desktop chat app that embeds aicore directly (no sidecar, no FFI).
+//! Desktop chat app that embeds offgrid directly (no sidecar, no FFI).
 //!
 //! The model loads on a background thread at startup. The frontend owns the conversation and
-//! sends the whole message list on every turn (aicore requests are stateless); the session
+//! sends the whole message list on every turn (offgrid requests are stateless); the session
 //! reuses its KV cache, so only the new tokens are processed. Reply text and reasoning
 //! stream back over a `tauri::ipc::Channel`.
 
@@ -10,7 +10,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use aicore::{ChatMessage, ChatRequest, ChatResponse, ChatSession, Model, ModelParams, RequestCancel, SessionParams, StreamEvent};
+use offgrid::{ChatMessage, ChatRequest, ChatResponse, ChatSession, Model, ModelParams, RequestCancel, SessionParams, StreamEvent};
 use serde::Serialize;
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -53,9 +53,9 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// `$AICORE_MODEL`, or the first `.gguf` bundled in the app's `models/` resource folder.
+/// `$OFFGRID_MODEL`, or the first `.gguf` bundled in the app's `models/` resource folder.
 fn find_model(app: &AppHandle) -> Result<PathBuf, String> {
-    if let Some(path) = std::env::var_os("AICORE_MODEL") {
+    if let Some(path) = std::env::var_os("OFFGRID_MODEL") {
         return Ok(path.into());
     }
     let dir = app.path().resource_dir().map_err(|e| e.to_string())?.join("models");
@@ -71,7 +71,7 @@ fn find_model(app: &AppHandle) -> Result<PathBuf, String> {
     models
         .into_iter()
         .next()
-        .ok_or_else(|| format!("no .gguf model in {} (or set AICORE_MODEL)", dir.display()))
+        .ok_or_else(|| format!("no .gguf model in {} (or set OFFGRID_MODEL)", dir.display()))
 }
 
 fn load(app: &AppHandle, engine: &Engine) -> Result<Status, String> {
@@ -86,9 +86,9 @@ fn open_session(path: &Path) -> Result<(ChatSession, Status), String> {
     let model = Model::load(path, &ModelParams::default()).map_err(|e| e.to_string())?;
     let session = ChatSession::new(model.clone(), &SessionParams::default()).map_err(|e| e.to_string())?;
     let info = model.info();
-    let device = aicore::devices()
+    let device = offgrid::devices()
         .into_iter()
-        .find(|d| matches!(d.kind, aicore::DeviceKind::Gpu | aicore::DeviceKind::Igpu))
+        .find(|d| matches!(d.kind, offgrid::DeviceKind::Gpu | offgrid::DeviceKind::Igpu))
         .map_or_else(|| "CPU".to_string(), |d| d.description);
     let status = Status::Ready {
         model: info.name.unwrap_or_else(|| info.description.clone()),
@@ -168,11 +168,11 @@ fn main() {
 mod tests {
     use super::*;
 
-    /// The frontend's request shape, end to end through `generate`. Needs `AICORE_TEST_MODEL`.
+    /// The frontend's request shape, end to end through `generate`. Needs `OFFGRID_TEST_MODEL`.
     #[test]
     fn chat_and_cancel() {
-        let Some(path) = std::env::var_os("AICORE_TEST_MODEL") else {
-            eprintln!("skipped: AICORE_TEST_MODEL not set");
+        let Some(path) = std::env::var_os("OFFGRID_TEST_MODEL") else {
+            eprintln!("skipped: OFFGRID_TEST_MODEL not set");
             return;
         };
         let engine = Engine::default();
@@ -222,7 +222,7 @@ mod tests {
         rx.recv().unwrap();
         lock(&engine.cancel).as_ref().unwrap().cancel();
         let res = worker.join().unwrap().unwrap();
-        assert_eq!(res.finish_reason, aicore::FinishReason::Cancelled);
+        assert_eq!(res.finish_reason, offgrid::FinishReason::Cancelled);
         assert!(lock(&engine.cancel).is_none());
     }
 }

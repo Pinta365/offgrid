@@ -1,5 +1,5 @@
 /*
- * chat.c — minimal streaming chat example for the aicore C ABI.
+ * chat.c — minimal streaming chat example for the offgrid C ABI.
  *
  * Usage: ./chat <model.gguf> "<question>"
  *
@@ -12,12 +12,12 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "aicore.h"
+#include "offgrid.h"
 
 static void fail(const char *what, char *err)
 {
     fprintf(stderr, "%s: %s\n", what, err ? err : "(no error message)");
-    aicore_string_free(err);
+    offgrid_string_free(err);
     exit(1);
 }
 
@@ -70,34 +70,34 @@ int main(int argc, char **argv)
         return 2;
     }
 
-    char *version = aicore_version_json();
+    char *version = offgrid_version_json();
     if (!version) {
-        fprintf(stderr, "aicore_version_json: (no error message)\n");
+        fprintf(stderr, "offgrid_version_json: (no error message)\n");
         return 1;
     }
     printf("version: %s\n", version);
-    aicore_string_free(version);
+    offgrid_string_free(version);
 
-    char *devices = aicore_devices_json();
+    char *devices = offgrid_devices_json();
     if (!devices) {
-        fprintf(stderr, "aicore_devices_json: (no error message)\n");
+        fprintf(stderr, "offgrid_devices_json: (no error message)\n");
         return 1;
     }
     printf("devices: %s\n", devices);
-    aicore_string_free(devices);
+    offgrid_string_free(devices);
 
     char *err = NULL;
 
-    aicore_model *model = aicore_model_load(argv[1], NULL, &err);
+    offgrid_model *model = offgrid_model_load(argv[1], NULL, &err);
     if (!model) {
-        fail("aicore_model_load", err);
+        fail("offgrid_model_load", err);
     }
 
-    aicore_chat *chat = aicore_chat_new(model, NULL, &err);
+    offgrid_chat *chat = offgrid_chat_new(model, NULL, &err);
     if (!chat) {
-        fprintf(stderr, "aicore_chat_new: %s\n", err ? err : "(no error message)");
-        aicore_string_free(err);
-        aicore_model_free(model);
+        fprintf(stderr, "offgrid_chat_new: %s\n", err ? err : "(no error message)");
+        offgrid_string_free(err);
+        offgrid_model_free(model);
         return 1;
     }
 
@@ -120,22 +120,22 @@ int main(int argc, char **argv)
     printf("assistant: ");
     fflush(stdout);
 
-    char *response = aicore_chat_complete(chat, request, on_token, NULL, &err);
+    char *response = offgrid_chat_complete(chat, request, on_token, NULL, &err);
     if (!response) {
-        fprintf(stderr, "aicore_chat_complete: %s\n", err ? err : "(no error message)");
-        aicore_string_free(err);
+        fprintf(stderr, "offgrid_chat_complete: %s\n", err ? err : "(no error message)");
+        offgrid_string_free(err);
         free(request);
-        aicore_chat_free(chat);
-        aicore_model_free(model);
+        offgrid_chat_free(chat);
+        offgrid_model_free(model);
         return 1;
     }
 
     fputc('\n', stdout);
     fprintf(stderr, "response: %s\n", response);
 
-    aicore_string_free(response);
+    offgrid_string_free(response);
     free(request);
-    aicore_chat_free(chat);
-    aicore_model_free(model);
+    offgrid_chat_free(chat);
+    offgrid_model_free(model);
     return 0;
 }

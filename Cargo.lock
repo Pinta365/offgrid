@@ -26,58 +26,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "aicore"
-version = "0.1.0"
-dependencies = [
- "aicore-sys",
- "jsonschema",
- "libc",
- "log",
- "minijinja",
- "minijinja-contrib",
- "serde",
- "serde_json",
- "thiserror",
- "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "aicore-ffi"
-version = "0.1.0"
-dependencies = [
- "aicore",
- "cbindgen",
- "log",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "aicore-server"
-version = "0.1.0"
-dependencies = [
- "aicore",
- "axum",
- "base64 0.22.1",
- "clap",
- "futures-util",
- "log",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "tokio",
- "tokio-stream",
-]
-
-[[package]]
-name = "aicore-sys"
-version = "0.1.0"
-dependencies = [
- "bindgen",
- "cmake",
-]
-
-[[package]]
 name = "allocator-api2"
 version = "0.2.21"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1252,6 +1200,58 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "071dfc062690e90b734c0b2273ce72ad0ffa95f0c74596bc250dcfd960262841"
 dependencies = [
  "autocfg",
+]
+
+[[package]]
+name = "offgrid"
+version = "0.1.0"
+dependencies = [
+ "jsonschema",
+ "libc",
+ "log",
+ "minijinja",
+ "minijinja-contrib",
+ "offgrid-sys",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "offgrid-ffi"
+version = "0.1.0"
+dependencies = [
+ "cbindgen",
+ "log",
+ "offgrid",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "offgrid-server"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64 0.22.1",
+ "clap",
+ "futures-util",
+ "log",
+ "offgrid",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-stream",
+]
+
+[[package]]
+name = "offgrid-sys"
+version = "0.1.0"
+dependencies = [
+ "bindgen",
+ "cmake",
 ]
 
 [[package]]

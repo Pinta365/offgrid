@@ -1,4 +1,4 @@
-// OpenAI SDK compatibility checks for the aicore server.
+// OpenAI SDK compatibility checks for the offgrid server.
 //
 // Usage:
 //   deno run -A scripts/openai-compat.ts <baseURL> <apiKey> [thinkingBaseURL]

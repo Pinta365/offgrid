@@ -1,5 +1,5 @@
 /*
- * embed.c — embedding example for the aicore C ABI (float buffer API).
+ * embed.c — embedding example for the offgrid C ABI (float buffer API).
  *
  * Usage: ./embed <embed-model.gguf>
  *
@@ -11,7 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "aicore.h"
+#include "offgrid.h"
 
 static const char *SENTENCES[3] = {
     "The cat sits on the mat.",
@@ -37,26 +37,26 @@ int main(int argc, char **argv)
 
     char *err = NULL;
 
-    aicore_model *model = aicore_model_load(argv[1], NULL, &err);
+    offgrid_model *model = offgrid_model_load(argv[1], NULL, &err);
     if (!model) {
-        fprintf(stderr, "aicore_model_load: %s\n", err ? err : "(no error message)");
-        aicore_string_free(err);
+        fprintf(stderr, "offgrid_model_load: %s\n", err ? err : "(no error message)");
+        offgrid_string_free(err);
         return 1;
     }
 
-    aicore_embedder *emb = aicore_embedder_new(model, NULL, &err);
+    offgrid_embedder *emb = offgrid_embedder_new(model, NULL, &err);
     if (!emb) {
-        fprintf(stderr, "aicore_embedder_new: %s\n", err ? err : "(no error message)");
-        aicore_string_free(err);
-        aicore_model_free(model);
+        fprintf(stderr, "offgrid_embedder_new: %s\n", err ? err : "(no error message)");
+        offgrid_string_free(err);
+        offgrid_model_free(model);
         return 1;
     }
 
-    int64_t dim = aicore_embedder_dim(emb);
+    int64_t dim = offgrid_embedder_dim(emb);
     if (dim <= 0) {
-        fprintf(stderr, "aicore_embedder_dim failed (dim=%lld)\n", (long long)dim);
-        aicore_embedder_free(emb);
-        aicore_model_free(model);
+        fprintf(stderr, "offgrid_embedder_dim failed (dim=%lld)\n", (long long)dim);
+        offgrid_embedder_free(emb);
+        offgrid_model_free(model);
         return 1;
     }
     printf("dim: %lld\n", (long long)dim);
@@ -68,13 +68,13 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    int32_t rc = aicore_embed(emb, SENTENCES, n, out, n * (size_t)dim, &err);
+    int32_t rc = offgrid_embed(emb, SENTENCES, n, out, n * (size_t)dim, &err);
     if (rc != 0) {
-        fprintf(stderr, "aicore_embed: %s\n", err ? err : "(no error message)");
-        aicore_string_free(err);
+        fprintf(stderr, "offgrid_embed: %s\n", err ? err : "(no error message)");
+        offgrid_string_free(err);
         free(out);
-        aicore_embedder_free(emb);
-        aicore_model_free(model);
+        offgrid_embedder_free(emb);
+        offgrid_model_free(model);
         return 1;
     }
 
@@ -87,7 +87,7 @@ int main(int argc, char **argv)
     }
 
     free(out);
-    aicore_embedder_free(emb);
-    aicore_model_free(model);
+    offgrid_embedder_free(emb);
+    offgrid_model_free(model);
     return 0;
 }

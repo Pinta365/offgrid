@@ -2,8 +2,8 @@
 #
 # check-portable.sh <dist-dir> <model.gguf>
 #
-# Portability verification for an aicore Linux distribution directory (the
-# extracted aicore-<version>-linux-x86_64 directory). Prints PASS/FAIL per check
+# Portability verification for an offgrid Linux distribution directory (the
+# extracted offgrid-<version>-linux-x86_64 directory). Prints PASS/FAIL per check
 # and exits nonzero if any check fails.
 #
 set -uo pipefail
@@ -32,14 +32,14 @@ info() { echo "INFO: $*"; }
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-echo "== aicore portability checks =="
+echo "== offgrid portability checks =="
 echo "dist:  $DIST"
 echo "model: $MODEL"
 echo
 
 # --- a) ldd: everything resolved from lib/, no libstdc++ ---------------------
 # Every shipped ELF: versioned core libs (libllama.so.0, ...), backend modules and the server.
-mapfile -t ELFS < <(find "$DIST/lib" "$DIST/bin" -type f \( -name '*.so' -o -name '*.so.*' -o -name 'aicore-server' \) 2>/dev/null | sort)
+mapfile -t ELFS < <(find "$DIST/lib" "$DIST/bin" -type f \( -name '*.so' -o -name '*.so.*' -o -name 'offgrid-server' \) 2>/dev/null | sort)
 info "checking ${#ELFS[@]} binaries"
 missing=0
 stdcxx=0
@@ -77,7 +77,7 @@ info "max required GLIBC symbol version: ${glibc_max:-<none>}"
 cp -a "$DIST" "$TMP/copy1"
 BIN1="$TMP/chat1"
 if gcc -Wall -Wextra -O2 -I"$TMP/copy1/include" "$CHAT_SRC" \
-        -o "$BIN1" -L"$TMP/copy1/lib" -laicore -Wl,-rpath,"$TMP/copy1/lib" 2>"$TMP/gcc1.log"; then
+        -o "$BIN1" -L"$TMP/copy1/lib" -loffgrid -Wl,-rpath,"$TMP/copy1/lib" 2>"$TMP/gcc1.log"; then
     if timeout 300 "$BIN1" "$MODEL" "$QUESTION" >"$TMP/out1.txt" 2>"$TMP/err1.txt" \
             && grep -q '^assistant:' "$TMP/out1.txt"; then
         pass "relocated build+run: chat answered"
@@ -91,7 +91,7 @@ else
 fi
 
 # --- d) no-GPU fallback ------------------------------------------------------
-if VK_ICD_FILENAMES=/nonexistent VK_DRIVER_FILES=/nonexistent AICORE_LOG=info \
+if VK_ICD_FILENAMES=/nonexistent VK_DRIVER_FILES=/nonexistent OFFGRID_LOG=info \
         timeout 300 "$BIN1" "$MODEL" "$QUESTION" >"$TMP/out2.txt" 2>"$TMP/err2.txt" \
         && grep -q '^assistant:' "$TMP/out2.txt"; then
     pass "no-GPU fallback: chat answered with Vulkan disabled"
@@ -110,7 +110,7 @@ cp -a "$DIST" "$TMP/copy2"
 rm -f "$TMP/copy2/lib/libggml-vulkan.so"
 BIN2="$TMP/chat2"
 if gcc -Wall -Wextra -O2 -I"$TMP/copy2/include" "$CHAT_SRC" \
-        -o "$BIN2" -L"$TMP/copy2/lib" -laicore -Wl,-rpath,"$TMP/copy2/lib" 2>"$TMP/gcc2.log"; then
+        -o "$BIN2" -L"$TMP/copy2/lib" -loffgrid -Wl,-rpath,"$TMP/copy2/lib" 2>"$TMP/gcc2.log"; then
     if timeout 300 "$BIN2" "$MODEL" "$QUESTION" >"$TMP/out3.txt" 2>"$TMP/err3.txt" \
             && grep -q '^assistant:' "$TMP/out3.txt"; then
         devs3="$(grep -m1 '^devices:' "$TMP/out3.txt" || true)"
@@ -129,25 +129,25 @@ else
 fi
 
 # --- f) CPU variant loaded (report only) ------------------------------------
-VK_ICD_FILENAMES=/nonexistent VK_DRIVER_FILES=/nonexistent AICORE_LOG=debug \
+VK_ICD_FILENAMES=/nonexistent VK_DRIVER_FILES=/nonexistent OFFGRID_LOG=debug \
     timeout 300 "$BIN1" "$MODEL" "$QUESTION" >"$TMP/out4.txt" 2>"$TMP/err4.txt" || true
 info "CPU variant / backend load evidence:"
 grep -iE 'ggml-cpu|loaded.*cpu|cpu backend|variant' "$TMP/err4.txt" | head -8 | sed 's/^/      /' || true
 variant_line="$(grep -iE 'ggml-cpu-[a-z0-9]+\.so' "$TMP/err4.txt" | head -1 || true)"
 info "selected CPU module: ${variant_line:-<not detected>}"
 
-# h) Packaged server: run bin/aicore-server from a relocated copy, answer an HTTP request.
+# h) Packaged server: run bin/offgrid-server from a relocated copy, answer an HTTP request.
 mkdir -p "$TMP/srv"
 cp -r "$DIST" "$TMP/srv/pkg"
 PORT=$(( 20000 + RANDOM % 20000 ))
-"$TMP/srv/pkg/bin/aicore-server" --model "$MODEL" --port "$PORT" >"$TMP/srv.log" 2>&1 &
+"$TMP/srv/pkg/bin/offgrid-server" --model "$MODEL" --port "$PORT" >"$TMP/srv.log" 2>&1 &
 SRV_PID=$!
 for _ in $(seq 120); do curl -sf "http://127.0.0.1:$PORT/health" >/dev/null 2>&1 && break; sleep 0.5; done
 reply="$(curl -sf "http://127.0.0.1:$PORT/v1/chat/completions" \
     -d '{"messages":[{"role":"user","content":"Say OK."}],"max_tokens":8,"temperature":0}' 2>/dev/null || true)"
 kill "$SRV_PID" 2>/dev/null; wait "$SRV_PID" 2>/dev/null || true
 if printf '%s' "$reply" | grep -q '"chat.completion"'; then
-    pass "server: relocated bin/aicore-server answered /v1/chat/completions"
+    pass "server: relocated bin/offgrid-server answered /v1/chat/completions"
 else
     fail "server: no valid reply (log below)"
     tail -15 "$TMP/srv.log" | sed 's/^/      /'
@@ -158,7 +158,7 @@ fi
 if command -v deno >/dev/null 2>&1; then
     mkdir -p "$TMP/deno"
     cp -r "$DIST" "$TMP/deno/pkg"
-    if AICORE_LIB="$TMP/deno/pkg/lib/libaicore.so" AICORE_TEST_MODEL="$MODEL" \
+    if OFFGRID_LIB="$TMP/deno/pkg/lib/liboffgrid.so" OFFGRID_TEST_MODEL="$MODEL" \
         timeout 300 deno test --allow-ffi --allow-env --allow-read --config "$ROOT/bindings/deno/deno.json" \
         "$ROOT/bindings/deno/mod_test.ts" >"$TMP/deno.txt" 2>&1; then
         pass "deno: binding tests pass against relocated package"

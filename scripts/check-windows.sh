@@ -2,7 +2,7 @@
 #
 # check-windows.sh <dist-dir>
 #
-# Static portability checks for an aicore Windows distribution directory
+# Static portability checks for an offgrid Windows distribution directory
 # (no Wine available, so nothing is executed). Prints PASS/FAIL per check and
 # exits nonzero if any check fails.
 #
@@ -21,7 +21,7 @@ source "$ROOT/scripts/env-llvm-mingw.sh"
 
 BIN="$DIST/bin"
 LIB="$DIST/lib"
-HEADER="$DIST/include/aicore.h"
+HEADER="$DIST/include/offgrid.h"
 
 FAILS=0
 pass() { echo "PASS: $*"; }
@@ -31,7 +31,7 @@ info() { echo "INFO: $*"; }
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-echo "== aicore Windows packaging checks =="
+echo "== offgrid Windows packaging checks =="
 echo "dist: $DIST"
 echo
 
@@ -75,8 +75,8 @@ else
     fail "$bad_imports unexpected import(s)"
 fi
 
-# --- b) aicore.dll delay-loads libllama/libmtmd/ggml/ggml-base ----------------------
-imports_class="$(llvm-readobj --coff-imports "$BIN/aicore.dll" 2>/dev/null | awk '
+# --- b) offgrid.dll delay-loads libllama/libmtmd/ggml/ggml-base ----------------------
+imports_class="$(llvm-readobj --coff-imports "$BIN/offgrid.dll" 2>/dev/null | awk '
     /^Import \{/       { t = "normal" }
     /^DelayImport \{/  { t = "delay" }
     /^  Name: /        { name = $0; sub(/^  Name: /, "", name); print t, tolower(name) }
@@ -85,37 +85,37 @@ delay_bad=0
 for want in libllama.dll libmtmd.dll ggml.dll ggml-base.dll; do
     kind="$(echo "$imports_class" | awk -v n="$want" '$2 == n { print $1 }' | head -1)"
     if [ "$kind" = "delay" ]; then
-        info "aicore.dll delay-loads $want"
+        info "offgrid.dll delay-loads $want"
     else
-        fail "aicore.dll does not delay-load $want (got: ${kind:-absent})"
+        fail "offgrid.dll does not delay-load $want (got: ${kind:-absent})"
         delay_bad=1
     fi
 done
 if [ "$delay_bad" -eq 0 ]; then
-    pass "aicore.dll delay-loads libllama.dll, libmtmd.dll, ggml.dll, ggml-base.dll"
+    pass "offgrid.dll delay-loads libllama.dll, libmtmd.dll, ggml.dll, ggml-base.dll"
 fi
 
-# --- c) aicore.dll exports exactly the aicore_* functions in aicore.h -------
+# --- c) offgrid.dll exports exactly the offgrid_* functions in offgrid.h -------
 declared="$(python3 - "$HEADER" <<'PY'
 import re, sys
 src = open(sys.argv[1]).read()
 src = re.sub(r'/\*.*?\*/', '', src, flags=re.S)
 src = re.sub(r'//[^\n]*', '', src)
-names = sorted(set(re.findall(r'\b(aicore_[A-Za-z0-9_]+)\s*\(', src)))
+names = sorted(set(re.findall(r'\b(offgrid_[A-Za-z0-9_]+)\s*\(', src)))
 print('\n'.join(names))
 PY
 )"
-exported="$(llvm-readobj --coff-exports "$BIN/aicore.dll" 2>/dev/null \
+exported="$(llvm-readobj --coff-exports "$BIN/offgrid.dll" 2>/dev/null \
     | sed -nE 's/^[[:space:]]*Name:[[:space:]]*(.+[^[:space:]])[[:space:]]*$/\1/p' \
-    | grep -E '^aicore_' | sort -u)"
+    | grep -E '^offgrid_' | sort -u)"
 
 declared="$(echo "$declared" | LC_ALL=C sort -u)"
 exported="$(echo "$exported" | LC_ALL=C sort -u)"
 
 if [ "$declared" = "$exported" ]; then
-    pass "aicore.dll exports exactly the $(echo "$exported" | sed '/^$/d' | wc -l) aicore_* functions declared in aicore.h"
+    pass "offgrid.dll exports exactly the $(echo "$exported" | sed '/^$/d' | wc -l) offgrid_* functions declared in offgrid.h"
 else
-    fail "export set differs from aicore.h declarations"
+    fail "export set differs from offgrid.h declarations"
     diff <(echo "$declared") <(echo "$exported") | sed 's/^/      /' || true
 fi
 
@@ -125,7 +125,7 @@ for ex in chat embed cancel; do
     extra=()
     [ "$ex" = "cancel" ] && extra=(-lpthread)
     if ! x86_64-w64-mingw32-clang -O2 -I"$DIST/include" "$ROOT/examples/c/$ex.c" \
-            -o "$TMP/$ex.exe" -L"$DIST/lib" -laicore "${extra[@]}" 2>"$TMP/$ex.log"; then
+            -o "$TMP/$ex.exe" -L"$DIST/lib" -loffgrid "${extra[@]}" 2>"$TMP/$ex.log"; then
         fail "cross-compile $ex.c"
         sed 's/^/      /' "$TMP/$ex.log" | tail -8
         compile_ok=0
@@ -138,10 +138,10 @@ fi
 if [ -f "$TMP/chat.exe" ]; then
     if llvm-readobj --coff-imports "$TMP/chat.exe" 2>/dev/null \
             | sed -nE 's/^[[:space:]]*Name:[[:space:]]*(.+)$/\1/p' \
-            | grep -qi '^aicore\.dll$'; then
-        pass "chat.exe imports aicore.dll"
+            | grep -qi '^offgrid\.dll$'; then
+        pass "chat.exe imports offgrid.dll"
     else
-        fail "chat.exe does not import aicore.dll"
+        fail "chat.exe does not import offgrid.dll"
     fi
 fi
 

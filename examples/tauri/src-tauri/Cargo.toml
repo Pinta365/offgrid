@@ -1,19 +1,19 @@
 [package]
-name = "aicore-tauri-chat"
-description = "Tauri desktop chat app embedding aicore"
+name = "offgrid-tauri-chat"
+description = "Tauri desktop chat app embedding offgrid"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
 publish = false
 
-# Standalone workspace: this example depends on aicore the way an app outside this repo would.
+# Standalone workspace: this example depends on offgrid the way an app outside this repo would.
 [workspace]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-aicore = { path = "../../../crates/aicore" }
+offgrid = { path = "../../../crates/offgrid" }
 tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 

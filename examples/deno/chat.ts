@@ -1,7 +1,7 @@
 // Interactive streaming chat from Deno.
-// cargo build --release -p aicore-ffi
+// cargo build --release -p offgrid-ffi
 // deno run --allow-ffi --allow-env --allow-read examples/deno/chat.ts spike/models/<model>.gguf ["one-shot question"]
-import { AiCore, type ChatMessage } from "../../bindings/deno/mod.ts";
+import { Offgrid, type ChatMessage } from "../../bindings/deno/mod.ts";
 
 const path = Deno.args[0];
 if (!path) {
@@ -9,8 +9,8 @@ if (!path) {
   Deno.exit(1);
 }
 
-using core = AiCore.open();
-console.error("aicore", core.version());
+using core = Offgrid.open();
+console.error("offgrid", core.version());
 using model = await core.loadModel(path);
 console.error("model:", model.info().description);
 using chat = await model.createChat();

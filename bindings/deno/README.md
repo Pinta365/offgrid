@@ -1,12 +1,12 @@
-# aicore for Deno
+# offgrid for Deno
 
-FFI bindings to `libaicore` (see the repo root README). Long-running calls use `nonblocking` FFI, so they return
+FFI bindings to `liboffgrid` (see the repo root README). Long-running calls use `nonblocking` FFI, so they return
 Promises and never block the event loop; tokens stream back through a thread-safe callback.
 
 ```ts
-import { AiCore } from "./mod.ts";
+import { Offgrid } from "./mod.ts";
 
-using core = AiCore.open(); // $AICORE_LIB, else ../../target/{release,debug}
+using core = Offgrid.open(); // $OFFGRID_LIB, else ../../target/{release,debug}
 using model = await core.loadModel("model.gguf", { gpu_layers: "all" });
 using chat = await model.createChat({ n_ctx: 8192 });
 
@@ -34,4 +34,4 @@ Rules:
 - Handles are `Disposable` (`using`); a session keeps its model alive natively.
 - `free()` throws while a request is running; cancel and await it first.
 
-Tests: `AICORE_TEST_MODEL=… AICORE_TEST_EMBED_MODEL=… deno task test`
+Tests: `OFFGRID_TEST_MODEL=… OFFGRID_TEST_EMBED_MODEL=… deno task test`

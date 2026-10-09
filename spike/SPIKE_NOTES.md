@@ -104,7 +104,7 @@ Available devices:
 ## Tool-calling test models
 
 Additional model used to exercise the tool-call output parsers
-(`crates/aicore/src/tool_parse.rs`) and chat-template tool conventions.
+(`crates/offgrid/src/tool_parse.rs`) and chat-template tool conventions.
 
 | File | Size (bytes) | Source URL |
 |---|---|---|
