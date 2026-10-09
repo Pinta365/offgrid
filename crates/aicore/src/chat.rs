@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::ffi::{CString, c_char, c_void};
 use std::ptr::NonNull;
 use std::sync::Arc;
@@ -12,7 +13,7 @@ use crate::sampling::Sampler;
 use crate::template::{ChatTemplate, RenderArgs, is_jinja};
 use crate::text::{PieceKind, Push, StreamFilter, TextStream};
 use crate::tool_parse::{self, ToolFormat};
-use crate::tools::{GrammarSpec, Tool, ToolCall, ToolChoice, tool_grammar};
+use crate::tools::{GrammarSpec, POLYFILL_STOP, Tool, ToolCall, ToolChoice, polyfill_messages, tool_grammar};
 use crate::media::{Chunks, MediaMemo, Segment, media_marker};
 use crate::{Error, Media, MediaKind, Model, Result, SamplingParams};
 
@@ -604,30 +605,42 @@ impl ChatSession {
     ///
     /// Uses `req.chat_template` if set (Jinja text or a built-in name), otherwise the
     /// model's own Jinja template; if that fails to compile or render, falls back to
-    /// llama.cpp's built-in template matching the model.
+    /// llama.cpp's built-in template matching the model. A Jinja template that ignores
+    /// `tools` gets them described in the system message instead (see [`Rendered`]).
     pub fn render_prompt(&mut self, req: &ChatRequest) -> Result<String> {
-        let messages = template_messages(&req.messages)?;
-        let tools = if tools_active(req) {
+        self.render(req).map(|r| r.prompt)
+    }
+
+    fn render(&mut self, req: &ChatRequest) -> Result<Rendered> {
+        let use_tools = tools_active(req);
+        let tools = if use_tools {
             Some(serde_json::to_value(&req.tools).map_err(|e| Error::InvalidArgument(e.to_string()))?)
         } else {
             None
         };
         let bos = self.model.token_text(unsafe { sys::llama_vocab_bos(self.model.vocab()) });
         let eos = self.model.token_text(unsafe { sys::llama_vocab_eos(self.model.vocab()) });
-        let args = RenderArgs {
-            messages: &messages,
-            tools: tools.as_ref(),
+        let base = RenderArgs {
+            messages: &serde_json::Value::Null,
+            tools: None,
             add_generation_prompt: true,
             bos_token: &bos,
             eos_token: &eos,
             extra: req.chat_template_kwargs.as_ref(),
         };
-        match req.chat_template.as_deref() {
-            Some(t) if is_jinja(t) => ChatTemplate::new(t)?.render(&args),
-            Some(_) if tools.is_some() => Err(Error::InvalidArgument(
-                "built-in chat templates can't show tools to the model; use the model's template or Jinja text".into(),
-            )),
-            Some(name) => self.apply_builtin_template(&req.messages, Some(name)),
+
+        let owned;
+        let template = match req.chat_template.as_deref() {
+            Some(t) if is_jinja(t) => {
+                owned = ChatTemplate::new(t)?;
+                Ok(&owned)
+            }
+            Some(_) if tools.is_some() => {
+                return Err(Error::InvalidArgument(
+                    "built-in chat templates can't show tools to the model; use the model's template or Jinja text".into(),
+                ));
+            }
+            Some(name) => return Ok(Rendered::plain(self.apply_builtin_template(&req.messages, Some(name))?)),
             None => {
                 if self.model_template.is_none() {
                     self.model_template = Some(match self.model.chat_template() {
@@ -635,18 +648,33 @@ impl ChatSession {
                         None => Err("model has no chat template".into()),
                     });
                 }
-                let rendered = match self.model_template.as_ref().expect("set above") {
-                    Ok(t) => t.render(&args).map_err(|e| e.to_string()),
-                    Err(e) => Err(e.clone()),
-                };
-                rendered.or_else(|e| {
-                    if tools.is_some() {
-                        // Built-in templates can't show tools to the model.
-                        return Err(Error::ChatTemplate(format!("tool calling needs the model's Jinja template: {e}")));
-                    }
-                    log::warn!(target: "aicore", "jinja chat template unusable ({e}); using llama.cpp built-in");
-                    self.apply_builtin_template(&req.messages, None)
-                })
+                self.model_template.as_ref().expect("set above").as_ref().map_err(String::clone)
+            }
+        };
+
+        let tool_history = req.messages.iter().any(|m| m.role == "tool" || !m.tool_calls.is_empty());
+        let polyfill = (use_tools || tool_history) && template.as_ref().is_ok_and(|t| ignores_tools(t, &base));
+        let rendered = match template {
+            Ok(t) if polyfill => render_polyfilled(t, &req.messages, use_tools.then_some(req.tools.as_slice()), &base),
+            Ok(t) => {
+                let messages = template_messages(&req.messages)?;
+                t.render(&RenderArgs { messages: &messages, tools: tools.as_ref(), ..base })
+            }
+            Err(e) => Err(Error::ChatTemplate(e)),
+        };
+        if req.chat_template.is_some() {
+            // An explicit Jinja template has no fallback.
+            return rendered.map(|prompt| Rendered { prompt, tools_polyfilled: polyfill });
+        }
+        match rendered {
+            Ok(prompt) => Ok(Rendered { prompt, tools_polyfilled: polyfill }),
+            Err(e) if tools.is_some() => {
+                // Built-in templates can't show tools to the model.
+                Err(Error::ChatTemplate(format!("tool calling needs the model's Jinja template: {e}")))
+            }
+            Err(e) => {
+                log::warn!(target: "aicore", "jinja chat template unusable ({e}); using llama.cpp built-in");
+                Ok(Rendered::plain(self.apply_builtin_template(&req.messages, None)?))
             }
         }
     }
@@ -714,8 +742,10 @@ impl ChatSession {
             return Err(Error::InvalidArgument("messages is empty".into()));
         }
         let use_tools = tools_active(req);
-        let prompt = self.render_prompt(req)?;
-        let format = if use_tools {
+        let Rendered { prompt, tools_polyfilled } = self.render(req)?;
+        let format = if use_tools && tools_polyfilled {
+            ToolFormat::Polyfill
+        } else if use_tools {
             tool_parse::detect_format(&self.template_source(req).unwrap_or_default())
         } else {
             ToolFormat::Generic
@@ -795,7 +825,11 @@ impl ChatSession {
             cancelled_by_callback |= !ok;
             ok
         };
-        let mut result = self.run(prompt_input, req.max_tokens, &req.stop, &req.sampling, grammars.first(), use_tools, &mut on_piece);
+        let mut stop = Cow::Borrowed(&req.stop);
+        if format == ToolFormat::Polyfill {
+            stop.to_mut().push(POLYFILL_STOP.into());
+        }
+        let mut result = self.run(prompt_input, req.max_tokens, &stop, &req.sampling, grammars.first(), use_tools, &mut on_piece);
         if let (Err(Error::Media(msg)), Some(_)) = (&result, &chunks)
             && msg == PLACEHOLDER_EVAL
         {
@@ -806,7 +840,7 @@ impl ChatSession {
             let bos = model.token_text(unsafe { sys::llama_vocab_bos(model.vocab()) });
             let add_bos = bos.is_empty() || !prompt.starts_with(&bos);
             let real = projector.tokenize(&prompt, &media, add_bos, &mut self.media_memo, &|_| false)?;
-            result = self.run(Prompt::Media(&real), req.max_tokens, &req.stop, &req.sampling, grammars.first(), use_tools, &mut on_piece);
+            result = self.run(Prompt::Media(&real), req.max_tokens, &stop, &req.sampling, grammars.first(), use_tools, &mut on_piece);
         }
         let mut resp = result?;
         // Forget shapes of media no longer cached.
@@ -1152,6 +1186,43 @@ impl ChatSession {
     }
 }
 
+/// A rendered prompt.
+struct Rendered {
+    prompt: String,
+    /// The template ignores `tools`, so the tools and any tool-call history were written
+    /// into the messages in the generic `<tool_call>` format.
+    tools_polyfilled: bool,
+}
+
+impl Rendered {
+    fn plain(prompt: String) -> Self {
+        Self { prompt, tools_polyfilled: false }
+    }
+}
+
+/// Whether `template` leaves `tools` out of the prompt (it renders a probe tool's name
+/// otherwise). Templates that fail to render the probe count as showing tools, so their
+/// own error surfaces.
+fn ignores_tools(template: &ChatTemplate, base: &RenderArgs) -> bool {
+    const PROBE: &str = "aicore_probe_function";
+    let messages = serde_json::json!([{"role": "user", "content": "Hi"}]);
+    let tools = serde_json::json!([{"type": "function", "function": {"name": PROBE, "description": "Probe.", "parameters": {"type": "object", "properties": {}}}}]);
+    template
+        .render(&RenderArgs { messages: &messages, tools: Some(&tools), ..*base })
+        .is_ok_and(|prompt| !prompt.contains(PROBE))
+}
+
+/// Render with tools and tool-call history written into the messages (see
+/// [`polyfill_messages`]).
+fn render_polyfilled(template: &ChatTemplate, messages: &[ChatMessage], tools: Option<&[Tool]>, base: &RenderArgs) -> Result<String> {
+    let render = |system_role| {
+        let messages = template_messages(&polyfill_messages(messages, tools, system_role))?;
+        template.render(&RenderArgs { messages: &messages, ..*base })
+    };
+    // Templates without a system role (Gemma 2, ...) raise; fold it into the user turn.
+    render(true).or_else(|e| render(false).map_err(|_| e))
+}
+
 fn tools_active(req: &ChatRequest) -> bool {
     !req.tools.is_empty() && req.tool_choice != Some(ToolChoice::None)
 }
@@ -1173,4 +1244,61 @@ fn template_messages(messages: &[ChatMessage]) -> Result<serde_json::Value> {
         }
     }
     Ok(value)
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tools::FunctionCall;
+
+    /// Over llama.cpp's template corpus: templates that mention `tools` show them; the rest
+    /// get the polyfill and render a whole tool conversation with it.
+    #[test]
+    fn tool_polyfill_over_template_corpus() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../vendor/llama.cpp/models/templates");
+        let base = RenderArgs {
+            messages: &serde_json::Value::Null,
+            tools: None,
+            add_generation_prompt: true,
+            bos_token: "<s>",
+            eos_token: "</s>",
+            extra: None,
+        };
+        let call = ToolCall {
+            id: "call_1".into(),
+            kind: "function".into(),
+            function: FunctionCall { name: "get_weather".into(), arguments: r#"{"city":"Oslo"}"#.into() },
+        };
+        let messages = vec![
+            ChatMessage::system("You are helpful."),
+            ChatMessage::user("Weather in Oslo?"),
+            ChatMessage::assistant_tool_calls("", vec![call.clone()]),
+            ChatMessage::tool_result(&call, r#"{"temp_c": 4}"#),
+        ];
+        let tools = [Tool::function("get_weather", "Weather for a city", serde_json::json!({"type": "object"}))];
+        let mut polyfilled = Vec::new();
+        for entry in std::fs::read_dir(&dir).expect("llama.cpp submodule checked out") {
+            let path = entry.unwrap().path();
+            if path.extension().is_none_or(|e| e != "jinja") {
+                continue;
+            }
+            let name = path.file_name().unwrap().to_string_lossy().to_string();
+            let src = std::fs::read_to_string(&path).unwrap();
+            let Ok(t) = ChatTemplate::new(&src) else { continue };
+            if !ignores_tools(&t, &base) {
+                continue;
+            }
+            assert!(!src.contains("tools"), "{name} mentions tools but was judged to ignore them");
+            let prompt = render_polyfilled(&t, &messages, Some(&tools), &base).unwrap_or_else(|e| panic!("{name}: {e}"));
+            for part in ["# Tools", "\"name\": \"get_weather\"", "<tool_call>", "\"temp_c\": 4", "Weather in Oslo?"] {
+                assert!(prompt.contains(part), "{name}: missing {part:?} in {prompt}");
+            }
+            polyfilled.push(name);
+        }
+        polyfilled.sort();
+        // Gemma 2 has no system role: covers folding the instructions into the user turn.
+        assert!(polyfilled.iter().any(|n| n.contains("gemma-2")), "{polyfilled:?}");
+        assert!(polyfilled.len() >= 5, "{polyfilled:?}");
+    }
 }

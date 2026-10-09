@@ -1,30 +1,38 @@
 //! Tool calling end-to-end. Runs per model that is configured:
 //!   AICORE_TEST_MODEL        Qwen3 (Hermes <tool_call> format)
 //!   AICORE_TEST_LLAMA_MODEL  Llama 3.x (bare JSON format)
+//!   AICORE_TEST_GEMMA_MODEL  Gemma 3 (template ignores tools: they are described in the
+//!                            system message, generic <tool_call> format)
 //!
 //! Format/plumbing tests run on every model. Judgment tests (don't call when not
 //! needed, answer from the tool result) only run on AICORE_TEST_MODEL: Llama 3.2 3B
 //! re-calls tools instead of answering, and llama.cpp's own llama-server shows the same
 //! behaviour with it (checked 2026-10-08), so that's the model, not this code.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use aicore::*;
 use serde_json::{Value, json};
 
 /// Models trusted to make good tool-use decisions.
 fn judging_models() -> Vec<(&'static str, Arc<Model>)> {
-    models().into_iter().filter(|(v, _)| *v == "AICORE_TEST_MODEL").collect()
+    models().into_iter().filter(|(v, _)| matches!(*v, "AICORE_TEST_MODEL" | "AICORE_TEST_GEMMA_MODEL")).collect()
 }
 
+/// Each configured model, loaded once and shared by the tests (they run in parallel).
 fn models() -> Vec<(&'static str, Arc<Model>)> {
-    ["AICORE_TEST_MODEL", "AICORE_TEST_LLAMA_MODEL"]
-        .iter()
-        .filter_map(|var| {
-            let path = std::env::var(var).ok()?;
-            Some((*var, Model::load(path, &ModelParams::default()).expect("model loads")))
+    static MODELS: OnceLock<Vec<(&'static str, Arc<Model>)>> = OnceLock::new();
+    MODELS
+        .get_or_init(|| {
+            ["AICORE_TEST_MODEL", "AICORE_TEST_LLAMA_MODEL", "AICORE_TEST_GEMMA_MODEL"]
+                .iter()
+                .filter_map(|var| {
+                    let path = std::env::var(var).ok()?;
+                    Some((*var, Model::load(path, &ModelParams::default()).expect("model loads")))
+                })
+                .collect()
         })
-        .collect()
+        .clone()
 }
 
 fn weather_tool() -> Tool {

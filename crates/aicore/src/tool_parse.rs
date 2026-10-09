@@ -17,6 +17,9 @@ pub(crate) enum ToolFormat {
     MistralArgs,
     Qwen3CoderXml,
     Generic,
+    /// Hermes-style `<tool_call>` blocks that aicore taught the model in the system message,
+    /// for templates that ignore `tools` (see `tools::polyfill_messages`).
+    Polyfill,
 }
 
 /// One parsed tool call.
@@ -59,7 +62,7 @@ pub(crate) fn tool_call_start_marker(format: ToolFormat) -> Option<&'static str>
         ToolFormat::Qwen3CoderXml => Some("<tool_call>"),
         ToolFormat::MistralList | ToolFormat::MistralArgs => Some("[TOOL_CALLS]"),
         ToolFormat::Llama3Json => Some("<|python_tag|>"),
-        ToolFormat::Generic => Some("<tool_call>"),
+        ToolFormat::Generic | ToolFormat::Polyfill => Some("<tool_call>"),
     }
 }
 
@@ -99,7 +102,7 @@ pub(crate) fn parse_output(format: ToolFormat, text: &str, think_open_in_prompt:
 
 fn parse_calls(format: ToolFormat, text: &str) -> (String, Vec<ParsedCall>) {
     match format {
-        ToolFormat::Hermes => parse_hermes(text),
+        ToolFormat::Hermes | ToolFormat::Polyfill => parse_hermes(text),
         ToolFormat::Llama3Json => parse_llama3(text),
         ToolFormat::MistralList => parse_mistral_list(text),
         ToolFormat::MistralArgs => parse_mistral_args(text),

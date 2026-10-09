@@ -6,8 +6,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Value, json};
 
+use crate::template::py_json;
 use crate::tool_parse::ToolFormat;
-use crate::{Error, Result};
+use crate::{ChatMessage, Error, Result};
 
 /// A tool the model may call: `{"type":"function","function":{"name","description","parameters"}}`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -134,6 +135,100 @@ fn new_call_id() -> String {
     id
 }
 
+/// Rewrite a conversation for a chat template that ignores `tools` (e.g. Gemma 3), the way
+/// llama.cpp does for such templates: describe `tools` (if offered) in the system message,
+/// or at the start of the first user message when `system_role` is false, and turn
+/// assistant tool calls and tool results into plain text in the `<tool_call>` format that
+/// the generic grammar constrains. Consecutive tool results become one user turn, so roles
+/// still alternate.
+pub(crate) fn polyfill_messages(messages: &[ChatMessage], tools: Option<&[Tool]>, system_role: bool) -> Vec<ChatMessage> {
+    let mut out: Vec<ChatMessage> = Vec::with_capacity(messages.len() + 1);
+    // Call id → function name, to label tool results.
+    let mut names: Vec<(&str, &str)> = Vec::new();
+    let mut prev_tool = false;
+    for m in messages {
+        if m.role == "tool" {
+            let name = m.tool_call_id.as_deref().and_then(|id| names.iter().find(|(i, _)| *i == id)).map(|(_, n)| *n);
+            let content = serde_json::from_str::<Value>(&m.content).unwrap_or_else(|_| Value::String(m.content.clone()));
+            let text = match name {
+                Some(name) => format!(
+                    "<tool_response>\n{{\"name\": {}, \"content\": {}}}\n</tool_response>",
+                    py_json(&json!(name)),
+                    py_json(&content)
+                ),
+                None => format!("<tool_response>\n{{\"content\": {}}}\n</tool_response>", py_json(&content)),
+            };
+            match out.last_mut() {
+                Some(last) if prev_tool => {
+                    last.content.push('\n');
+                    last.content.push_str(&text);
+                    last.media.extend(m.media.iter().cloned());
+                }
+                _ => out.push(ChatMessage { media: m.media.clone(), ..ChatMessage::user(text) }),
+            }
+            prev_tool = true;
+            continue;
+        }
+        prev_tool = false;
+        if m.tool_calls.is_empty() {
+            out.push(m.clone());
+            continue;
+        }
+        let mut text = m.content.trim().to_string();
+        for call in &m.tool_calls {
+            names.push((&call.id, &call.function.name));
+            let args = serde_json::from_str::<Value>(&call.function.arguments).unwrap_or_else(|_| json!({}));
+            if !text.is_empty() {
+                text.push('\n');
+            }
+            text.push_str(&format!(
+                "<tool_call>\n{{\"name\": {}, \"arguments\": {}}}\n</tool_call>",
+                py_json(&json!(call.function.name)),
+                py_json(&args)
+            ));
+        }
+        out.push(ChatMessage { content: text, tool_calls: Vec::new(), ..m.clone() });
+    }
+
+    if let Some(tools) = tools.filter(|t| !t.is_empty()) {
+        let instructions = tool_instructions(tools);
+        match out.first_mut() {
+            Some(first) if first.role == "system" => first.content = format!("{}\n\n{instructions}", first.content.trim_end()),
+            _ => out.insert(0, ChatMessage::system(instructions)),
+        }
+    }
+    if !system_role && out.first().is_some_and(|m| m.role == "system") {
+        // Fold the system message into the first user turn.
+        let system = out.remove(0);
+        match out.iter_mut().find(|m| m.role == "user") {
+            Some(user) => {
+                user.content = format!("{}\n\n{}", system.content, user.content);
+                user.media.splice(0..0, system.media);
+            }
+            None => out.insert(0, ChatMessage { role: "user".into(), ..system }),
+        }
+    }
+    out
+}
+
+/// Ends generation in the polyfill format: the model starts writing a tool result itself.
+pub(crate) const POLYFILL_STOP: &str = "<tool_response>";
+
+/// System-prompt text that shows `tools` and the call format (Hermes style).
+fn tool_instructions(tools: &[Tool]) -> String {
+    let list: Vec<String> = tools.iter().map(|t| py_json(&serde_json::to_value(t).unwrap_or_default())).collect();
+    format!(
+        "# Tools\n\n\
+         You may call one or more functions to help with the user's request. The available functions:\n\
+         <tools>\n{}\n</tools>\n\n\
+         To call a function, reply with one block per call, in exactly this format:\n\
+         <tool_call>\n{{\"name\": <function name>, \"arguments\": <arguments as a JSON object>}}\n</tool_call>\n\n\
+         The results come back in <tool_response></tool_response> blocks. Only call a function when \
+         you need what it provides; otherwise answer directly. Never make up a function's result.",
+        list.join("\n")
+    )
+}
+
 /// A grammar plus the rule to start from and, if lazy, the regexes that activate it.
 #[derive(Debug, Clone)]
 pub(crate) struct GrammarSpec {
@@ -175,7 +270,7 @@ pub(crate) fn tool_grammar(
     let lazy = *choice == ToolChoice::Auto;
     let (args_key, wrapper, trigger) = match format {
         // <tool_call>{"name": ..., "arguments": {...}}</tool_call>
-        ToolFormat::Hermes | ToolFormat::Generic => (
+        ToolFormat::Hermes | ToolFormat::Generic | ToolFormat::Polyfill => (
             "arguments",
             r#""<tool_call>" [ \n]* root [ \n]* "</tool_call>""#,
             r"(<tool_call>)",
@@ -230,10 +325,17 @@ pub(crate) fn tool_grammar(
     let repeat = parallel && format != ToolFormat::Llama3Json;
     text.push_str(&format!("tool-call ::= {wrapper}\n"));
     text.push_str(if repeat {
-        "tool-calls ::= tool-call ([ \\n]* tool-call)*\n"
+        "tool-calls ::= tool-call ([ \\n]* tool-call)*"
     } else {
-        "tool-calls ::= tool-call\n"
+        "tool-calls ::= tool-call"
     });
+    // Models taught the format in the prompt tend to write the tool's response themselves
+    // next. Allow its opening tag, which is a stop string (`POLYFILL_STOP`), so the turn
+    // ends there instead of being forced into more calls.
+    if format == ToolFormat::Polyfill {
+        text.push_str(&format!(" ([ \\n]* \"{POLYFILL_STOP}\")?"));
+    }
+    text.push('\n');
     Ok(Some(GrammarSpec {
         text,
         root: "tool-calls".into(),
@@ -321,5 +423,61 @@ mod tests {
             "properties": {"b": {"$ref": "#/$defs/Addr"}}}));
         assert!(tool_grammar(ToolFormat::Hermes, &[tool.clone(), tool.clone()], &ToolChoice::Auto, true).is_ok());
         assert!(tool_grammar(ToolFormat::Hermes, &[tool, other], &ToolChoice::Auto, true).is_err());
+    }
+
+    fn call(id: &str, name: &str, args: &str) -> ToolCall {
+        ToolCall { id: id.into(), kind: "function".into(), function: FunctionCall { name: name.into(), arguments: args.into() } }
+    }
+
+    #[test]
+    fn polyfill_writes_tools_calls_and_results_as_text() {
+        let a = call("call_a", "get_weather", r#"{"city":"Oslo"}"#);
+        let b = call("call_b", "get_weather", r#"{"city":"Rome"}"#);
+        let messages = vec![
+            ChatMessage::system("Be brief."),
+            ChatMessage::user("Weather in Oslo and Rome?"),
+            ChatMessage::assistant_tool_calls("Checking.", vec![a.clone(), b.clone()]),
+            ChatMessage::tool_result(&a, r#"{"temp_c": 4}"#),
+            ChatMessage::tool_result(&b, "sunny"),
+        ];
+        let out = polyfill_messages(&messages, Some(&[weather()]), true);
+        let roles: Vec<&str> = out.iter().map(|m| m.role.as_str()).collect();
+        // Both results in one user turn, so roles still alternate.
+        assert_eq!(roles, ["system", "user", "assistant", "user"]);
+        assert!(out[0].content.starts_with("Be brief.\n\n# Tools"), "{}", out[0].content);
+        assert!(out[0].content.contains(r#""name": "get_weather""#), "{}", out[0].content);
+        assert_eq!(
+            out[2].content,
+            "Checking.\n<tool_call>\n{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Oslo\"}}\n</tool_call>\n\
+             <tool_call>\n{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Rome\"}}\n</tool_call>"
+        );
+        assert!(out[2].tool_calls.is_empty());
+        assert_eq!(
+            out[3].content,
+            "<tool_response>\n{\"name\": \"get_weather\", \"content\": {\"temp_c\": 4}}\n</tool_response>\n\
+             <tool_response>\n{\"name\": \"get_weather\", \"content\": \"sunny\"}\n</tool_response>"
+        );
+    }
+
+    #[test]
+    fn polyfill_without_offered_tools_only_rewrites_history() {
+        // tool_choice none (e.g. run_tools' last round): history is rewritten, tools not shown.
+        let a = call("call_a", "get_weather", "{}");
+        let messages = vec![ChatMessage::user("Hi"), ChatMessage::assistant_tool_calls("", vec![a.clone()]), ChatMessage::tool_result(&a, "ok")];
+        let out = polyfill_messages(&messages, None, true);
+        assert_eq!(out.iter().map(|m| m.role.as_str()).collect::<Vec<_>>(), ["user", "assistant", "user"]);
+        assert!(!out.iter().any(|m| m.content.contains("# Tools")));
+    }
+
+    #[test]
+    fn polyfill_folds_system_into_user_without_system_role() {
+        let out = polyfill_messages(&[ChatMessage::system("Be brief."), ChatMessage::user("Hi")], Some(&[weather()]), false);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].role, "user");
+        assert!(out[0].content.starts_with("Be brief.\n\n# Tools") && out[0].content.ends_with("\n\nHi"), "{}", out[0].content);
+
+        let out = polyfill_messages(&[ChatMessage::user("Hi")], Some(&[weather()]), false);
+        assert_eq!(out.len(), 1);
+        assert!(out[0].content.starts_with("# Tools") && out[0].content.ends_with("\n\nHi"));
     }
 }

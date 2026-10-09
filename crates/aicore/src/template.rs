@@ -138,6 +138,14 @@ fn tojson(value: Value, kwargs: Kwargs) -> std::result::Result<Value, minijinja:
     Ok(Value::from_safe_string(out))
 }
 
+/// JSON as Python's `json.dumps` writes it (`", "` and `": "` separators), the way models
+/// see JSON in their training data.
+pub(crate) fn py_json(v: &Json) -> String {
+    let mut out = String::new();
+    write_py_json(v, None, 0, &mut out);
+    out
+}
+
 fn write_py_json(v: &Json, indent: Option<usize>, level: usize, out: &mut String) {
     let newline = |out: &mut String, level: usize| {
         if let Some(n) = indent {

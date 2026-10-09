@@ -31,7 +31,7 @@ Windows.
 | **Chat** | Streaming generation with stop strings, token limits, sampling options and seeds. Requests follow the OpenAI format and are stateless; the session reuses the matching prefix of its KV cache, so follow-up turns only process new tokens. |
 | **Chat templates** | Each model's own Jinja template (stored in the GGUF) is rendered with minijinja the way Hugging Face does it. 69 of the 72 real-world templates in llama.cpp's test corpus render; the other 3 refuse by design (for example, Gemma 2 has no system role). If a template can't be used, llama.cpp's built-in formats are the fallback. |
 | **Structured output** | OpenAI `response_format` (`json_object` or `json_schema`) is compiled into a llama.cpp grammar, so the output is valid by construction. The converter handles objects, arrays, enums, `anyOf` / `oneOf` / `allOf`, `$ref` / `$defs`, and string formats, patterns and lengths. Properties are generated in the order they are declared. |
-| **Tool calling** | OpenAI `tools`, `tool_choice` and `parallel_tool_calls`. Tool calls are parsed from the model's native format: Hermes/Qwen, Llama 3.x, Mistral, Qwen3-Coder XML, or generic JSON. A grammar keeps the arguments valid against each tool's schema. Loop helpers (`run_tools`, `runTools`) handle the call, execute and feed-back cycle. |
+| **Tool calling** | OpenAI `tools`, `tool_choice` and `parallel_tool_calls`. Tool calls are parsed from the model's native format: Hermes/Qwen, Llama 3.x, Mistral, Qwen3-Coder XML, or generic JSON. If a model's template ignores tools (Gemma 3, for example), the tools and the call format are described in the system message instead, and earlier calls and results are written into the conversation as text. A grammar keeps the arguments valid against each tool's schema. Loop helpers (`run_tools`, `runTools`) handle the call, execute and feed-back cycle. |
 | **Reasoning** | Thinking models' `<think>` blocks are separated into `reasoning_content` and streamed as their own events. |
 | **Vision and audio** | Images (PNG, JPEG, …) and audio (WAV, MP3, FLAC) are sent as OpenAI content parts. Several items per message and mixed image and audio both work. Encoded media is reused across turns from the KV cache and is not decoded again. |
 | **Embeddings** | Batched and L2-normalized, with float or base64 output. |
@@ -138,7 +138,7 @@ Every model below was exercised end to end by the test suites on an RX 9070 XT (
 | Qwen3-0.6B Q8_0 | Reasoning streaming | Use temperature 0.6 in thinking mode; greedy decoding loops |
 | Qwen3-Embedding-0.6B Q8_0 | Embeddings | |
 | Qwen2.5-VL-3B + mmproj | Vision (M-RoPE) | Colors, counting, OCR, JPEG, multiple images |
-| Gemma 3 4B + mmproj | Vision | |
+| Gemma 3 4B + mmproj | Vision, tools without template support | Template ignores tools; uses the system-message fallback |
 | Qwen2.5-Omni-3B + mmproj | Audio and vision | Word-perfect transcription from WAV, MP3 and FLAC |
 | Ultravox 0.5 (Llama 3.2 1B) + mmproj | Audio | |
 
@@ -217,6 +217,7 @@ Model-backed tests are enabled through environment variables pointing at GGUF fi
 |---|---|
 | `AICORE_TEST_MODEL` | chat, JSON, tools, server |
 | `AICORE_TEST_LLAMA_MODEL` | the Llama 3 tool format |
+| `AICORE_TEST_GEMMA_MODEL` | tools on a template without tool support (Gemma 3) |
 | `AICORE_TEST_THINKING_MODEL` | reasoning |
 | `AICORE_TEST_EMBED_MODEL` | embeddings |
 | `AICORE_TEST_VL_MODEL` / `AICORE_TEST_VL_MMPROJ` | vision |
@@ -227,7 +228,7 @@ Model-backed tests are enabled through environment variables pointing at GGUF fi
 
 The suites cover:
 - KV-cache reuse, checked by comparing answers against a fresh session at temperature 0
-- tool calling on two model families
+- tool calling on three model families, one of them through the system-message fallback
 - schema-validated JSON output
 - image and audio recognition
 - cancellation races
