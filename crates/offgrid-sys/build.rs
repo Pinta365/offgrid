@@ -36,6 +36,7 @@ fn main() {
     let dynamic = env::var_os("CARGO_FEATURE_DYNAMIC_BACKENDS").is_some();
     let native = env::var("OFFGRID_NATIVE").map(|v| v == "1").unwrap_or(false);
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    let msvc = env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc");
     let unix_like = matches!(target_os.as_str(), "linux" | "freebsd" | "netbsd" | "openbsd" | "dragonfly");
 
     let mut cfg = cmake::Config::new(&llama_dir);
@@ -72,7 +73,7 @@ fn main() {
             // ggml dlcloses unused backend modules; with zig's static libc++ they leave
             // exit handlers behind that crash at exit. nodelete keeps them mapped.
             cfg.define("CMAKE_MODULE_LINKER_FLAGS", format!("{flags} -Wl,-z,nodelete").trim());
-        } else if target_os == "windows" {
+        } else if target_os == "windows" && !msvc {
             // Needs llvm-mingw (scripts/env-llvm-mingw.sh), not zig: ggml relies on MinGW
             // auto-export. -static bakes libc++/libunwind into each DLL.
             cfg.define("CMAKE_SHARED_LINKER_FLAGS", "-static");
@@ -323,6 +324,11 @@ fn link_static(dst: &Path, vulkan: bool, cuda: bool, target_os: &str) {
         }
         "windows" => {
             if vulkan {
+                // Native builds take vulkan-1.lib from the Vulkan SDK.
+                println!("cargo:rerun-if-env-changed=VULKAN_SDK");
+                if let Some(sdk) = env::var_os("VULKAN_SDK") {
+                    println!("cargo:rustc-link-search=native={}", Path::new(&sdk).join("Lib").display());
+                }
                 println!("cargo:rustc-link-lib=vulkan-1");
             }
             println!("cargo:rustc-link-lib=userenv");

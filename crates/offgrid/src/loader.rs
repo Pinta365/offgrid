@@ -32,6 +32,9 @@ pub(crate) fn preload_core_libs() {
         use std::os::windows::ffi::OsStrExt;
         use windows_sys::Win32::System::LibraryLoader::{LOAD_WITH_ALTERED_SEARCH_PATH, LoadLibraryExW};
         // Dependency order; the last one is used to locate the folder.
+        #[cfg(target_env = "msvc")]
+        const LIBS: [&str; 4] = ["ggml-base.dll", "ggml.dll", "llama.dll", "mtmd.dll"];
+        #[cfg(not(target_env = "msvc"))]
         const LIBS: [&str; 4] = ["ggml-base.dll", "ggml.dll", "libllama.dll", "libmtmd.dll"];
         let Some(dir) = candidate_dirs().into_iter().find(|d| d.join(LIBS[3]).is_file()) else {
             log::warn!(target: "offgrid", "llama/ggml DLLs not found next to offgrid; relying on the default search path");

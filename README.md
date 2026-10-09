@@ -195,9 +195,14 @@ Features:
 - `--features cuda`: CUDA backend
 - `--features dynamic-backends`: the portable runtime-loaded layout used by the packages
 
-For Windows you also need [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) in
+Cross-compiling for Windows needs [llvm-mingw](https://github.com/mstorsjo/llvm-mingw) in
 `~/.local/share` and `rustup target add x86_64-pc-windows-gnullvm`. The Linux package uses zig
 (`mise install zig@0.16.0`) and `cargo install cargo-zigbuild` when they are available.
+
+Building natively on Windows (MSVC, untested so far) needs Visual Studio Build Tools with the
+C++ workload, CMake, the [Vulkan SDK](https://vulkan.lunarg.com/) (`VULKAN_SDK` set by its
+installer) and LLVM for bindgen (`LIBCLANG_PATH` if it isn't found). Clone with
+`--recursive`, then `cargo build --release`.
 
 ## Testing
 

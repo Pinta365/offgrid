@@ -11,10 +11,18 @@ fn main() {
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
         && std::env::var_os("CARGO_FEATURE_DYNAMIC_BACKENDS").is_some()
     {
-        for dll in ["libmtmd.dll", "libllama.dll", "ggml.dll", "ggml-base.dll"] {
-            println!("cargo:rustc-cdylib-link-arg=-Wl,--delayload={dll}");
+        // MSVC names the DLLs without the `lib` prefix MinGW adds.
+        if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
+            for dll in ["mtmd.dll", "llama.dll", "ggml.dll", "ggml-base.dll"] {
+                println!("cargo:rustc-cdylib-link-arg=/DELAYLOAD:{dll}");
+            }
+            println!("cargo:rustc-cdylib-link-arg=delayimp.lib");
+        } else {
+            for dll in ["libmtmd.dll", "libllama.dll", "ggml.dll", "ggml-base.dll"] {
+                println!("cargo:rustc-cdylib-link-arg=-Wl,--delayload={dll}");
+            }
+            println!("cargo:rustc-cdylib-link-arg=-ldelayimp");
         }
-        println!("cargo:rustc-cdylib-link-arg=-ldelayimp");
     }
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
         // Find libllama/libggml next to liboffgrid in a packaged folder.
