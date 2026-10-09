@@ -1,10 +1,4 @@
-//! Tool-call output parsing for the supported chat templates.
-//!
-//! Pure functions: no llama.cpp calls, no I/O (except tests reading template
-//! files). Each parser extracts zero or more tool calls from model output and
-//! returns the remaining natural-language content plus optional reasoning.
-//!
-//! Parsed `arguments` is always a compact JSON object string.
+//! Tool-call output parsing for the supported chat templates (pure, no llama.cpp).
 
 use serde_json::{Map, Value};
 
@@ -17,8 +11,8 @@ pub(crate) enum ToolFormat {
     MistralArgs,
     Qwen3CoderXml,
     Generic,
-    /// Hermes-style `<tool_call>` blocks that offgrid taught the model in the system message,
-    /// for templates that ignore `tools` (see `tools::polyfill_messages`).
+    /// Hermes-style `<tool_call>` blocks described in the system message, for templates
+    /// that ignore `tools` (see `tools::polyfill_messages`).
     Polyfill,
 }
 
@@ -66,13 +60,8 @@ pub(crate) fn tool_call_start_marker(format: ToolFormat) -> Option<&'static str>
     }
 }
 
-/// Split off a reasoning block, using the same rule as the stream filter
-/// (`text::StreamFilter`) so streamed and final output agree:
-/// - the reply starts (after whitespace) with `<think>`: up to `</think>` is reasoning;
-///   if it never closes (cut off), all of it is reasoning;
-/// - the prompt already opened `<think>`: up to `</think>` is reasoning, or everything if
-///   it never closes;
-/// - otherwise there is no reasoning; a `<think>` later in the text is ordinary content.
+/// Split off a reasoning block that starts the reply (or was opened by the prompt) and runs
+/// to `</think>` or the end. Must match `text::StreamFilter` so streamed and final agree.
 pub(crate) fn split_reasoning(text: &str, think_open_in_prompt: bool) -> (Option<String>, String) {
     const OPEN: &str = "<think>";
     const CLOSE: &str = "</think>";
@@ -388,7 +377,6 @@ mod tests {
         serde_json::from_str(&call.arguments).expect("arguments must be JSON")
     }
 
-    // --- detect_format on real templates -------------------------------------
 
     #[test]
     fn detect_qwen3_is_hermes() {
@@ -432,7 +420,6 @@ mod tests {
         assert_eq!(detect_format("You are a helpful assistant."), ToolFormat::Generic);
     }
 
-    // --- Hermes --------------------------------------------------------------
 
     #[test]
     fn hermes_single_call() {
@@ -486,7 +473,6 @@ mod tests {
         assert_eq!(args(&p.calls[0]), json!({"x": 5}));
     }
 
-    // --- Llama3Json ----------------------------------------------------------
 
     #[test]
     fn llama3_python_tag_single() {
@@ -530,7 +516,6 @@ mod tests {
         assert_eq!(p.content, text);
     }
 
-    // --- MistralList ---------------------------------------------------------
 
     #[test]
     fn mistral_list_calls() {
@@ -549,7 +534,6 @@ mod tests {
         assert_eq!(p.calls.len(), 1);
     }
 
-    // --- MistralArgs ---------------------------------------------------------
 
     #[test]
     fn mistral_args_single() {
@@ -570,7 +554,6 @@ mod tests {
         assert_eq!(args(&p.calls[1]), json!({"y": 2}));
     }
 
-    // --- Qwen3CoderXml -------------------------------------------------------
 
     #[test]
     fn qwen3_xml_single() {
@@ -598,7 +581,6 @@ mod tests {
         assert_eq!(args(&p.calls[0]), json!({"obj": {"a": 1}, "flag": true}));
     }
 
-    // --- Generic -------------------------------------------------------------
 
     #[test]
     fn generic_uses_hermes_blocks() {
@@ -630,7 +612,6 @@ mod tests {
         assert_eq!(p.content, text);
     }
 
-    // --- Reasoning -----------------------------------------------------------
 
     #[test]
     fn reasoning_leading_block() {
@@ -685,7 +666,6 @@ mod tests {
         assert_eq!(args(&p.calls[0]), json!({"city": "Rome"}));
     }
 
-    // --- Robustness ----------------------------------------------------------
 
     #[test]
     fn never_panics_on_garbage() {

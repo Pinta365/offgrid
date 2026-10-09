@@ -2,10 +2,6 @@
 #
 # check-portable.sh <dist-dir> <model.gguf>
 #
-# Portability verification for an offgrid Linux distribution directory (the
-# extracted offgrid-<version>-linux-x86_64 directory). Prints PASS/FAIL per check
-# and exits nonzero if any check fails.
-#
 set -uo pipefail
 
 if [ "$#" -ne 2 ]; then
@@ -37,8 +33,7 @@ echo "dist:  $DIST"
 echo "model: $MODEL"
 echo
 
-# --- a) ldd: everything resolved from lib/, no libstdc++ ---------------------
-# Every shipped ELF: versioned core libs (libllama.so.0, ...), backend modules and the server.
+# Every shipped ELF: versioned core libs, backend modules and the server.
 mapfile -t ELFS < <(find "$DIST/lib" "$DIST/bin" -type f \( -name '*.so' -o -name '*.so.*' -o -name 'offgrid-server' \) 2>/dev/null | sort)
 info "checking ${#ELFS[@]} binaries"
 missing=0
@@ -67,13 +62,11 @@ else
     fail "ldd: libstdc++ dependency present"
 fi
 
-# --- b) max required GLIBC version (report only) -----------------------------
 glibc_max="$(for so in "${ELFS[@]}"; do
     objdump -T "$so" 2>/dev/null
 done | grep -oE 'GLIBC_[0-9]+\.[0-9]+(\.[0-9]+)?' | sort -Vu | tail -1 || true)"
 info "max required GLIBC symbol version: ${glibc_max:-<none>}"
 
-# --- c) relocatable compile + run --------------------------------------------
 cp -a "$DIST" "$TMP/copy1"
 BIN1="$TMP/chat1"
 if gcc -Wall -Wextra -O2 -I"$TMP/copy1/include" "$CHAT_SRC" \
@@ -90,7 +83,6 @@ else
     sed 's/^/      /' "$TMP/gcc1.log" | tail -10
 fi
 
-# --- d) no-GPU fallback ------------------------------------------------------
 if VK_ICD_FILENAMES=/nonexistent VK_DRIVER_FILES=/nonexistent OFFGRID_LOG=info \
         timeout 300 "$BIN1" "$MODEL" "$QUESTION" >"$TMP/out2.txt" 2>"$TMP/err2.txt" \
         && grep -q '^assistant:' "$TMP/out2.txt"; then
@@ -105,7 +97,6 @@ if echo "$devs2" | grep -qi 'vulkan'; then
     info "WARNING: a Vulkan device was still listed without a driver"
 fi
 
-# --- e) missing Vulkan backend module ---------------------------------------
 cp -a "$DIST" "$TMP/copy2"
 rm -f "$TMP/copy2/lib/libggml-vulkan.so"
 BIN2="$TMP/chat2"
@@ -128,7 +119,6 @@ else
     fail "missing Vulkan module: gcc failed"
 fi
 
-# --- f) CPU variant loaded (report only) ------------------------------------
 VK_ICD_FILENAMES=/nonexistent VK_DRIVER_FILES=/nonexistent OFFGRID_LOG=debug \
     timeout 300 "$BIN1" "$MODEL" "$QUESTION" >"$TMP/out4.txt" 2>"$TMP/err4.txt" || true
 info "CPU variant / backend load evidence:"
@@ -136,7 +126,7 @@ grep -iE 'ggml-cpu|loaded.*cpu|cpu backend|variant' "$TMP/err4.txt" | head -8 | 
 variant_line="$(grep -iE 'ggml-cpu-[a-z0-9]+\.so' "$TMP/err4.txt" | head -1 || true)"
 info "selected CPU module: ${variant_line:-<not detected>}"
 
-# h) Packaged server: run bin/offgrid-server from a relocated copy, answer an HTTP request.
+# Packaged server: run bin/offgrid-server from a relocated copy and answer an HTTP request.
 mkdir -p "$TMP/srv"
 cp -r "$DIST" "$TMP/srv/pkg"
 PORT=$(( 20000 + RANDOM % 20000 ))
@@ -153,8 +143,7 @@ else
     tail -15 "$TMP/srv.log" | sed 's/^/      /'
 fi
 
-# g) Deno: dlopen from a non-C host (different load order/flags than a linked C binary).
-#    This caught a static-libstdc++ symbol interposition crash that C checks missed.
+# Deno: dlopen from a non-C host (different load order/flags than a linked C binary).
 if command -v deno >/dev/null 2>&1; then
     mkdir -p "$TMP/deno"
     cp -r "$DIST" "$TMP/deno/pkg"

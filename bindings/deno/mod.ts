@@ -1,22 +1,8 @@
 /**
  * Deno bindings for offgrid (embeddable offline AI core).
  *
- * Long-running calls (model load, chat, embeddings) run off the JS thread via
- * `nonblocking` FFI, so they return Promises and never block the event loop.
- *
+ * Long-running calls run off the JS thread via `nonblocking` FFI and return Promises.
  * Requires `--allow-ffi` (and `--allow-env`/`--allow-read` to locate the library).
- *
- * @example
- * ```ts
- * import { Offgrid } from "./mod.ts";
- * using core = Offgrid.open();
- * using model = await core.loadModel("model.gguf");
- * using chat = await model.createChat();
- * const res = await chat.complete(
- *   { messages: [{ role: "user", content: "Hi!" }] },
- *   { onToken: (t) => Deno.stdout.writeSync(new TextEncoder().encode(t)) },
- * );
- * ```
  * @module
  */
 

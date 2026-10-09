@@ -189,12 +189,8 @@ impl Projector {
         Ok(Self { ctx, vision, audio, eval_lock: Mutex::new(()) })
     }
 
-    /// Tokenize a prompt containing one media marker per media item.
-    ///
-    /// Items already seen (in `memo`) whose content hash satisfies `reusable` (i.e. still
-    /// in the KV cache) become placeholder bitmaps: same chunks and ids, but no decoding,
-    /// resampling or hashing. Placeholder chunks can't be evaluated; see
-    /// [`MediaChunk::placeholder`].
+    /// Tokenize a prompt with one media marker per item. Items in `memo` that are still
+    /// `reusable` (in the KV cache) become placeholders, skipping the decode.
     pub fn tokenize(
         &self,
         prompt: &str,

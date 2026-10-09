@@ -1,15 +1,11 @@
 //! C ABI for offgrid.
 //!
-//! Conventions:
-//! - Handles are opaque pointers; free each with its `_free` function (NULL is ignored).
-//! - Parameters, requests and results are UTF-8 JSON strings. NULL/empty JSON means defaults.
-//! - Returned `char*` strings are owned by the caller: release with `offgrid_string_free`.
-//! - Fallible functions take a trailing `char **error_out` (nullable). On failure they return
-//!   NULL / a negative value and store a caller-owned message there; on success it is set to NULL.
-//!   (No thread-local state, so calls may hop threads: Deno nonblocking, Go, thread pools.)
-//! - A chat/embedder keeps its model alive; handles may be freed in any order.
-//! - One handle must not be used by two threads at once, except `offgrid_chat_cancel`,
-//!   which is safe to call from any thread at any time.
+//! - Handles are opaque; free each with its `_free` function (NULL is ignored).
+//! - Params, requests and results are UTF-8 JSON. NULL/empty JSON means defaults.
+//! - Returned `char*` strings are caller-owned: free with `offgrid_string_free`.
+//! - Fallible functions take a trailing nullable `char **error_out`; on failure they return
+//!   NULL / negative and store a message there (no thread-local error state).
+//! - A handle must not be used from two threads at once, except `offgrid_chat_cancel`.
 
 #![allow(clippy::missing_safety_doc)]
 
@@ -51,8 +47,6 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-// ---------------------------------------------------------------- library
-
 #[unsafe(no_mangle)]
 pub extern "C" fn offgrid_abi_version() -> u32 {
     OFFGRID_ABI_VERSION
@@ -91,11 +85,8 @@ pub extern "C" fn offgrid_devices_json() -> *mut c_char {
     guard(std::ptr::null_mut(), std::ptr::null_mut(), || json_out(&offgrid::devices()))
 }
 
-// ---------------------------------------------------------------- model
-
-/// Load a GGUF model. `params_json` (nullable): `{"gpu_layers":"all"|"none"|{"count":N},"devices":["Vulkan0"],
-/// "mmproj":"/path/mmproj.gguf"}` (`mmproj` = multimodal projector: enables image and/or audio
-/// input, see `"vision"` / `"audio"` in [`offgrid_model_info_json`]).
+/// Load a GGUF model. `params_json` (nullable):
+/// `{"gpu_layers":"all"|"none"|{"count":N},"devices":["Vulkan0"],"mmproj":"/path/mmproj.gguf"}`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn offgrid_model_load(
     path: *const c_char,
@@ -127,8 +118,6 @@ pub unsafe extern "C" fn offgrid_model_free(model: *mut OffgridModel) {
     }
 }
 
-// ---------------------------------------------------------------- chat
-
 /// Create a chat session. `params_json` (nullable): `{"n_ctx":8192,"n_batch":512,"n_threads":8}`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn offgrid_chat_new(
@@ -145,23 +134,9 @@ pub unsafe extern "C" fn offgrid_chat_new(
     })
 }
 
-/// Run a chat completion. `request_json` is
-/// `{"messages":[{"role":"user","content":"..."}],"max_tokens":256,"temperature":0.7,"stop":[],...}`.
-/// Tools (OpenAI format): `"tools":[{"type":"function","function":{"name","description","parameters"}}]`,
-/// `"tool_choice":"auto"|"none"|"required"|{"type":"function","function":{"name":"..."}}`;
-/// the response then has `"tool_calls":[{"id","type":"function","function":{"name","arguments"}}]`
-/// and `"finish_reason":"tool_calls"`. Send results back as `{"role":"tool","tool_call_id":...,
-/// "content":"..."}` after the assistant message (with its `tool_calls`). The callback streams
-/// reply text only (no reasoning / tool-call markup); `reasoning_content` is in the response.
-/// Images / audio: message `content` as OpenAI parts, `[{"type":"text","text":"..."},
-/// {"type":"image_url","image_url":{"url":"data:image/png;base64,..."}},
-/// {"type":"input_audio","input_audio":{"data":"<base64>","format":"wav"|"mp3"|"flac"}}]`
-/// (images as data: URLs only; needs a model loaded with a matching `mmproj`).
-/// Structured output: `"response_format":{"type":"json_object"}` or
-/// `{"type":"json_schema","json_schema":{"schema":{...}}}`. Template: `"chat_template"`
-/// (Jinja text or built-in name) and `"chat_template_kwargs":{...}`.
-/// `callback` (nullable) streams text pieces. Blocks until done; returns response JSON
-/// `{"content":"...","finish_reason":"stop"|"length"|"cancelled","usage":{...}}` or NULL on error.
+/// Run a chat completion. `request_json` is an OpenAI chat request (messages, tools,
+/// response_format, image/audio parts as data). `callback` (nullable) streams reply text.
+/// Blocks until done; returns the response JSON, or NULL on error.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn offgrid_chat_complete(
     chat: *const OffgridChat,
@@ -193,9 +168,7 @@ pub type OffgridEventCallback = Option<
     unsafe extern "C" fn(kind: i32, text: *const c_char, len: usize, user_data: *mut c_void) -> bool,
 >;
 
-/// Like [`offgrid_chat_complete`] but streams reasoning and tool calls too:
-/// reply text (`OFFGRID_EVENT_CONTENT`) and reasoning (`OFFGRID_EVENT_REASONING`) as they
-/// are generated, then one `OFFGRID_EVENT_TOOL_CALL` per parsed call.
+/// Like [`offgrid_chat_complete`] but also streams reasoning and tool calls.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn offgrid_chat_complete_events(
     chat: *const OffgridChat,
@@ -224,8 +197,7 @@ pub unsafe extern "C" fn offgrid_chat_complete_events(
     })
 }
 
-/// Raw text completion without chat template. `request_json`:
-/// `{"prompt":"...","max_tokens":N,"stop":[...],"temperature":...}`.
+/// Raw text completion without a chat template. `request_json`: `{"prompt":"...",...}`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn offgrid_chat_generate(
     chat: *const OffgridChat,
@@ -262,8 +234,7 @@ fn stream_piece(callback: OffgridTokenCallback, user_data: *mut c_void, piece: &
     unsafe { cb(c.as_ptr(), piece.len(), user_data) }
 }
 
-/// Cancel the in-flight request on this session. Safe from any thread, any time.
-/// A no-op when no request is running: it never affects a later request.
+/// Cancel the running request. Safe from any thread; no-op when idle.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn offgrid_chat_cancel(chat: *const OffgridChat) {
     if let Some(chat) = unsafe { chat.as_ref() } {
@@ -271,16 +242,14 @@ pub unsafe extern "C" fn offgrid_chat_cancel(chat: *const OffgridChat) {
     }
 }
 
-/// Id of the next request this session will run (pass it to [`offgrid_chat_cancel_request`]).
-/// Only meaningful while the caller has exclusive use of the session until that request
-/// starts (no other thread starts a request on it in between).
+/// Id of the next request (for [`offgrid_chat_cancel_request`]). Only meaningful while no
+/// other thread can start a request on the session first.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn offgrid_chat_next_request_id(chat: *const OffgridChat) -> u64 {
     unsafe { chat.as_ref() }.map_or(0, |c| c.cancel.next_request().id())
 }
 
-/// Cancel one specific request by id, even before it has started (e.g. an abort that
-/// races the start of a nonblocking call). Never affects other requests. Safe from any thread.
+/// Cancel one request by id, even before it starts. Safe from any thread.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn offgrid_chat_cancel_request(chat: *const OffgridChat, request_id: u64) {
     if let Some(chat) = unsafe { chat.as_ref() } {
@@ -306,8 +275,6 @@ pub unsafe extern "C" fn offgrid_chat_free(chat: *mut OffgridChat) {
         });
     }
 }
-
-// ---------------------------------------------------------------- embeddings
 
 /// Create an embedder. `params_json` (nullable): `{"n_ctx":0,"max_batch_inputs":16,"normalize":true}`.
 #[unsafe(no_mangle)]

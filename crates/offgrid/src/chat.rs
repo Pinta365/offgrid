@@ -37,13 +37,7 @@ impl Default for SessionParams {
     }
 }
 
-/// An OpenAI-style chat message.
-///
-/// On the wire `content` may be a string, `null`, or an array of parts
-/// (`{"type":"text","text":...}`, `{"type":"image_url","image_url":{"url":"data:..."}}`,
-/// `{"type":"input_audio","input_audio":{"data":"<base64>","format":"wav"}}`).
-/// Internally the text holds one [`media_marker`] per media item, in order, and the items
-/// are in `media`.
+/// An OpenAI-style chat message. `content` holds one [`media_marker`] per item in `media`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "WireMessage", into = "WireMessage")]
 pub struct ChatMessage {
@@ -190,14 +184,12 @@ impl ChatMessage {
         let markers: String = media.iter().map(|_| format!("{}\n", media_marker())).collect();
         Self { media, ..Self::new("user", format!("{markers}{}", text.into())) }
     }
-    /// A user message with images (each placed before the text). Same as
-    /// [`Self::user_with_media`]; debug builds assert every item is an image.
+    /// [`Self::user_with_media`] for images.
     pub fn user_with_images(text: impl Into<String>, images: Vec<Media>) -> Self {
         debug_assert!(images.iter().all(|m| m.kind == MediaKind::Image), "user_with_images given non-image media");
         Self::user_with_media(text, images)
     }
-    /// A user message with audio clips (each placed before the text). Same as
-    /// [`Self::user_with_media`]; debug builds assert every item is audio.
+    /// [`Self::user_with_media`] for audio.
     pub fn user_with_audio(text: impl Into<String>, audio: Vec<Media>) -> Self {
         debug_assert!(audio.iter().all(|m| m.kind == MediaKind::Audio), "user_with_audio given non-audio media");
         Self::user_with_media(text, audio)
@@ -235,8 +227,7 @@ pub struct ChatRequest {
     /// Stop strings (OpenAI accepts a single string or an array).
     #[serde(deserialize_with = "string_or_seq")]
     pub stop: Vec<String>,
-    /// Override the model's chat template: Jinja template text, or a llama.cpp built-in
-    /// name such as `chatml`. Default: the model's own (Jinja) template.
+    /// Jinja template text or a llama.cpp built-in name (e.g. `chatml`). Default: the model's.
     pub chat_template: Option<String>,
     /// Extra variables for the chat template, e.g. `{"enable_thinking": false}`.
     pub chat_template_kwargs: Option<serde_json::Map<String, serde_json::Value>>,
@@ -353,9 +344,8 @@ pub enum StreamEvent<'a> {
     ToolCall(&'a ToolCall),
 }
 
-/// Request-scoped cancellation state of a session. Every request gets the next `epoch`;
-/// a request is cancelled when `cancelled >= epoch`. Cancels therefore never leak into a
-/// later request (no "sticky" flag to reset).
+/// Each request gets the next `epoch` and is cancelled when `cancelled >= epoch`, so a
+/// cancel never leaks into a later request.
 #[derive(Debug, Default)]
 struct CancelState {
     /// Number of the current (or last finished) request; 0 = none yet.
@@ -376,8 +366,7 @@ impl CancelState {
 pub struct CancelToken(Arc<CancelState>);
 
 impl CancelToken {
-    /// Cancel the request running right now. A no-op when the session is idle: it never
-    /// affects a later request.
+    /// Cancel the running request. No-op when idle.
     pub fn cancel(&self) {
         self.0.cancelled.fetch_max(self.0.epoch.load(Ordering::SeqCst), Ordering::SeqCst);
     }
@@ -387,15 +376,13 @@ impl CancelToken {
         self.0.is_cancelled()
     }
 
-    /// A canceller for the session's *next* request, usable before it starts and after it
-    /// ends (then a no-op). Only valid while the caller has exclusive use of the session
-    /// until that request starts (e.g. it holds the session's lock or pool lease).
+    /// A canceller for the session's *next* request. Only valid while the caller has
+    /// exclusive use of the session until that request starts (e.g. holds its lock).
     pub fn next_request(&self) -> RequestCancel {
         RequestCancel { state: self.0.clone(), epoch: self.0.epoch.load(Ordering::SeqCst) + 1 }
     }
 
-    /// A canceller for request number `id` (from [`RequestCancel::id`]), e.g. across an FFI
-    /// boundary where only the number is passed around.
+    /// A canceller for request number `id` (from [`RequestCancel::id`]).
     pub fn request(&self, id: u64) -> RequestCancel {
         RequestCancel { state: self.0.clone(), epoch: id }
     }
@@ -428,11 +415,8 @@ unsafe extern "C" fn abort_callback(data: *mut c_void) -> bool {
     unsafe { &*(data as *const CancelState) }.is_cancelled()
 }
 
-/// One inference context for chat / text generation.
-///
-/// Requests are stateless (send the full message list each time); the session
-/// keeps the KV cache and reuses the longest common token prefix between calls,
-/// so multi-turn chats only process the new tokens.
+/// One inference context for chat. Requests are stateless; the KV cache is reused across
+/// calls by longest common prefix.
 pub struct ChatSession {
     model: Arc<Model>,
     ctx: NonNull<sys::llama_context>,
@@ -601,12 +585,8 @@ impl ChatSession {
         self.n_past = 0;
     }
 
-    /// Render the request's messages into the prompt text the model will see.
-    ///
-    /// Uses `req.chat_template` if set (Jinja text or a built-in name), otherwise the
-    /// model's own Jinja template; if that fails to compile or render, falls back to
-    /// llama.cpp's built-in template matching the model. A Jinja template that ignores
-    /// `tools` gets them described in the system message instead (see [`Rendered`]).
+    /// Render the prompt: `req.chat_template`, else the model's Jinja template, else
+    /// llama.cpp's built-in. See `Rendered` for templates that ignore `tools`.
     pub fn render_prompt(&mut self, req: &ChatRequest) -> Result<String> {
         self.render(req).map(|r| r.prompt)
     }
@@ -720,9 +700,7 @@ impl ChatSession {
         Err(Error::ChatTemplate("template output size changed".into()))
     }
 
-    /// Chat completion. `on_piece` receives streamed reply text (without reasoning or
-    /// tool-call markup); return `false` to cancel. Tool calls and reasoning are returned
-    /// parsed in the response. See [`Self::complete_stream`] to also stream reasoning.
+    /// Chat completion. `on_piece` receives streamed reply text; return `false` to cancel.
     pub fn complete(&mut self, req: &ChatRequest, mut on_piece: impl FnMut(&str) -> bool) -> Result<ChatResponse> {
         self.complete_stream(req, |event| match event {
             StreamEvent::Content(text) => on_piece(text),
@@ -866,9 +844,7 @@ impl ChatSession {
         };
         resp.content = parsed.content;
         resp.reasoning_content = parsed.reasoning;
-        // Text the stream filter held back (e.g. a bare `{...}` reply that was not a tool
-        // call, or a malformed call block) is content after all: deliver the missing part so
-        // streaming clients end up with the same content as the response.
+        // Deliver text the stream filter held back (e.g. a `{...}` reply that wasn't a call).
         if !cancelled_by_callback && resp.finish_reason != FinishReason::Cancelled {
             let shown = streamed.trim();
             if let Some(missing) = resp.content.strip_prefix(shown)
@@ -887,13 +863,8 @@ impl ChatSession {
         Ok(resp)
     }
 
-    /// Run a tool loop: complete, execute requested calls with `call_tool` (returning the
-    /// result text, typically JSON), append calls + results, and repeat until the model
-    /// answers without calling tools. After `max_rounds` tool rounds a final turn is run
-    /// with `tool_choice: none` to force an answer.
-    ///
-    /// Returns the final response and the full conversation (request messages, assistant
-    /// tool-call turns, tool results and the final answer) for continuing the chat.
+    /// Complete and run requested calls through `call_tool` until the model answers
+    /// without tools (forced after `max_rounds`). Returns the answer and full conversation.
     pub fn run_tools(
         &mut self,
         req: &ChatRequest,
@@ -1005,9 +976,8 @@ impl ChatSession {
             .collect()
     }
 
-    /// Bring the KV cache to `segments`, reusing the longest common prefix of cached items
-    /// (tokens, and images by content hash). Always re-evaluates at least the last item so
-    /// logits are available. Returns `false` if cancelled.
+    /// Bring the KV cache to `segments`, reusing the longest cached prefix. Returns `false`
+    /// if cancelled.
     fn eval_prompt(&mut self, segments: &[Segment], usage: &mut Usage) -> Result<bool> {
         let n_ctx = self.n_ctx();
         let items = segment_items(segments);
@@ -1042,7 +1012,7 @@ impl ChatSession {
         usage.cached_tokens = self.cached.iter().map(CacheItem::n_tokens).sum::<usize>() as u32;
 
         let last = items.len() - 1;
-        let mut index = 0; // item index at the start of the current segment
+        let mut index = 0;
         for seg in segments {
             match seg {
                 Segment::Text(tokens) => {
@@ -1200,9 +1170,8 @@ impl Rendered {
     }
 }
 
-/// Whether `template` leaves `tools` out of the prompt (it renders a probe tool's name
-/// otherwise). Templates that fail to render the probe count as showing tools, so their
-/// own error surfaces.
+/// Whether `template` leaves `tools` out of the prompt. Render errors count as "shows
+/// tools" so the template's own error surfaces.
 fn ignores_tools(template: &ChatTemplate, base: &RenderArgs) -> bool {
     const PROBE: &str = "offgrid_probe_function";
     let messages = serde_json::json!([{"role": "user", "content": "Hi"}]);
@@ -1212,8 +1181,6 @@ fn ignores_tools(template: &ChatTemplate, base: &RenderArgs) -> bool {
         .is_ok_and(|prompt| !prompt.contains(PROBE))
 }
 
-/// Render with tools and tool-call history written into the messages (see
-/// [`polyfill_messages`]).
 fn render_polyfilled(template: &ChatTemplate, messages: &[ChatMessage], tools: Option<&[Tool]>, base: &RenderArgs) -> Result<String> {
     let render = |system_role| {
         let messages = template_messages(&polyfill_messages(messages, tools, system_role))?;

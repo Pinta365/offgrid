@@ -2,9 +2,6 @@
  * chat.c — minimal streaming chat example for the offgrid C ABI.
  *
  * Usage: ./chat <model.gguf> "<question>"
- *
- * Prints version/device JSON to stdout, streams the assistant's reply to
- * stdout as it is generated, and prints the final response JSON to stderr.
  */
 #define _POSIX_C_SOURCE 200809L
 

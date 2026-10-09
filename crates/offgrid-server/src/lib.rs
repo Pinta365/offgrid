@@ -166,9 +166,7 @@ async fn get_model(State(state): State<Arc<AppState>>, Path(id): Path<String>) -
     if known { Json(model_entry(&state, &id)).into_response() } else { ApiError::not_found("model not found").into_response() }
 }
 
-/// Cancels its request when dropped: the client went away (handler future or SSE body
-/// stream dropped). Request-scoped, so firing after the request finished is a no-op and
-/// can't affect the session's next request. Aborts prompt processing too.
+/// Cancels its request when dropped (the client went away). No-op once the request is done.
 struct CancelOnDrop(offgrid::RequestCancel);
 
 impl Drop for CancelOnDrop {

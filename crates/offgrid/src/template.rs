@@ -46,9 +46,7 @@ impl ChatTemplate {
         // real chat templates use a few thousand units; a runaway loop fails fast.
         env.set_fuel(Some(TEMPLATE_FUEL));
         env.add_filter("tojson", tojson);
-        // `is iterable` as templates intend it: lists/dicts, not none (minijinja iterates
-        // none as empty; templates test `tools is iterable` with tools=None) and not strings
-        // (Llama 3.x does `content is mapping or content is iterable -> tojson`, which would
+        // Python's `is iterable`: not none and not strings (Llama 3.x would otherwise
         // double-encode a JSON string tool result).
         env.add_test("iterable", |v: Value| {
             use minijinja::value::ValueKind::*;
@@ -122,9 +120,8 @@ fn raise_exception(msg: String) -> std::result::Result<Value, minijinja::Error> 
     Err(minijinja::Error::new(ErrorKind::InvalidOperation, format!("template raised: {msg}")))
 }
 
-/// Python `json.dumps` style `tojson`: `", "` / `": "` separators, no HTML escaping,
-/// non-ASCII kept, optional `indent=N`. (minijinja's built-in is compact + HTML-escaped,
-/// which changes the prompt text models were trained on.)
+/// Python `json.dumps` style `tojson` (minijinja's is compact and HTML-escaped, which
+/// differs from what models were trained on).
 fn tojson(value: Value, kwargs: Kwargs) -> std::result::Result<Value, minijinja::Error> {
     let indent: Option<usize> = kwargs.get("indent")?;
     // Accepted for compatibility; behaviour is fixed to ensure_ascii=False, sort_keys=False.

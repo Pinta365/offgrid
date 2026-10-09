@@ -38,8 +38,7 @@ fn ask(chat: &mut ChatSession, messages: Vec<ChatMessage>) -> ChatResponse {
     chat.complete(&req, |_| true).unwrap()
 }
 
-// Omni only: Ultravox 1B understands the clip but can't be relied on to transcribe it
-// (on jfk.mp3 it claims it has no audio). Its understanding is covered below.
+// Omni only: Ultravox 1B understands the clip but doesn't reliably transcribe it.
 #[test]
 fn transcribes_speech_in_all_formats() {
     if let Some((name, model)) = load("OFFGRID_TEST_OMNI_MODEL", "OFFGRID_TEST_OMNI_MMPROJ") {

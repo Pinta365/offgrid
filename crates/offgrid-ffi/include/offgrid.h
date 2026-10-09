@@ -92,9 +92,8 @@ void offgrid_set_log_callback(offgrid_log_callback callback, void *user_data, in
 char *offgrid_devices_json(void);
 
 /**
- * Load a GGUF model. `params_json` (nullable): `{"gpu_layers":"all"|"none"|{"count":N},"devices":["Vulkan0"],
- * "mmproj":"/path/mmproj.gguf"}` (`mmproj` = multimodal projector: enables image and/or audio
- * input, see `"vision"` / `"audio"` in [`offgrid_model_info_json`]).
+ * Load a GGUF model. `params_json` (nullable):
+ * `{"gpu_layers":"all"|"none"|{"count":N},"devices":["Vulkan0"],"mmproj":"/path/mmproj.gguf"}`.
  */
 offgrid_model *offgrid_model_load(const char *path, const char *params_json, char **error_out);
 
@@ -111,55 +110,35 @@ void offgrid_model_free(offgrid_model *model);
 offgrid_chat *offgrid_chat_new(const offgrid_model *model, const char *params_json, char **error_out);
 
 /**
- * Run a chat completion. `request_json` is
- * `{"messages":[{"role":"user","content":"..."}],"max_tokens":256,"temperature":0.7,"stop":[],...}`.
- * Tools (OpenAI format): `"tools":[{"type":"function","function":{"name","description","parameters"}}]`,
- * `"tool_choice":"auto"|"none"|"required"|{"type":"function","function":{"name":"..."}}`;
- * the response then has `"tool_calls":[{"id","type":"function","function":{"name","arguments"}}]`
- * and `"finish_reason":"tool_calls"`. Send results back as `{"role":"tool","tool_call_id":...,
- * "content":"..."}` after the assistant message (with its `tool_calls`). The callback streams
- * reply text only (no reasoning / tool-call markup); `reasoning_content` is in the response.
- * Images / audio: message `content` as OpenAI parts, `[{"type":"text","text":"..."},
- * {"type":"image_url","image_url":{"url":"data:image/png;base64,..."}},
- * {"type":"input_audio","input_audio":{"data":"<base64>","format":"wav"|"mp3"|"flac"}}]`
- * (images as data: URLs only; needs a model loaded with a matching `mmproj`).
- * Structured output: `"response_format":{"type":"json_object"}` or
- * `{"type":"json_schema","json_schema":{"schema":{...}}}`. Template: `"chat_template"`
- * (Jinja text or built-in name) and `"chat_template_kwargs":{...}`.
- * `callback` (nullable) streams text pieces. Blocks until done; returns response JSON
- * `{"content":"...","finish_reason":"stop"|"length"|"cancelled","usage":{...}}` or NULL on error.
+ * Run a chat completion. `request_json` is an OpenAI chat request (messages, tools,
+ * response_format, image/audio parts as data). `callback` (nullable) streams reply text.
+ * Blocks until done; returns the response JSON, or NULL on error.
  */
 char *offgrid_chat_complete(const offgrid_chat *chat, const char *request_json, offgrid_token_callback callback, void *user_data, char **error_out);
 
 /**
- * Like [`offgrid_chat_complete`] but streams reasoning and tool calls too:
- * reply text (`OFFGRID_EVENT_CONTENT`) and reasoning (`OFFGRID_EVENT_REASONING`) as they
- * are generated, then one `OFFGRID_EVENT_TOOL_CALL` per parsed call.
+ * Like [`offgrid_chat_complete`] but also streams reasoning and tool calls.
  */
 char *offgrid_chat_complete_events(const offgrid_chat *chat, const char *request_json, offgrid_event_callback callback, void *user_data, char **error_out);
 
 /**
- * Raw text completion without chat template. `request_json`:
- * `{"prompt":"...","max_tokens":N,"stop":[...],"temperature":...}`.
+ * Raw text completion without a chat template. `request_json`: `{"prompt":"...",...}`.
  */
 char *offgrid_chat_generate(const offgrid_chat *chat, const char *request_json, offgrid_token_callback callback, void *user_data, char **error_out);
 
 /**
- * Cancel the in-flight request on this session. Safe from any thread, any time.
- * A no-op when no request is running: it never affects a later request.
+ * Cancel the running request. Safe from any thread; no-op when idle.
  */
 void offgrid_chat_cancel(const offgrid_chat *chat);
 
 /**
- * Id of the next request this session will run (pass it to [`offgrid_chat_cancel_request`]).
- * Only meaningful while the caller has exclusive use of the session until that request
- * starts (no other thread starts a request on it in between).
+ * Id of the next request (for [`offgrid_chat_cancel_request`]). Only meaningful while no
+ * other thread can start a request on the session first.
  */
 uint64_t offgrid_chat_next_request_id(const offgrid_chat *chat);
 
 /**
- * Cancel one specific request by id, even before it has started (e.g. an abort that
- * races the start of a nonblocking call). Never affects other requests. Safe from any thread.
+ * Cancel one request by id, even before it starts. Safe from any thread.
  */
 void offgrid_chat_cancel_request(const offgrid_chat *chat, uint64_t request_id);
 

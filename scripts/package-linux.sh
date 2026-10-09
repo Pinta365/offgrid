@@ -3,11 +3,8 @@
 # package-linux.sh — build offgrid with dynamically-loaded backends and assemble a
 # relocatable Linux x86_64 distribution tarball under dist/.
 #
-# Toolchain (env OFFGRID_TOOLCHAIN):
-#   zig  (default if `mise`+zig or `zig` and cargo-zigbuild are available)
-#        cargo zigbuild against glibc $OFFGRID_GLIBC (default 2.28): runs on
-#        Ubuntu 20.04+, Debian 10+, RHEL 8+. C++ runtime is zig's static libc++.
-#   host plain cargo build: requires the build host's glibc (not portable to older distros).
+# OFFGRID_TOOLCHAIN=zig (default when available): cargo zigbuild against glibc
+# $OFFGRID_GLIBC (default 2.28). OFFGRID_TOOLCHAIN=host: needs the host's glibc.
 #
 set -euo pipefail
 
@@ -128,7 +125,6 @@ Notes
     no GPU is available, it falls back to CPU automatically.
 EOF
 
-# Strip debug/unneeded symbols.
 strip --strip-unneeded "$PKG/bin/offgrid-server"
 for so in "$PKG"/lib/*.so "$PKG"/lib/*.so.*; do
     strip --strip-unneeded "$so"

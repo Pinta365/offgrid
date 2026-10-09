@@ -61,9 +61,7 @@ impl Embedder {
         cp.n_batch = n_ctx;
         cp.n_ubatch = n_ctx;
         cp.n_seq_max = max_inputs;
-        // One KV pool shared by all sequences: otherwise llama.cpp splits it into
-        // n_ctx / n_seq_max cells per sequence and long inputs fail (the cache is cleared
-        // per batch and inputs are packed to fit n_batch == n_ctx anyway).
+        // Shared KV pool: a per-sequence split (n_ctx / n_seq_max) makes long inputs fail.
         cp.kv_unified = true;
         cp.n_threads = threads;
         cp.n_threads_batch = threads;

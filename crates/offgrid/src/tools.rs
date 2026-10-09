@@ -115,8 +115,7 @@ impl<'de> Deserialize<'de> for ToolChoice {
 /// `call_` + 24 alphanumerics, unique within the process.
 fn new_call_id() -> String {
     use std::hash::{BuildHasher, Hasher};
-    // RandomState is randomly keyed (std's OS-seeded keys); hashing a process-wide counter
-    // with two such states gives 128 unpredictable, collision-free-in-practice bits.
+    // Two OS-seeded RandomStates over a counter: 128 unpredictable bits.
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
     let half = |n: u64| {
@@ -128,19 +127,15 @@ fn new_call_id() -> String {
     const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
     let mut id = String::from("call_");
     for _ in 0..24 {
-        // 62^24 exceeds 2^128, so the last two or three chars are usually 'A'; fine.
         id.push(ALPHABET[(x % 62) as usize] as char);
         x /= 62;
     }
     id
 }
 
-/// Rewrite a conversation for a chat template that ignores `tools` (e.g. Gemma 3), the way
-/// llama.cpp does for such templates: describe `tools` (if offered) in the system message,
-/// or at the start of the first user message when `system_role` is false, and turn
-/// assistant tool calls and tool results into plain text in the `<tool_call>` format that
-/// the generic grammar constrains. Consecutive tool results become one user turn, so roles
-/// still alternate.
+/// Rewrite a conversation for a template that ignores `tools` (e.g. Gemma 3), like llama.cpp
+/// does: describe the tools in the system message and turn tool calls and results into
+/// `<tool_call>` text. Consecutive tool results become one user turn so roles alternate.
 pub(crate) fn polyfill_messages(messages: &[ChatMessage], tools: Option<&[Tool]>, system_role: bool) -> Vec<ChatMessage> {
     let mut out: Vec<ChatMessage> = Vec::with_capacity(messages.len() + 1);
     // Call id → function name, to label tool results.
@@ -329,9 +324,8 @@ pub(crate) fn tool_grammar(
     } else {
         "tool-calls ::= tool-call"
     });
-    // Models taught the format in the prompt tend to write the tool's response themselves
-    // next. Allow its opening tag, which is a stop string (`POLYFILL_STOP`), so the turn
-    // ends there instead of being forced into more calls.
+    // Prompt-taught models tend to write the tool response next; allow its opening tag
+    // (a stop string, `POLYFILL_STOP`) so the turn ends instead of forcing more calls.
     if format == ToolFormat::Polyfill {
         text.push_str(&format!(" ([ \\n]* \"{POLYFILL_STOP}\")?"));
     }

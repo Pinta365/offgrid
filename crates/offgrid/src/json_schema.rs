@@ -1,18 +1,7 @@
-//! JSON Schema -> GBNF grammar conversion.
+//! JSON Schema -> GBNF grammar, ported from llama.cpp's `common/json-schema-to-grammar.cpp`.
 //!
-//! Rust port of llama.cpp's `common/json-schema-to-grammar.cpp` (schema parsing
-//! from `common/json-schema.cpp`). Keeps rule names and primitive rules
-//! compatible with the C++ implementation.
-//!
-//! Public API: [`json_schema_to_grammar`] and [`any_json_grammar`].
-//!
-//! Supported: object/array/string/number/integer/boolean/null, type arrays,
-//! properties/required/additionalProperties, items/prefixItems/minItems/maxItems,
-//! string min/maxLength/enum/const/format/pattern, enum/const of any value,
-//! anyOf/oneOf/allOf, and local `$ref` (including recursion).
-//!
-//! Not supported (documented): remote `$ref`; regex lookaround/named groups/
-//! anchors inside the pattern; numeric minimum/maximum bounds are ignored.
+//! Not supported: remote `$ref`, regex lookaround/named groups/anchors in `pattern`;
+//! numeric minimum/maximum are ignored.
 
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet, HashSet};

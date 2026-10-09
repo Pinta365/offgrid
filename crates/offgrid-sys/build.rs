@@ -40,20 +40,15 @@ fn main() {
 
     let mut cfg = cmake::Config::new(&llama_dir);
 
-    // Always build llama.cpp in Release, even for debug cargo builds, so that
-    // incremental development stays fast.
+    // Release even for debug cargo builds; a debug llama.cpp is far too slow.
     cfg.profile("Release");
 
     cfg.define("LLAMA_BUILD_TESTS", "OFF");
     cfg.define("LLAMA_BUILD_EXAMPLES", "OFF");
     cfg.define("LLAMA_BUILD_TOOLS", "OFF");
     cfg.define("LLAMA_BUILD_SERVER", "OFF");
-    // `app` (the unified `llama` binary) is a separate target added in this
-    // commit; it defaults ON for standalone builds and pulls in build-info.h.
     cfg.define("LLAMA_BUILD_APP", "OFF");
-    // `common` is only used by tools/examples/app; not needed for the libraries.
     cfg.define("LLAMA_BUILD_COMMON", "OFF");
-    // Multimodal (vision) library, built standalone without the rest of tools/.
     cfg.define("LLAMA_BUILD_MTMD", "ON");
     cfg.define("LLAMA_CURL", "OFF");
     cfg.define("GGML_OPENMP", "OFF");
@@ -64,33 +59,22 @@ fn main() {
         cfg.define("BUILD_SHARED_LIBS", "ON");
         cfg.define("GGML_BACKEND_DL", "ON");
         cfg.define("GGML_NATIVE", "OFF");
-        // Builds libggml-cpu-{x64,sse42,sandybridge,haswell,skylakex,zen4,...};
-        // the best one for the running CPU is picked at load time.
+        // One libggml-cpu-* per CPU level; the best is picked at load time.
         cfg.define("GGML_CPU_ALL_VARIANTS", "ON");
         if unix_like {
-            // Find sibling libs next to each other; don't depend on the host libstdc++ version.
             cfg.define("CMAKE_INSTALL_RPATH", "$ORIGIN");
             cfg.define("CMAKE_BUILD_WITH_INSTALL_RPATH", "ON");
-            // Each lib gets a private copy of libstdc++; --exclude-libs hides those symbols
-            // so copies in different libs can't interpose each other (that crashed in
-            // std::locale when loaded into Deno). Backends are MODULE targets, which use
-            // a separate flags variable.
-            // zig (cargo-zigbuild) always links its own libc++ statically and its
-            // linker rejects these GNU flags, so only pass them to gcc/clang toolchains.
-            // (Always set explicitly: CMakeCache would otherwise keep stale values.)
+            // Static libstdc++ per lib; --exclude-libs stops the copies interposing each
+            // other (crashed in std::locale under Deno). zig links libc++ statically and
+            // rejects these flags. Always set: CMakeCache would keep stale values.
             let flags = if using_zig() { "" } else { "-static-libstdc++ -static-libgcc -Wl,--exclude-libs,ALL" };
             cfg.define("CMAKE_SHARED_LINKER_FLAGS", flags);
-            // ggml dlopens every backend module to probe it and dlcloses the unused ones
-            // (other CPU variants; Vulkan when no GPU). With zig's static libc++ those
-            // modules leave exit-time handlers behind, so unmapping them crashes the
-            // process at exit. nodelete keeps them mapped (cheap: mostly untouched pages).
+            // ggml dlcloses unused backend modules; with zig's static libc++ they leave
+            // exit handlers behind that crash at exit. nodelete keeps them mapped.
             cfg.define("CMAKE_MODULE_LINKER_FLAGS", format!("{flags} -Wl,-z,nodelete").trim());
         } else if target_os == "windows" {
-            // Note: build Windows with a real MinGW toolchain (llvm-mingw, see
-            // scripts/env-llvm-mingw.sh). ggml relies on MinGW auto-export, and zig's
-            // CRT object naming makes lld also export atexit/_CRT_INIT -> duplicate symbols.
-            // (Set explicitly so CMakeCache can't keep stale flags.)
-            // -static: bake libc++/libunwind into each DLL (only the OS UCRT stays dynamic).
+            // Needs llvm-mingw (scripts/env-llvm-mingw.sh), not zig: ggml relies on MinGW
+            // auto-export. -static bakes libc++/libunwind into each DLL.
             cfg.define("CMAKE_SHARED_LINKER_FLAGS", "-static");
             cfg.define("CMAKE_MODULE_LINKER_FLAGS", "-static");
         }

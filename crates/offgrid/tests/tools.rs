@@ -4,10 +4,8 @@
 //!   OFFGRID_TEST_GEMMA_MODEL  Gemma 3 (template ignores tools: they are described in the
 //!                            system message, generic <tool_call> format)
 //!
-//! Format/plumbing tests run on every model. Judgment tests (don't call when not
-//! needed, answer from the tool result) only run on OFFGRID_TEST_MODEL: Llama 3.2 3B
-//! re-calls tools instead of answering, and llama.cpp's own llama-server shows the same
-//! behaviour with it (checked 2026-10-08), so that's the model, not this code.
+//! Judgment tests (when to call, answering from results) run only on OFFGRID_TEST_MODEL:
+//! Llama 3.2 3B re-calls tools instead of answering (llama-server does the same).
 
 use std::sync::{Arc, OnceLock};
 

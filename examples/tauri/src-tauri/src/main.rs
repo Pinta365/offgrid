@@ -1,9 +1,4 @@
 //! Desktop chat app that embeds offgrid directly (no sidecar, no FFI).
-//!
-//! The model loads on a background thread at startup. The frontend owns the conversation and
-//! sends the whole message list on every turn (offgrid requests are stateless); the session
-//! reuses its KV cache, so only the new tokens are processed. Reply text and reasoning
-//! stream back over a `tauri::ipc::Channel`.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 

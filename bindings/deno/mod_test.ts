@@ -60,7 +60,6 @@ Deno.test({ name: "chat: stream, prefix reuse, cancel", ignore: !chatModel }, as
   assertStringIncludes(r2.content, "Berlin");
   assert(r2.usage.cached_tokens > 5);
 
-  // Cancel via onToken returning false.
   let n = 0;
   const r3 = await chat.complete(greedy("Count from 1 to 100.", 300), { onToken: () => ++n < 3 });
   assertEquals(r3.finish_reason, "cancelled");
@@ -73,7 +72,6 @@ Deno.test({ name: "chat: stream, prefix reuse, cancel", ignore: !chatModel }, as
   // ...and must not leak into the next request.
   assertEquals((await chat.complete(greedy("Say OK.", 3))).finish_reason !== "cancelled", true);
 
-  // Cancel via AbortSignal.
   const ac = new AbortController();
   const r4 = await chat.complete(greedy("Count from 1 to 100.", 300), {
     signal: ac.signal,

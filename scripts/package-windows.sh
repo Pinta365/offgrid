@@ -3,9 +3,6 @@
 # package-windows.sh — cross-compile offgrid for Windows (x86_64-pc-windows-gnullvm)
 # with llvm-mingw and assemble a distribution zip under dist/.
 #
-# Requires scripts/env-llvm-mingw.sh (sourced below) to put the llvm-mingw tools
-# (llvm-readobj, llvm-strip, llvm-dlltool, llvm-lib, x86_64-w64-mingw32-clang) on PATH.
-#
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -74,7 +71,7 @@ cp -L "${dlls[@]}" "$PKG/bin/"
 
 cp "$ROOT/crates/offgrid-ffi/include/offgrid.h" "$PKG/include/offgrid.h"
 
-# --- MSVC import library from the DLL's export table -------------------------
+# MSVC import library from the DLL's export table.
 echo ">> generating import library from offgrid.dll exports"
 llvm-readobj --coff-exports "$PKG/bin/offgrid.dll" \
     | sed -nE 's/^[[:space:]]*Name:[[:space:]]*(.+[^[:space:]])[[:space:]]*$/\1/p' \
@@ -137,12 +134,10 @@ Notes
     is selected at runtime.
 EOF
 
-# Strip debug/unneeded symbols from the DLLs.
 for dll in "$PKG"/bin/*.dll "$PKG"/bin/*.exe; do
     llvm-strip --strip-unneeded "$dll"
 done
 
-# --- archive -----------------------------------------------------------------
 if command -v zip >/dev/null 2>&1; then
     (cd "$ROOT/dist" && zip -r -q "$(basename "$ZIPFILE")" "$PKG_NAME")
 else

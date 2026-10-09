@@ -4,9 +4,6 @@
 //   deno run -A scripts/openai-compat.ts <baseURL> <apiKey> [thinkingBaseURL]
 //
 // <baseURL> should include /v1, e.g. http://127.0.0.1:18080/v1
-// Runs checks 1-9 against the main server and, if given, check 10 against a
-// separate thinking-model server. Prints PASS/FAIL per check and exits nonzero
-// if any check fails.
 
 import OpenAI, { AuthenticationError } from "npm:openai@^5";
 
@@ -77,7 +74,6 @@ const weatherTool = {
 };
 const weatherToolPrompt = "What is the weather in Paris? Use the tool.";
 
-// 1 ---------------------------------------------------------------------------
 await run("models.list contains chat model id", async () => {
   const list = await client.models.list();
   const ids = list.data.map((m) => m.id);
@@ -87,14 +83,12 @@ await run("models.list contains chat model id", async () => {
   );
 });
 
-// 2 ---------------------------------------------------------------------------
 await run("chat non-stream reply mentions Paris", async () => {
   const r = await client.chat.completions.create(greedyReq);
   nonStreamContent = r.choices[0]?.message?.content ?? "";
   assert(/paris/i.test(nonStreamContent), `got ${JSON.stringify(nonStreamContent)}`);
 });
 
-// 3 ---------------------------------------------------------------------------
 await run("chat stream matches non-stream, finish_reason stop, usage", async () => {
   assert(nonStreamContent.length > 0, "non-stream content empty (check 2 failed)");
   const stream = await client.chat.completions.create({
@@ -122,7 +116,6 @@ await run("chat stream matches non-stream, finish_reason stop, usage", async () 
   assert(usage !== null, "no usage chunk despite stream_options.include_usage");
 });
 
-// 4 ---------------------------------------------------------------------------
 await run("tools non-stream: call + tool result follow-up", async () => {
   const r = await client.chat.completions.create({
     model: CHAT_MODEL,
@@ -159,7 +152,6 @@ await run("tools non-stream: call + tool result follow-up", async () => {
   assert(answer.includes("22"), `final answer did not use result: ${JSON.stringify(answer)}`);
 });
 
-// 5 ---------------------------------------------------------------------------
 await run("tools streaming: accumulate delta.tool_calls", async () => {
   const stream = await client.chat.completions.create({
     model: CHAT_MODEL,
@@ -190,7 +182,6 @@ await run("tools streaming: accumulate delta.tool_calls", async () => {
 
 // 6 -- SDK runTools/zod helpers: intentionally skipped.
 
-// 7 ---------------------------------------------------------------------------
 await run("response_format json_schema parses to {name,age}", async () => {
   const r = await client.chat.completions.create({
     model: CHAT_MODEL,
@@ -216,7 +207,6 @@ await run("response_format json_schema parses to {name,age}", async () => {
   assert(typeof parsed.age === "number", `age is ${typeof parsed.age}`);
 });
 
-// 8 ---------------------------------------------------------------------------
 await run("embeddings base64 decode + cosine ordering", async () => {
   const emb = await client.embeddings.create({
     model: EMBED_MODEL,
@@ -236,7 +226,6 @@ await run("embeddings base64 decode + cosine ordering", async () => {
   assert(close > far, `cosine(cat,kitten)=${close} !> cosine(cat,tax)=${far}`);
 });
 
-// 9 ---------------------------------------------------------------------------
 await run("wrong API key throws AuthenticationError 401", async () => {
   const bad = new OpenAI({ baseURL, apiKey: "definitely-wrong" });
   let thrown: unknown = null;
@@ -253,7 +242,6 @@ await run("wrong API key throws AuthenticationError 401", async () => {
   assert((thrown as { status?: number }).status === 401, "status was not 401");
 });
 
-// 10 --------------------------------------------------------------------------
 if (thinkingBaseURL) {
   await run("thinking stream: reasoning_content before content, content has 42", async () => {
     const tc = new OpenAI({ baseURL: thinkingBaseURL, apiKey });

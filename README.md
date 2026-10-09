@@ -140,7 +140,7 @@ Every model below was exercised end to end by the test suites on an RX 9070 XT (
 | Qwen2.5-VL-3B + mmproj | Vision (M-RoPE) | Colors, counting, OCR, JPEG, multiple images |
 | Gemma 3 4B + mmproj | Vision, tools without template support | Template ignores tools; uses the system-message fallback |
 | Qwen2.5-Omni-3B + mmproj | Audio and vision | Word-perfect transcription from WAV, MP3 and FLAC |
-| Ultravox 0.5 (Llama 3.2 1B) + mmproj | Audio | |
+| Ultravox 0.5 (Llama 3.2 1B) + mmproj | Audio | Understands speech; unreliable at verbatim transcription |
 
 Performance with Qwen3-4B Q4_K_M:
 
@@ -173,13 +173,8 @@ the backends, plus `include/offgrid.h` and `offgrid-server`. Keep the folder tog
     Python or C# can load it by path from anywhere.
   - Import libraries are included for both MSVC and MinGW.
 
-`scripts/check-portable.sh` and `scripts/check-windows.sh` verify each package. The Linux
-checks:
-- every binary's dependencies resolve from inside the package
-- no system C++ runtime is needed
-- a relocated copy still works
-- the CPU fallback works
-- the packaged server and the Deno binding run against the package
+`scripts/check-portable.sh` and `scripts/check-windows.sh` verify each package: dependencies
+resolve from inside it, a relocated copy runs, and the CPU fallback works.
 
 ## Building from source
 
@@ -226,15 +221,6 @@ Model-backed tests are enabled through environment variables pointing at GGUF fi
 | `OFFGRID_TEST_OMNI_MODEL` / `OFFGRID_TEST_OMNI_MMPROJ` | combined image and audio |
 | `OFFGRID_TEST_IMAGES`, `OFFGRID_TEST_AUDIO` | sample inputs (`spike/images`, `spike/audio`) |
 
-The suites cover:
-- KV-cache reuse, checked by comparing answers against a fresh session at temperature 0
-- tool calling on three model families, one of them through the system-message fallback
-- schema-validated JSON output
-- image and audio recognition
-- cancellation races
-- client disconnects
-- the OpenAI wire format
-
 ## Design notes
 
 - **One core, several front ends.** Rust uses the crate directly. The C ABI is a thin JSON
@@ -280,18 +266,4 @@ The suites cover:
 | `examples/` | C, Deno and Tauri examples (Rust examples are in `crates/offgrid/examples/`) |
 | `scripts/` | Packaging and check scripts, cross-compile environment, OpenAI SDK compatibility check |
 | `vendor/llama.cpp` | Pinned llama.cpp submodule |
-| `spike/` | Phase 0 notes and benchmarks, plus test images and audio (models are gitignored) |
-
-## Status
-
-| Phase | Scope | |
-|---|---|---|
-| 0 | Spike: llama.cpp + Vulkan benchmarks | ✔ |
-| 1 | Rust core: chat, streaming, cancellation, embeddings | ✔ |
-| 2 | C ABI, C and Deno bindings | ✔ |
-| 3 | Portable Linux package (glibc 2.28), Windows cross-build | ✔ / Windows untested |
-| 4 | Jinja templates, JSON output, tool calling, reasoning streaming, HTTP server | ✔ |
-| 5 | Vision, audio, media KV-cache reuse | ✔ |
-| — | Code review passes (high, high, partial max, xhigh), all findings fixed | ✔ |
-
-Next: run on real Windows, then macOS and ARM builds.
+| `spike/` | Benchmark notes, test images and audio (models are gitignored) |

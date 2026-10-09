@@ -55,11 +55,4 @@ Override model paths for `make run` with `MODEL=` / `EMBED_MODEL=`.
 | `cancel.c` | Cancels an in-flight completion from another thread via `offgrid_chat_cancel`. |
 | `Makefile` | `all` / `static` / `run` / `clean`. |
 
-## Notes
-
-- Error handling uses the trailing `char **error_out` parameter on fallible calls;
-  the returned message is owned by the caller and freed with `offgrid_string_free`.
-- All returned strings (`offgrid_version_json`, `offgrid_devices_json`, response JSON)
-  are freed with `offgrid_string_free`.
-- `OFFGRID_LOG=4` (or `offgrid_set_log_callback`) enables llama.cpp logging if needed.
-- valgrind was not installed in this environment, so no valgrind run was performed.
+`OFFGRID_LOG=debug` (or `offgrid_set_log_callback`) enables llama.cpp logging.

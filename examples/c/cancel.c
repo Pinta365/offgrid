@@ -1,11 +1,7 @@
 /*
- * cancel.c — demonstrate cancelling an in-flight completion (offgrid C ABI).
+ * cancel.c — cancel an in-flight completion (offgrid C ABI).
  *
  * Usage: ./cancel <model.gguf>
- *
- * Starts a long completion on a worker thread, waits ~1s, calls
- * offgrid_chat_cancel, then checks that the response's finish_reason is
- * "cancelled". Exit 0 on success, 1 otherwise.
  */
 #define _POSIX_C_SOURCE 200809L
 

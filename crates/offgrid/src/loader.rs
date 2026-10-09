@@ -1,8 +1,5 @@
-//! Runtime discovery of ggml backend modules (`dynamic-backends` builds).
-//!
-//! Backends (libggml-cpu-*.so, libggml-vulkan.so, ...) ship next to the offgrid
-//! library. Because the host may be Deno, Python, etc., the executable's directory
-//! is the wrong place to look; we locate the module that contains this code.
+//! Finds ggml backend modules next to the offgrid library (not the executable, which
+//! may be Deno, Python, ...).
 
 use std::ffi::CString;
 use std::path::{Path, PathBuf};

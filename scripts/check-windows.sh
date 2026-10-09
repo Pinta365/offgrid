@@ -2,10 +2,6 @@
 #
 # check-windows.sh <dist-dir>
 #
-# Static portability checks for an offgrid Windows distribution directory
-# (no Wine available, so nothing is executed). Prints PASS/FAIL per check and
-# exits nonzero if any check fails.
-#
 set -uo pipefail
 
 if [ "$#" -ne 1 ]; then
@@ -43,7 +39,6 @@ for f in "$BIN"/*.dll; do
 done
 shopt -u nullglob
 
-# --- a) every imported DLL is shipped in bin/ or an allowed system DLL -------
 bad_imports=0
 while IFS= read -r dll; do
     self="$(basename "$dll" | tr 'A-Z' 'a-z')"
@@ -75,7 +70,6 @@ else
     fail "$bad_imports unexpected import(s)"
 fi
 
-# --- b) offgrid.dll delay-loads libllama/libmtmd/ggml/ggml-base ----------------------
 imports_class="$(llvm-readobj --coff-imports "$BIN/offgrid.dll" 2>/dev/null | awk '
     /^Import \{/       { t = "normal" }
     /^DelayImport \{/  { t = "delay" }
@@ -95,7 +89,6 @@ if [ "$delay_bad" -eq 0 ]; then
     pass "offgrid.dll delay-loads libllama.dll, libmtmd.dll, ggml.dll, ggml-base.dll"
 fi
 
-# --- c) offgrid.dll exports exactly the offgrid_* functions in offgrid.h -------
 declared="$(python3 - "$HEADER" <<'PY'
 import re, sys
 src = open(sys.argv[1]).read()
@@ -119,7 +112,6 @@ else
     diff <(echo "$declared") <(echo "$exported") | sed 's/^/      /' || true
 fi
 
-# --- d) cross-compile examples against the package --------------------------
 compile_ok=1
 for ex in chat embed cancel; do
     extra=()
@@ -145,7 +137,6 @@ if [ -f "$TMP/chat.exe" ]; then
     fi
 fi
 
-# --- e) sizes ----------------------------------------------------------------
 info "bin/ size: $(du -sh "$BIN" 2>/dev/null | cut -f1)"
 ZIP="${DIST%/}.zip"
 if [ -f "$ZIP" ]; then

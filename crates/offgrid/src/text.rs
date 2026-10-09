@@ -179,9 +179,8 @@ impl StreamFilter {
         }
     }
 
-    /// Reasoning is reported without its leading/trailing blank lines (like the final
-    /// `reasoning_content`), so strip whitespace at its start and hold trailing whitespace
-    /// until more reasoning follows.
+    /// Trim reasoning like the final `reasoning_content`: drop leading whitespace and hold
+    /// trailing whitespace until more follows.
     fn emit_reasoning(&mut self, mut text: String, done: bool, out: &mut Vec<(PieceKind, String)>) {
         if !self.reasoning_started {
             text = text.trim_start().to_string();

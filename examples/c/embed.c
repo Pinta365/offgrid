@@ -2,8 +2,6 @@
  * embed.c — embedding example for the offgrid C ABI (float buffer API).
  *
  * Usage: ./embed <embed-model.gguf>
- *
- * Embeds three fixed sentences and prints the pairwise cosine similarity.
  */
 #define _POSIX_C_SOURCE 200809L
 
