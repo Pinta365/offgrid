@@ -180,6 +180,9 @@ the backends, plus `include/offgrid.h` and `offgrid-server`. Keep the folder tog
 `scripts/check-portable.sh` and `scripts/check-windows.sh` verify each package: dependencies
 resolve from inside it, a relocated copy runs, and the CPU fallback works.
 
+Pushing a tag that matches the crate version (`v0.1.0`) runs the release workflow: it builds and
+checks both packages and creates a draft GitHub release with them attached.
+
 ## Building from source
 
 Requirements:

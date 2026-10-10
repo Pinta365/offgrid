@@ -1,0 +1,106 @@
+name: Package
+
+# Builds the relocatable Linux (zig, glibc 2.28) and Windows (llvm-mingw cross) packages and runs
+# their portability checks. Called by CI (Windows only) and by the release workflow.
+on:
+  workflow_call:
+    inputs:
+      linux:
+        type: boolean
+        default: true
+      upload:
+        type: boolean
+        default: true
+  workflow_dispatch:
+    inputs:
+      linux:
+        type: boolean
+        default: true
+      upload:
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  LLVM_MINGW_RELEASE: "20261006"
+  ZIG_VERSION: "0.16.0"
+  # Tiny model for the CPU inference checks.
+  SMOKE_MODEL_URL: https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories15M-q4_0.gguf
+
+jobs:
+  linux-package:
+    if: inputs.linux
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+      - name: Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build glslc libvulkan-dev spirv-headers
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ env.ZIG_VERSION }}
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild
+      - name: Package (zig, glibc 2.28)
+        run: OFFGRID_TOOLCHAIN=zig scripts/package-linux.sh
+      - name: Smoke model
+        uses: actions/cache@v4
+        with:
+          path: smoke-model.gguf
+          key: smoke-model-stories15M-q4_0
+      - name: Portability checks
+        run: |
+          [ -f smoke-model.gguf ] || curl -fsSL -o smoke-model.gguf "$SMOKE_MODEL_URL"
+          OFFGRID_CHECK_DENO=0 scripts/check-portable.sh dist/offgrid-*-linux-x86_64 smoke-model.gguf
+      - if: inputs.upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: offgrid-linux-x86_64
+          path: dist/offgrid-*-linux-x86_64.tar.gz
+          if-no-files-found: error
+
+  windows-package:
+    runs-on: ubuntu-24.04
+    env:
+      # cmake picks these up, so llama.cpp's C/C++ objects are cached between runs.
+      CMAKE_C_COMPILER_LAUNCHER: ccache
+      CMAKE_CXX_COMPILER_LAUNCHER: ccache
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+      - name: Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build glslc libvulkan-dev spirv-headers ccache zip
+      - name: llvm-mingw
+        run: |
+          name="llvm-mingw-${LLVM_MINGW_RELEASE}-ucrt-ubuntu-22.04-x86_64"
+          mkdir -p ~/.local/share
+          curl -fsSL "https://github.com/mstorsjo/llvm-mingw/releases/download/${LLVM_MINGW_RELEASE}/${name}.tar.xz" \
+            | tar -xJ -C ~/.local/share
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-gnullvm
+      - uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: windows-cross
+          max-size: 2G
+      - name: Package (cross-compiled with llvm-mingw)
+        run: scripts/package-windows.sh
+      - name: Static checks
+        run: scripts/check-windows.sh dist/offgrid-*-windows-x86_64
+      - if: inputs.upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: offgrid-windows-x86_64
+          path: dist/offgrid-*-windows-x86_64.zip
+          if-no-files-found: error
