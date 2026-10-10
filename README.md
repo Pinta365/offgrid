@@ -1,5 +1,7 @@
 # offgrid: embeddable offline AI
 
+[![CI](https://github.com/Pinta365/offgrid/actions/workflows/ci.yml/badge.svg)](https://github.com/Pinta365/offgrid/actions/workflows/ci.yml)
+
 offgrid is a small native library that adds local, offline AI to an application: chat, tool
 calling, structured JSON output, embeddings, and image and audio input. You link a library,
 ship a GGUF model next to your app, and that's it. No daemon, no Docker, no cloud, and no

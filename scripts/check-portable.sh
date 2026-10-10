@@ -2,6 +2,9 @@
 #
 # check-portable.sh <dist-dir> <model.gguf>
 #
+# The Deno check runs the binding's model tests, which need a real chat model;
+# OFFGRID_CHECK_DENO=0 skips it (e.g. in CI with a tiny model).
+#
 set -uo pipefail
 
 if [ "$#" -ne 2 ]; then
@@ -144,7 +147,9 @@ else
 fi
 
 # Deno: dlopen from a non-C host (different load order/flags than a linked C binary).
-if command -v deno >/dev/null 2>&1; then
+if [ "${OFFGRID_CHECK_DENO:-1}" = 0 ]; then
+    info "OFFGRID_CHECK_DENO=0; skipping Deno check"
+elif command -v deno >/dev/null 2>&1; then
     mkdir -p "$TMP/deno"
     cp -r "$DIST" "$TMP/deno/pkg"
     if OFFGRID_LIB="$TMP/deno/pkg/lib/liboffgrid.so" OFFGRID_TEST_MODEL="$MODEL" \

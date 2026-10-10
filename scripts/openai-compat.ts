@@ -127,7 +127,7 @@ await run("tools non-stream: call + tool result follow-up", async () => {
   const choice = r.choices[0];
   const msg = choice.message;
   const call = msg.tool_calls?.[0];
-  assert(call, "no tool_calls returned");
+  assert(call?.type === "function", "no function tool_call returned");
   assert(call.function.name === "get_weather", `name ${call.function.name}`);
   const args = JSON.parse(call.function.arguments);
   assert(/paris/i.test(args.city ?? ""), `arguments ${call.function.arguments}`);
