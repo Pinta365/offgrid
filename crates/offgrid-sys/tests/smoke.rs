@@ -8,10 +8,23 @@ unsafe fn cstr_or_null(p: *const std::ffi::c_char) -> String {
     }
 }
 
+/// llama_backend_init, with the same AMD switchable-graphics layer workaround as offgrid::backend
+/// (the layer hangs vkCreateInstance on hybrid-GPU Windows laptops).
+unsafe fn backend_init() {
+    static INIT: std::sync::Once = std::sync::Once::new();
+    INIT.call_once(|| {
+        #[cfg(windows)]
+        if std::env::var_os("DISABLE_LAYER_AMD_SWITCHABLE_GRAPHICS_1").is_none() {
+            unsafe { std::env::set_var("DISABLE_LAYER_AMD_SWITCHABLE_GRAPHICS_1", "1") };
+        }
+    });
+    unsafe { offgrid_sys::llama_backend_init() };
+}
+
 #[test]
 fn enumerate_backend_devices() {
     unsafe {
-        offgrid_sys::llama_backend_init();
+        backend_init();
         offgrid_sys::ggml_backend_load_all();
 
         let count = offgrid_sys::ggml_backend_dev_count();
@@ -41,7 +54,7 @@ fn tokenize_with_model() {
     let text = CString::new("Hello world").expect("literal contains no NUL");
 
     unsafe {
-        offgrid_sys::llama_backend_init();
+        backend_init();
 
         let mut params = offgrid_sys::llama_model_default_params();
         params.n_gpu_layers = 0;

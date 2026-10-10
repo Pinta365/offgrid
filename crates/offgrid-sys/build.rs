@@ -9,7 +9,12 @@ fn main() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let llama_dir = {
         let p = manifest_dir.join("../../vendor/llama.cpp");
-        p.canonicalize().unwrap_or(p)
+        let p = p.canonicalize().unwrap_or(p);
+        // Windows canonicalize() yields a `\\?\` verbatim path, which CMake's ExternalProject rejects.
+        match p.to_str().and_then(|s| s.strip_prefix(r"\\?\")) {
+            Some(s) => PathBuf::from(s),
+            None => p,
+        }
     };
 
     println!(
