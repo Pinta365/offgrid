@@ -165,6 +165,47 @@ impl Drop for Projector {
     }
 }
 
+/// Headroom for the projector's compute buffer on top of its weights.
+const PROJECTOR_GPU_MARGIN: u64 = 512 << 20;
+
+/// Whether the projector's weights (plus a margin) fit in free memory on the GPU clip.cpp will
+/// pick. clip.cpp aborts (GGML_ASSERT) instead of failing when that allocation fails, so a
+/// projector that won't fit is loaded on the CPU instead.
+fn projector_fits_gpu(path: &Path, device: sys::ggml_backend_dev_t) -> bool {
+    let Ok(size) = std::fs::metadata(path).map(|m| m.len()) else { return true };
+    let dev = {
+        let _guard = setup_lock();
+        // Same choice as clip.cpp: the requested device, else the first GPU, else the first iGPU.
+        let find = |ty| {
+            (0..unsafe { sys::ggml_backend_dev_count() })
+                .map(|i| unsafe { sys::ggml_backend_dev_get(i) })
+                .find(|&d| !d.is_null() && unsafe { sys::ggml_backend_dev_type(d) } == ty)
+        };
+        if device.is_null() {
+            find(sys::ggml_backend_dev_type_GGML_BACKEND_DEVICE_TYPE_GPU)
+                .or_else(|| find(sys::ggml_backend_dev_type_GGML_BACKEND_DEVICE_TYPE_IGPU))
+        } else {
+            Some(device)
+        }
+    };
+    let Some(dev) = dev else { return true };
+    let (mut free, mut total) = (0usize, 0usize);
+    unsafe { sys::ggml_backend_dev_memory(dev, &mut free, &mut total) };
+    let need = size + PROJECTOR_GPU_MARGIN;
+    if free == 0 || need <= free as u64 {
+        return true;
+    }
+    log::warn!(
+        target: "offgrid",
+        "{} needs ~{} MiB but {} has {} MiB free; loading the projector on the CPU",
+        path.display(),
+        need >> 20,
+        unsafe { CStr::from_ptr(sys::ggml_backend_dev_name(dev)) }.to_string_lossy(),
+        free >> 20
+    );
+    false
+}
+
 impl Projector {
     pub fn load(path: &Path, model: *const sys::llama_model, use_gpu: bool, n_threads: i32) -> Result<Self> {
         if !path.is_file() {
@@ -173,7 +214,7 @@ impl Projector {
         let c_path = CString::new(path.to_string_lossy().as_bytes())
             .map_err(|_| Error::InvalidArgument("mmproj path contains NUL".into()))?;
         let mut params = unsafe { sys::mtmd_context_params_default() };
-        params.use_gpu = use_gpu;
+        params.use_gpu = use_gpu && projector_fits_gpu(path, params.device);
         params.n_threads = n_threads;
         params.print_timings = false;
         let ctx = {
