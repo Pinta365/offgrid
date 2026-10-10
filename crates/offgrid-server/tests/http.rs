@@ -1,7 +1,8 @@
 //! HTTP API tests against real models (skipped unless env vars are set):
 //!   OFFGRID_TEST_MODEL, OFFGRID_TEST_EMBED_MODEL, OFFGRID_TEST_THINKING_MODEL
+//! Each test runs its own server, freed when the test ends; on small GPUs use --test-threads=1.
 
-use std::sync::OnceLock;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use offgrid::SessionParams;
@@ -9,37 +10,62 @@ use offgrid_server::{AppState, ServerConfig, router};
 use base64::Engine;
 use serde_json::{Value, json};
 
-/// Start a server on an ephemeral port in a background runtime; returns its base URL.
-fn spawn(config: ServerConfig) -> String {
+/// A server on an ephemeral port; shut down and its models freed on drop.
+struct TestServer {
+    url: String,
+    state: Arc<AppState>,
+    stop: Option<tokio::sync::oneshot::Sender<()>>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl std::fmt::Display for TestServer {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str(&self.url)
+    }
+}
+
+impl Drop for TestServer {
+    fn drop(&mut self) {
+        self.state.shutdown();
+        let _ = self.stop.take().map(|s| s.send(()));
+        let _ = self.thread.take().map(|t| t.join());
+    }
+}
+
+fn spawn(config: ServerConfig) -> TestServer {
+    let config = ServerConfig { session: SessionParams { n_ctx: 2048, ..config.session }, ..config };
     let state = AppState::load(&config).expect("models load");
     let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let serve_state = state.clone();
+    let thread = std::thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async move {
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             tx.send(listener.local_addr().unwrap()).unwrap();
-            axum::serve(listener, router(state)).await.unwrap();
+            axum::serve(listener, router(serve_state))
+                .with_graceful_shutdown(async {
+                    let _ = stopped.await;
+                })
+                .await
+                .unwrap();
         });
     });
-    format!("http://{}", rx.recv().unwrap())
+    let url = format!("http://{}", rx.recv().unwrap());
+    TestServer { url, state, stop: Some(stop), thread: Some(thread) }
 }
 
-/// Shared server: chat + embeddings, 2 sessions, API key "sekret".
-fn server() -> Option<&'static str> {
-    static URL: OnceLock<Option<String>> = OnceLock::new();
-    URL.get_or_init(|| {
-        let model = std::env::var("OFFGRID_TEST_MODEL").ok()?;
-        Some(spawn(ServerConfig {
-            model: Some(model.into()),
-            embedding_model: std::env::var("OFFGRID_TEST_EMBED_MODEL").ok().map(Into::into),
-            alias: Some("test-chat".into()),
-            parallel: 2,
-            session: SessionParams { n_ctx: 4096, ..Default::default() },
-            api_key: Some("sekret".into()),
-            ..Default::default()
-        }))
-    })
-    .as_deref()
+/// Chat + embeddings, 2 sessions, API key "sekret".
+fn server() -> Option<TestServer> {
+    let model = std::env::var("OFFGRID_TEST_MODEL").ok()?;
+    Some(spawn(ServerConfig {
+        model: Some(model.into()),
+        embedding_model: std::env::var("OFFGRID_TEST_EMBED_MODEL").ok().map(Into::into),
+        alias: Some("test-chat".into()),
+        parallel: 2,
+        api_key: Some("sekret".into()),
+        ..Default::default()
+    }))
 }
 
 fn client() -> reqwest::Client {
@@ -79,20 +105,18 @@ fn greedy(content: &str) -> Value {
 }
 
 macro_rules! need_server {
-    () => {
-        match server() {
-            Some(u) => u,
-            None => {
-                eprintln!("skip: OFFGRID_TEST_MODEL not set");
-                return;
-            }
-        }
+    ($url:ident) => {
+        let Some(server) = server() else {
+            eprintln!("skip: OFFGRID_TEST_MODEL not set");
+            return;
+        };
+        let $url: &str = &server.url;
     };
 }
 
 #[tokio::test]
 async fn health_models_auth_and_errors() {
-    let url = need_server!();
+    need_server!(url);
     let r = reqwest::get(format!("{url}/health")).await.unwrap();
     assert_eq!(r.status(), 200);
 
@@ -124,7 +148,7 @@ async fn health_models_auth_and_errors() {
 
 #[tokio::test]
 async fn chat_and_stream_agree() {
-    let url = need_server!();
+    need_server!(url);
     let (s, r) = post(url, "/v1/chat/completions", greedy("What is the capital of France? One word.")).await;
     assert_eq!(s, 200, "{r}");
     assert_eq!(r["object"], "chat.completion");
@@ -163,7 +187,7 @@ fn weather_request(stream: bool) -> Value {
 
 #[tokio::test]
 async fn tool_calls_http() {
-    let url = need_server!();
+    need_server!(url);
     let (s, r) = post(url, "/v1/chat/completions", weather_request(false)).await;
     assert_eq!(s, 200, "{r}");
     let choice = &r["choices"][0];
@@ -197,7 +221,7 @@ async fn tool_calls_http() {
 
 #[tokio::test]
 async fn json_schema_over_http() {
-    let url = need_server!();
+    need_server!(url);
     let mut body = greedy("Extract: 'Alan Turing, 41'.");
     body["response_format"] = json!({"type": "json_schema", "json_schema": {"name": "p", "schema": {
         "type": "object", "properties": {"name": {"type": "string"}, "age": {"type": "integer"}},
@@ -210,7 +234,7 @@ async fn json_schema_over_http() {
 
 #[tokio::test]
 async fn embeddings_float_and_base64() {
-    let url = need_server!();
+    need_server!(url);
     if std::env::var("OFFGRID_TEST_EMBED_MODEL").is_err() {
         return;
     }
@@ -229,7 +253,7 @@ async fn embeddings_float_and_base64() {
 
 #[tokio::test]
 async fn parallel_requests() {
-    let url = need_server!();
+    need_server!(url);
     let t = Instant::now();
     let reqs = (0..4).map(|i| post(url, "/v1/chat/completions", greedy(&format!("Repeat exactly, nothing else: token-{i}"))));
     let results = futures_util::future::join_all(reqs).await;

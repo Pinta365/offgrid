@@ -213,7 +213,8 @@ cargo test --workspace                          # unit tests; model tests skip w
 (cd bindings/deno && deno task test)
 ```
 
-Model-backed tests are enabled through environment variables pointing at GGUF files:
+Model-backed tests are enabled through environment variables pointing at GGUF files. On GPUs with
+8 GB or less, add `-- --test-threads=1` so only one model set is loaded at a time.
 
 | Variable | Enables tests for |
 |---|---|
