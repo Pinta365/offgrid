@@ -36,6 +36,10 @@ case "$TOOLCHAIN" in
         zig_works || ZIG_RUN=(mise exec "zig@${ZIG_VERSION}" --)
         BUILD=("${ZIG_RUN[@]}" cargo zigbuild --target "x86_64-unknown-linux-gnu.${GLIBC}")
         TARGET_DIR="$ROOT/target/x86_64-unknown-linux-gnu/release"
+        # CMake can't infer Debian/Ubuntu's multiarch lib dir from zig cc, so FindVulkan misses libvulkan.so.
+        if [ -d /usr/lib/x86_64-linux-gnu ]; then
+            export CMAKE_LIBRARY_PATH="${CMAKE_LIBRARY_PATH:+$CMAKE_LIBRARY_PATH:}/usr/lib/x86_64-linux-gnu"
+        fi
         ;;
     host)
         BUILD=(cargo build)
