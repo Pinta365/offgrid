@@ -154,7 +154,7 @@ Performance with Qwen3-4B Q4_K_M:
 | Platform | Status | Package |
 |---|---|---|
 | Linux x86_64 | Tested | `scripts/package-linux.sh` → `offgrid-<ver>-linux-x86_64.tar.gz` (~25 MB) |
-| Windows x86_64 | Package tested on Windows 11 (RTX 3060 Laptop via Vulkan, and CPU) | `scripts/package-windows.sh` → `.zip` (~31 MB) |
+| Windows x86_64 | Tested on Windows 11: package (RTX 3060 Laptop via Vulkan, and CPU), native MSVC build with the full test suite | `scripts/package-windows.sh` → `.zip` (~31 MB) |
 | macOS, ARM | Not attempted yet | |
 
 A package is a relocatable folder: `lib/` or `bin/` with `liboffgrid`, llama.cpp/ggml/mtmd and
@@ -201,7 +201,7 @@ Cross-compiling for Windows needs [llvm-mingw](https://github.com/mstorsjo/llvm-
 `~/.local/share` and `rustup target add x86_64-pc-windows-gnullvm`. The Linux package uses zig
 (`mise install zig@0.16.0`) and `cargo install cargo-zigbuild` when they are available.
 
-Building natively on Windows (MSVC, untested so far) needs Visual Studio Build Tools with the
+Building natively on Windows (MSVC) needs Visual Studio Build Tools with the
 C++ workload, CMake, the [Vulkan SDK](https://vulkan.lunarg.com/) (`VULKAN_SDK` set by its
 installer) and LLVM for bindgen (`LIBCLANG_PATH` if it isn't found). Clone with
 `--recursive`, then `cargo build --release`.
@@ -249,8 +249,7 @@ Model-backed tests are enabled through environment variables pointing at GGUF fi
 
 ## Limitations
 
-- The Windows test suites haven't been run on Windows, and the native MSVC build is untested.
-  macOS and ARM aren't built.
+- macOS and ARM aren't built.
 - Tool calls stream as one complete fragment each, not argument by argument. That is valid
   OpenAI streaming.
 - Mistral and Qwen3-Coder tool formats are parsed but not grammar-constrained. They are

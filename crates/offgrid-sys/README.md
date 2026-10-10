@@ -4,6 +4,10 @@ Raw bindgen bindings to [llama.cpp](https://github.com/ggml-org/llama.cpp) and m
 from the pinned `vendor/llama.cpp` submodule (always in CMake `Release`). The safe wrapper is
 the `offgrid` crate.
 
+On Windows laptops with an AMD iGPU plus another GPU, AMD's switchable-graphics Vulkan layer
+hangs `vkCreateInstance`. `offgrid` sets `DISABLE_LAYER_AMD_SWITCHABLE_GRAPHICS_1=1` before
+initializing; code calling `llama_backend_init` directly should do the same.
+
 ## Features
 
 | Feature | Default | Effect |
