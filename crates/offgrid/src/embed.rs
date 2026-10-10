@@ -55,11 +55,16 @@ impl Embedder {
         let max_inputs = params.max_batch_inputs.max(1);
         let threads = params.n_threads.unwrap_or_else(default_threads);
 
+        // The graph still computes vocab-sized logits for every token of a ubatch (~0.6 MB per
+        // token for Qwen3), so keep ubatches small when an input may span several: causal
+        // attention with last-token pooling. Other models need a whole input in one ubatch.
+        let arch = model.meta("general.architecture").unwrap_or_default();
+        let causal = model.meta(&format!("{arch}.attention.causal")).is_none_or(|v| v != "false");
+        let last_pooling = model.meta(&format!("{arch}.pooling_type")).as_deref() == Some("3");
         let mut cp = unsafe { sys::llama_context_default_params() };
         cp.n_ctx = n_ctx;
-        // Non-causal models need a whole input inside one ubatch.
         cp.n_batch = n_ctx;
-        cp.n_ubatch = n_ctx;
+        cp.n_ubatch = if causal && last_pooling { n_ctx.min(512) } else { n_ctx };
         cp.n_seq_max = max_inputs;
         // Shared KV pool: a per-sequence split (n_ctx / n_seq_max) makes long inputs fail.
         cp.kv_unified = true;
