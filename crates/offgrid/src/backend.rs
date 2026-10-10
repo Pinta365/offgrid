@@ -19,6 +19,12 @@ pub(crate) fn setup_lock() -> MutexGuard<'static, ()> {
 /// Initialize llama.cpp once per process. Called implicitly by every entry point.
 pub(crate) fn ensure_init() {
     INIT.call_once(|| unsafe {
+        // AMD's switchable-graphics Vulkan layer (hybrid AMD iGPU + other GPU laptops) hangs
+        // vkCreateInstance; llama.cpp picks the GPU itself, so the layer isn't needed.
+        #[cfg(windows)]
+        if std::env::var_os("DISABLE_LAYER_AMD_SWITCHABLE_GRAPHICS_1").is_none() {
+            std::env::set_var("DISABLE_LAYER_AMD_SWITCHABLE_GRAPHICS_1", "1");
+        }
         #[cfg(feature = "dynamic-backends")]
         crate::loader::preload_core_libs();
         sys::llama_log_set(Some(log_callback), std::ptr::null_mut());
@@ -99,7 +105,7 @@ pub fn devices() -> Vec<DeviceInfo> {
             };
             Some(DeviceInfo {
                 name: unsafe { cstr_to_string(sys::ggml_backend_dev_name(dev)) },
-                description: unsafe { cstr_to_string(sys::ggml_backend_dev_description(dev)) },
+                description: unsafe { cstr_to_string(sys::ggml_backend_dev_description(dev)) }.trim().to_string(),
                 kind,
                 memory_free: free as u64,
                 memory_total: total as u64,

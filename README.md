@@ -154,7 +154,7 @@ Performance with Qwen3-4B Q4_K_M:
 | Platform | Status | Package |
 |---|---|---|
 | Linux x86_64 | Tested | `scripts/package-linux.sh` → `offgrid-<ver>-linux-x86_64.tar.gz` (~25 MB) |
-| Windows x86_64 | Cross-compiled; passes static checks; **not yet run on Windows** | `scripts/package-windows.sh` → `.zip` (~31 MB) |
+| Windows x86_64 | Package tested on Windows 11 (RTX 3060 Laptop via Vulkan, and CPU) | `scripts/package-windows.sh` → `.zip` (~31 MB) |
 | macOS, ARM | Not attempted yet | |
 
 A package is a relocatable folder: `lib/` or `bin/` with `liboffgrid`, llama.cpp/ggml/mtmd and
@@ -172,6 +172,8 @@ the backends, plus `include/offgrid.h` and `offgrid-server`. Keep the folder tog
   - `offgrid.dll` delay-loads its dependencies from its own folder, so hosts such as Deno,
     Python or C# can load it by path from anywhere.
   - Import libraries are included for both MSVC and MinGW.
+  - AMD's switchable-graphics Vulkan layer, which hangs Vulkan start-up on laptops with an AMD
+    iGPU plus another GPU, is turned off for the process (`DISABLE_LAYER_AMD_SWITCHABLE_GRAPHICS_1`).
 
 `scripts/check-portable.sh` and `scripts/check-windows.sh` verify each package: dependencies
 resolve from inside it, a relocated copy runs, and the CPU fallback works.
@@ -246,7 +248,8 @@ Model-backed tests are enabled through environment variables pointing at GGUF fi
 
 ## Limitations
 
-- Windows builds have not been run on real Windows yet. macOS and ARM aren't built.
+- The Windows test suites haven't been run on Windows, and the native MSVC build is untested.
+  macOS and ARM aren't built.
 - Tool calls stream as one complete fragment each, not argument by argument. That is valid
   OpenAI streaming.
 - Mistral and Qwen3-Coder tool formats are parsed but not grammar-constrained. They are

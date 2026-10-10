@@ -102,7 +102,9 @@ async fn health_models_auth_and_errors() {
     let e: Value = r.json().await.unwrap();
     assert_eq!(e["error"]["type"], "invalid_api_key");
 
-    let models: Value = client().get(format!("{url}/v1/models")).send().await.unwrap().json().await.unwrap();
+    let r = client().get(format!("{url}/v1/models")).send().await.unwrap();
+    assert_eq!(r.headers()["content-type"], "application/json; charset=utf-8");
+    let models: Value = r.json().await.unwrap();
     assert_eq!(models["object"], "list");
     assert_eq!(models["data"][0]["id"], "test-chat");
     assert_eq!(client().get(format!("{url}/v1/models/test-chat")).send().await.unwrap().status(), 200);

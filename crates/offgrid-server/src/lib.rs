@@ -129,7 +129,17 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/health", get(|| async { Json(json!({"status": "ok"})) }))
         .nest("/v1", v1)
         .fallback(|| async { ApiError::not_found("unknown endpoint") })
+        .layer(middleware::map_response(json_charset))
         .with_state(state)
+}
+
+/// Clients such as Windows PowerShell 5 decode JSON without an explicit charset as Latin-1.
+async fn json_charset(mut res: Response) -> Response {
+    let ct = axum::http::header::CONTENT_TYPE;
+    if res.headers().get(&ct).is_some_and(|v| v == "application/json") {
+        res.headers_mut().insert(ct, axum::http::HeaderValue::from_static("application/json; charset=utf-8"));
+    }
+    res
 }
 
 async fn auth(State(state): State<Arc<AppState>>, headers: HeaderMap, req: Request, next: Next) -> Response {
