@@ -41,7 +41,8 @@ const { response } = await chat.runTools(
   },
   {
     onToken: (t) => void Deno.stdout.writeSync(out.encode(t)),
-    onToolCall: (call, result) => console.error(`[tool] ${call.function.name}(${call.function.arguments}) -> ${result}`),
+    onToolCall: (call, result) =>
+      console.error(`[tool] ${call.function.name}(${call.function.arguments}) -> ${result}`),
   },
 );
 console.log();

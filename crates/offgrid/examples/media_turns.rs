@@ -22,7 +22,10 @@ fn main() -> Result<()> {
         let total = t.elapsed().as_secs_f64() * 1000.0;
         println!(
             "turn {turn}: total {total:7.1} ms | prompt eval {:7.1} ms | other (tokenize/decode media) {:7.1} ms | cached {}/{}",
-            r.usage.prompt_ms, total - r.usage.prompt_ms - r.usage.generation_ms, r.usage.cached_tokens, r.usage.prompt_tokens
+            r.usage.prompt_ms,
+            total - r.usage.prompt_ms - r.usage.generation_ms,
+            r.usage.cached_tokens,
+            r.usage.prompt_tokens
         );
         msgs.push(r.to_message());
         msgs.push(ChatMessage::user(format!("Follow-up question {turn}.")));

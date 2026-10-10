@@ -20,7 +20,10 @@ fn main() -> Result<()> {
                 json!({"type": "object", "properties": {"a": {"type": "integer"}, "b": {"type": "integer"}}, "required": ["a", "b"]}),
             ),
         ],
-        ..ChatRequest::new(vec![ChatMessage::system("Use the tools for facts and arithmetic."), ChatMessage::user(question)])
+        ..ChatRequest::new(vec![
+            ChatMessage::system("Use the tools for facts and arithmetic."),
+            ChatMessage::user(question),
+        ])
     };
 
     let (resp, history) = chat.run_tools(

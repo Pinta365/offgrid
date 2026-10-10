@@ -108,7 +108,8 @@ impl Model {
         let mut model = Self { projector: None, ptr };
         if let Some(mmproj) = &params.mmproj {
             let threads = crate::chat::default_threads();
-            model.projector = Some(Projector::load(mmproj, ptr.as_ptr(), params.gpu_layers != GpuLayers::None, threads)?);
+            model.projector =
+                Some(Projector::load(mmproj, ptr.as_ptr(), params.gpu_layers != GpuLayers::None, threads)?);
         }
         Ok(Arc::new(model))
     }
@@ -215,12 +216,26 @@ impl Model {
         buf.clear();
         buf.resize(64, 0);
         let mut n = unsafe {
-            sys::llama_token_to_piece(self.vocab(), token, buf.as_mut_ptr() as *mut c_char, buf.len() as i32, 0, special)
+            sys::llama_token_to_piece(
+                self.vocab(),
+                token,
+                buf.as_mut_ptr() as *mut c_char,
+                buf.len() as i32,
+                0,
+                special,
+            )
         };
         if n < 0 {
             buf.resize((-n) as usize, 0);
             n = unsafe {
-                sys::llama_token_to_piece(self.vocab(), token, buf.as_mut_ptr() as *mut c_char, buf.len() as i32, 0, special)
+                sys::llama_token_to_piece(
+                    self.vocab(),
+                    token,
+                    buf.as_mut_ptr() as *mut c_char,
+                    buf.len() as i32,
+                    0,
+                    special,
+                )
             };
         }
         buf.truncate(n.max(0) as usize);

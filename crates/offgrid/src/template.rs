@@ -128,8 +128,8 @@ fn tojson(value: Value, kwargs: Kwargs) -> std::result::Result<Value, minijinja:
     let _: Option<bool> = kwargs.get("ensure_ascii")?;
     let _: Option<bool> = kwargs.get("sort_keys")?;
     kwargs.assert_all_used()?;
-    let json = serde_json::to_value(&value)
-        .map_err(|e| minijinja::Error::new(ErrorKind::InvalidOperation, e.to_string()))?;
+    let json =
+        serde_json::to_value(&value).map_err(|e| minijinja::Error::new(ErrorKind::InvalidOperation, e.to_string()))?;
     let mut out = String::new();
     write_py_json(&json, indent, 0, &mut out);
     Ok(Value::from_safe_string(out))
@@ -190,8 +190,20 @@ fn strftime_now(fmt: String) -> String {
 }
 
 fn strftime(fmt: &str, unix: i64) -> String {
-    const MONTHS: [&str; 12] =
-        ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+    const MONTHS: [&str; 12] = [
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
+    ];
     const DAYS: [&str; 7] = ["Thursday", "Friday", "Saturday", "Sunday", "Monday", "Tuesday", "Wednesday"];
     let days = unix.div_euclid(86_400);
     let tod = unix.rem_euclid(86_400);
@@ -363,8 +375,11 @@ mod tests {
     #[test]
     fn generation_tags_rewritten() {
         assert_eq!(rewrite_hf_extensions("a{%- generation -%}b{% endgeneration %}c"), "a{%- if true -%}b{% endif %}c");
-        let out = render("{% for m in messages %}{% generation %}{{ m.content }}{% endgeneration %}{% endfor %}",
-            json!([{"role": "user", "content": "x"}])).unwrap();
+        let out = render(
+            "{% for m in messages %}{% generation %}{{ m.content }}{% endgeneration %}{% endfor %}",
+            json!([{"role": "user", "content": "x"}]),
+        )
+        .unwrap();
         assert_eq!(out, "x");
     }
 

@@ -16,8 +16,7 @@ use std::ffi::{CString, c_char, c_void};
 use std::sync::{Arc, Mutex};
 
 use offgrid::{
-    CancelToken, ChatRequest, ChatSession, EmbedParams, Embedder, Model, ModelParams,
-    SessionParams, StreamEvent,
+    CancelToken, ChatRequest, ChatSession, EmbedParams, Embedder, Model, ModelParams, SessionParams, StreamEvent,
 };
 
 pub use logging::OffgridLogCallback;
@@ -149,9 +148,8 @@ pub unsafe extern "C" fn offgrid_chat_complete(
         let chat = handle(chat, "chat")?;
         let req: ChatRequest = json_arg(request_json, "request")?;
         let mut session = lock(&chat.session);
-        let resp = session
-            .complete(&req, |piece| stream_piece(callback, user_data, piece))
-            .map_err(|e| e.to_string())?;
+        let resp =
+            session.complete(&req, |piece| stream_piece(callback, user_data, piece)).map_err(|e| e.to_string())?;
         json_out(&resp)
     })
 }
@@ -164,9 +162,8 @@ pub const OFFGRID_EVENT_TOOL_CALL: i32 = 2;
 
 /// Streaming event callback: `kind` is an `OFFGRID_EVENT_*` value; `text` holds `len`
 /// bytes of UTF-8 (also NUL-terminated). Return `false` to cancel generation.
-pub type OffgridEventCallback = Option<
-    unsafe extern "C" fn(kind: i32, text: *const c_char, len: usize, user_data: *mut c_void) -> bool,
->;
+pub type OffgridEventCallback =
+    Option<unsafe extern "C" fn(kind: i32, text: *const c_char, len: usize, user_data: *mut c_void) -> bool>;
 
 /// Like [`offgrid_chat_complete`] but also streams reasoning and tool calls.
 #[unsafe(no_mangle)]
@@ -316,9 +313,8 @@ pub unsafe extern "C" fn offgrid_embed(
         if inputs.is_null() || out.is_null() {
             return Err("inputs/out is NULL".into());
         }
-        let texts = (0..n_inputs)
-            .map(|i| str_arg(unsafe { *inputs.add(i) }, "input"))
-            .collect::<FfiResult<Vec<&str>>>()?;
+        let texts =
+            (0..n_inputs).map(|i| str_arg(unsafe { *inputs.add(i) }, "input")).collect::<FfiResult<Vec<&str>>>()?;
         let mut emb = lock(&emb.0);
         let dim = emb.dim();
         if out_len < n_inputs * dim {

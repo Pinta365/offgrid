@@ -33,10 +33,7 @@ fn primitive_rule(name: &str) -> Option<(&'static str, &'static [&'static str])>
             r#""\"" [0-9a-fA-F]{8} "-" [0-9a-fA-F]{4} "-" [0-9a-fA-F]{4} "-" [0-9a-fA-F]{4} "-" [0-9a-fA-F]{12} "\"""#,
             &[],
         ),
-        "char" => (
-            r#"[^"\\\x7F\x00-\x1F] | [\\] (["\\bfnrt] | "u" [0-9a-fA-F]{4})"#,
-            &[],
-        ),
+        "char" => (r#"[^"\\\x7F\x00-\x1F] | [\\] (["\\bfnrt] | "u" [0-9a-fA-F]{4})"#, &[]),
         "string" => (r#""\"" char* "\"""#, &["char"]),
         "null" => (r#""null""#, &[]),
         _ => return None,
@@ -46,10 +43,7 @@ fn primitive_rule(name: &str) -> Option<(&'static str, &'static [&'static str])>
 
 fn string_format_rule(name: &str) -> Option<(&'static str, &'static [&'static str])> {
     let rule: (&'static str, &'static [&'static str]) = match name {
-        "date" => (
-            r#"[0-9]{4} "-" ( "0" [1-9] | "1" [0-2] ) "-" ( "0" [1-9] | [1-2] [0-9] | "3" [0-1] )"#,
-            &[],
-        ),
+        "date" => (r#"[0-9]{4} "-" ( "0" [1-9] | "1" [0-2] ) "-" ( "0" [1-9] | [1-2] [0-9] | "3" [0-1] )"#, &[]),
         "time" => (
             r#"([01] [0-9] | "2" [0-3]) ":" [0-5] [0-9] ":" [0-5] [0-9] ( "." [0-9]{3} )? ( "Z" | ( "+" | "-" ) ( [01] [0-9] | "2" [0-3] ) ":" [0-5] [0-9] )"#,
             &[],
@@ -146,19 +140,11 @@ fn build_repetition(item_rule: &str, min_items: i64, max_items: i64, separator_r
     let inner_min = if min_items == 0 { 0 } else { min_items - 1 };
     let inner_max = if has_max { max_items - 1 } else { max_items };
     let result = format!("{item_rule} {}", build_repetition(&inner_item, inner_min, inner_max, ""));
-    if min_items == 0 {
-        format!("({result})?")
-    } else {
-        result
-    }
+    if min_items == 0 { format!("({result})?") } else { result }
 }
 
 fn to_rule(item: &(String, bool)) -> String {
-    if item.1 {
-        format!("\"{}\"", item.0)
-    } else {
-        item.0.clone()
-    }
+    if item.1 { format!("\"{}\"", item.0) } else { item.0.clone() }
 }
 
 fn join_seq(seq: Vec<(String, bool)>) -> (String, bool) {
@@ -201,8 +187,18 @@ fn is_any_schema(v: &Value) -> bool {
         Value::Bool(true) => true,
         Value::Object(m) => {
             const KEYS: [&str; 12] = [
-                "$ref", "oneOf", "anyOf", "type", "const", "enum", "allOf", "items",
-                "prefixItems", "pattern", "minLength", "maxLength",
+                "$ref",
+                "oneOf",
+                "anyOf",
+                "type",
+                "const",
+                "enum",
+                "allOf",
+                "items",
+                "prefixItems",
+                "pattern",
+                "minLength",
+                "maxLength",
             ];
             if KEYS.iter().any(|k| m.contains_key(*k)) {
                 return false;
@@ -263,8 +259,7 @@ impl Converter {
     }
 
     fn add_primitive_as(&mut self, name: &str, type_name: &str) -> String {
-        let (content, deps) =
-            builtin_rule(type_name).unwrap_or_else(|| panic!("unknown builtin rule {type_name}"));
+        let (content, deps) = builtin_rule(type_name).unwrap_or_else(|| panic!("unknown builtin rule {type_name}"));
         let n = self.add_rule(name, content);
         for dep in deps {
             if !self.rules.contains_key(*dep) {
@@ -308,8 +303,7 @@ impl Converter {
             "date-time" => Some(StringFormat::DateTime),
             _ => {
                 let b = f.as_bytes();
-                if f == "uuid" || (b.len() == 5 && f.starts_with("uuid") && (b'1'..=b'5').contains(&b[4]))
-                {
+                if f == "uuid" || (b.len() == 5 && f.starts_with("uuid") && (b'1'..=b'5').contains(&b[4])) {
                     Some(StringFormat::Uuid)
                 } else {
                     None
@@ -350,9 +344,8 @@ impl Converter {
         let ref_name = format!("ref{}", sanitize_rule_name(fragment));
         if !self.rules.contains_key(&ref_name) && !self.refs_being_resolved.contains(ref_str) {
             if !ref_str.starts_with("#/") {
-                self.errors.push(format!(
-                    "unsupported $ref {ref_str}, only references into the same document are supported"
-                ));
+                self.errors
+                    .push(format!("unsupported $ref {ref_str}, only references into the same document are supported"));
                 return ref_name;
             }
             let target = match self.resolve_pointer(ref_str) {
@@ -447,8 +440,7 @@ impl Converter {
             }
         };
         let has_properties = m.contains_key("properties")
-            || (m.contains_key("additionalProperties")
-                && m.get("additionalProperties") != Some(&Value::Bool(true)));
+            || (m.contains_key("additionalProperties") && m.get("additionalProperties") != Some(&Value::Bool(true)));
 
         if type_name.is_empty() {
             if has_properties {
@@ -616,11 +608,7 @@ impl Converter {
         }
         if !enum_values.is_empty() {
             let n = children.len();
-            let inter: Vec<String> = enum_values
-                .iter()
-                .filter(|(_, c)| **c == n)
-                .map(|(k, _)| k.clone())
-                .collect();
+            let inter: Vec<String> = enum_values.iter().filter(|(_, c)| **c == n).map(|(k, _)| k.clone()).collect();
             if !inter.is_empty() {
                 return self.add_rule(rule_name, &format!("({})", inter.join(" | ")));
             }
@@ -650,8 +638,7 @@ impl Converter {
             self.refs_being_resolved.remove(r);
             return;
         }
-        let is_object =
-            comp.get("properties").is_some() || comp.get("type").and_then(|v| v.as_str()) == Some("object");
+        let is_object = comp.get("properties").is_some() || comp.get("type").and_then(|v| v.as_str()) == Some("object");
         if is_object {
             if let Some(Value::Object(props)) = comp.get("properties") {
                 for (k, v) in props {
@@ -715,10 +702,8 @@ impl Converter {
                 let ns = self.not_strings(&prop_names);
                 self.add_rule(&format!("{sub_name}-k"), &ns)
             };
-            let kv_rule = self.add_rule(
-                &format!("{sub_name}-kv"),
-                &format!("{key_rule} space \":\" space {value_rule}"),
-            );
+            let kv_rule =
+                self.add_rule(&format!("{sub_name}-kv"), &format!("{key_rule} space \":\" space {value_rule}"));
             prop_kv.insert("*".to_string(), kv_rule);
             optional_props.push("*".to_string());
         }
@@ -821,19 +806,14 @@ impl Converter {
     }
 
     fn get_dot_rule(&self) -> &'static str {
-        if self.dotall {
-            r"[\U00000000-\U0010FFFF]"
-        } else {
-            r"[^\x0A\x0D]"
-        }
+        if self.dotall { r"[\U00000000-\U0010FFFF]" } else { r"[^\x0A\x0D]" }
     }
 
     fn visit_pattern(&mut self, pattern: &str, rule_name: &str) -> String {
         match self.pattern_to_rule(pattern, rule_name) {
             Ok(r) => r,
             Err(msg) => {
-                self.errors
-                    .push(format!("pattern not supported: {pattern} ({msg})"));
+                self.errors.push(format!("pattern not supported: {pattern} ({msg})"));
                 let s = self.add_primitive_named("string");
                 self.add_rule(rule_name, &s)
             }
@@ -868,10 +848,8 @@ impl Converter {
         let length = s.len();
         let mut seq: Vec<(String, bool)> = Vec::new();
 
-        const NON_LITERAL: [char; 13] =
-            ['|', '.', '(', ')', '[', ']', '{', '}', '*', '+', '?', '^', '$'];
-        const ESCAPED: [char; 13] =
-            ['^', '$', '.', '[', ']', '(', ')', '|', '{', '}', '*', '+', '?'];
+        const NON_LITERAL: [char; 13] = ['|', '.', '(', ')', '[', ']', '{', '}', '*', '+', '?', '^', '$'];
+        const ESCAPED: [char; 13] = ['^', '$', '.', '[', ']', '(', ')', '|', '{', '}', '*', '+', '?'];
         let is_non_literal = |c: char| NON_LITERAL.contains(&c);
 
         while *i < length {
@@ -1009,10 +987,7 @@ impl Converter {
                         literal.push_str("\\\"");
                         *i += 1;
                     } else if !is_non_literal(s[*i])
-                        && (*i == length - 1
-                            || literal.is_empty()
-                            || s[*i + 1] == '.'
-                            || !is_non_literal(s[*i + 1]))
+                        && (*i == length - 1 || literal.is_empty() || s[*i + 1] == '.' || !is_non_literal(s[*i + 1]))
                     {
                         literal.push(s[*i]);
                         *i += 1;
@@ -1161,9 +1136,7 @@ mod tests {
                 c if c.is_ascii_alphabetic() || c == '_' => {
                     let start = i;
                     i += 1;
-                    while i < b.len()
-                        && (b[i].is_ascii_alphanumeric() || b[i] == '_' || b[i] == '-')
-                    {
+                    while i < b.len() && (b[i].is_ascii_alphanumeric() || b[i] == '_' || b[i] == '-') {
                         i += 1;
                     }
                     out.push(b[start..i].iter().collect());
@@ -1209,10 +1182,7 @@ mod tests {
 
     fn assert_valid(grammar: &str) {
         let undef = undefined_rules(grammar);
-        assert!(
-            undef.is_empty(),
-            "undefined rule references {undef:?} in grammar:\n{grammar}"
-        );
+        assert!(undef.is_empty(), "undefined rule references {undef:?} in grammar:\n{grammar}");
     }
 
     fn conv(v: &Value) -> String {
@@ -1428,8 +1398,8 @@ mod tests {
 
     #[test]
     fn remote_ref_is_error() {
-        let err = json_schema_to_grammar(&json!({"$ref": "https://example.com/x"}))
-            .expect_err("remote ref should fail");
+        let err =
+            json_schema_to_grammar(&json!({"$ref": "https://example.com/x"})).expect_err("remote ref should fail");
         assert!(err.contains("unsupported $ref"), "{err}");
     }
 

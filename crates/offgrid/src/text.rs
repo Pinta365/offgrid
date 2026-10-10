@@ -214,12 +214,7 @@ impl StreamFilter {
 
 /// Length of the longest suffix of `s` that is a proper prefix of `pat` (on char boundaries).
 fn partial_suffix(s: &str, pat: &str) -> usize {
-    pat.char_indices()
-        .skip(1)
-        .map(|(i, _)| i)
-        .filter(|&i| s.ends_with(&pat[..i]))
-        .max()
-        .unwrap_or(0)
+    pat.char_indices().skip(1).map(|(i, _)| i).filter(|&i| s.ends_with(&pat[..i])).max().unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -291,13 +286,17 @@ mod tests {
         let (c, r) = filter2(None, false, true, &["thinking about", " it\n\n"]);
         assert_eq!((c.as_str(), r.as_str()), ("", "thinking about it"));
         // Reasoning followed by a tool call.
-        let (c, r) = filter2(Some("<tool_call>"), false, false, &["<think>plan</think>Calling.<tool_call>{}</tool_call>"]);
+        let (c, r) =
+            filter2(Some("<tool_call>"), false, false, &["<think>plan</think>Calling.<tool_call>{}</tool_call>"]);
         assert_eq!((c.as_str(), r.as_str()), ("Calling.", "plan"));
     }
 
     #[test]
     fn filter_hides_tool_markup() {
-        assert_eq!(filter(Some("<tool_call>"), false, false, &["Let me check.", " <tool", "_call>{\"a\":1}", "</tool_call>"]), "Let me check. ");
+        assert_eq!(
+            filter(Some("<tool_call>"), false, false, &["Let me check.", " <tool", "_call>{\"a\":1}", "</tool_call>"]),
+            "Let me check. "
+        );
         assert_eq!(filter(Some("<tool_call>"), false, false, &["a <to", "y"]), "a <toy");
     }
 

@@ -34,12 +34,15 @@ fn chat_streams_and_reuses_prefix() {
     println!("{:#?}", model.info());
     let mut chat = ChatSession::new(model, &SessionParams::default()).unwrap();
 
-    let mut msgs = vec![
-        ChatMessage::system("You are terse."),
-        ChatMessage::user("What is the capital of France? One word."),
-    ];
+    let mut msgs =
+        vec![ChatMessage::system("You are terse."), ChatMessage::user("What is the capital of France? One word.")];
     let mut streamed = String::new();
-    let r1 = chat.complete(&greedy(msgs.clone(), 16), |p| { streamed.push_str(p); true }).unwrap();
+    let r1 = chat
+        .complete(&greedy(msgs.clone(), 16), |p| {
+            streamed.push_str(p);
+            true
+        })
+        .unwrap();
     println!("r1: {r1:?}");
     assert_eq!(streamed, r1.content);
     assert!(r1.content.contains("Paris"));
@@ -70,7 +73,12 @@ fn chat_limits_stop_and_cancel() {
     assert!(!r.content.contains('5'), "{:?}", r.content);
 
     let mut n = 0;
-    let r = chat.complete(&greedy(count(), 200), |_| { n += 1; n < 3 }).unwrap();
+    let r = chat
+        .complete(&greedy(count(), 200), |_| {
+            n += 1;
+            n < 3
+        })
+        .unwrap();
     assert_eq!(r.finish_reason, FinishReason::Cancelled);
 
     // A cancel while idle (e.g. one that arrives just after a request finished) must not

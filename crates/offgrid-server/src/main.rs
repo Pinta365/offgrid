@@ -5,9 +5,9 @@
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::path::PathBuf;
 
+use clap::Parser;
 use offgrid::{GpuLayers, ModelParams, SessionParams};
 use offgrid_server::{AppState, ServerConfig, parse_gpu_layers, router};
-use clap::Parser;
 
 #[derive(Parser, Debug)]
 #[command(version, about = "OpenAI-compatible local inference server (offgrid)")]

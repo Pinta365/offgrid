@@ -55,9 +55,8 @@ impl Embedder {
         let max_inputs = params.max_batch_inputs.max(1);
         let threads = params.n_threads.unwrap_or_else(default_threads);
 
-        // The graph still computes vocab-sized logits for every token of a ubatch (~0.6 MB per
-        // token for Qwen3), so keep ubatches small when an input may span several: causal
-        // attention with last-token pooling. Other models need a whole input in one ubatch.
+        // The graph computes vocab-sized logits per ubatch token (~0.6 MB each for Qwen3), so use
+        // small ubatches where inputs may span several (causal, last-token pooling).
         let arch = model.meta("general.architecture").unwrap_or_default();
         let causal = model.meta(&format!("{arch}.attention.causal")).is_none_or(|v| v != "false");
         let last_pooling = model.meta(&format!("{arch}.pooling_type")).as_deref() == Some("3");
@@ -95,15 +94,7 @@ impl Embedder {
             d if d > 0 => d as usize,
             _ => (unsafe { sys::llama_model_n_embd(m) }) as usize,
         };
-        Ok(Self {
-            model,
-            ctx,
-            batch: Batch::new(n_batch, 1),
-            n_batch,
-            max_inputs,
-            normalize: params.normalize,
-            dim,
-        })
+        Ok(Self { model, ctx, batch: Batch::new(n_batch, 1), n_batch, max_inputs, normalize: params.normalize, dim })
     }
 
     /// Embedding vector length.
@@ -141,9 +132,7 @@ impl Embedder {
             // Pack as many inputs as fit the batch.
             let mut end = start;
             let mut total = 0;
-            while end < tokenized.len()
-                && end - start < self.max_inputs
-                && total + tokenized[end].len() <= self.n_batch
+            while end < tokenized.len() && end - start < self.max_inputs && total + tokenized[end].len() <= self.n_batch
             {
                 total += tokenized[end].len();
                 end += 1;

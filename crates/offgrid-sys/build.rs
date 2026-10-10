@@ -17,14 +17,8 @@ fn main() {
         }
     };
 
-    println!(
-        "cargo:rerun-if-changed={}",
-        llama_dir.join("include/llama.h").display()
-    );
-    println!(
-        "cargo:rerun-if-changed={}",
-        llama_dir.join("ggml/include/ggml-backend.h").display()
-    );
+    println!("cargo:rerun-if-changed={}", llama_dir.join("include/llama.h").display());
+    println!("cargo:rerun-if-changed={}", llama_dir.join("ggml/include/ggml-backend.h").display());
     // Other headers bindgen reads, and the pinned submodule commit (a bump changes sources
     // cmake must rebuild even when these headers don't change).
     for header in ["tools/mtmd/mtmd.h", "tools/mtmd/mtmd-helper.h", "ggml/include/ggml.h"] {
@@ -125,10 +119,7 @@ fn main() {
     }
 
     let bindings = bindgen::Builder::default()
-        .header_contents(
-            "offgrid_sys.h",
-            "#include \"llama.h\"\n#include \"mtmd.h\"\n#include \"mtmd-helper.h\"\n",
-        )
+        .header_contents("offgrid_sys.h", "#include \"llama.h\"\n#include \"mtmd.h\"\n#include \"mtmd-helper.h\"\n")
         .clang_arg(format!("-I{}", llama_dir.join("include").display()))
         .clang_arg(format!("-I{}", llama_dir.join("ggml/include").display()))
         .clang_arg(format!("-I{}", llama_dir.join("tools/mtmd").display()))
@@ -139,9 +130,7 @@ fn main() {
         .expect("offgrid-sys: bindgen failed to generate bindings");
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
-    bindings
-        .write_to_file(out_dir.join("bindings.rs"))
-        .expect("offgrid-sys: failed to write bindings.rs");
+    bindings.write_to_file(out_dir.join("bindings.rs")).expect("offgrid-sys: failed to write bindings.rs");
 }
 
 /// Cross-compiling ggml-vulkan for Windows from Linux without a Vulkan SDK: use the
@@ -210,11 +199,7 @@ fn using_zig() -> bool {
 }
 
 fn has_ninja() -> bool {
-    Command::new("ninja")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+    Command::new("ninja").arg("--version").output().map(|o| o.status.success()).unwrap_or(false)
 }
 
 /// Recursively look for library `name` (e.g. "ggml-base") under the cmake output dir.

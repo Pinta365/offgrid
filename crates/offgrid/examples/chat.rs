@@ -17,7 +17,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let model = Model::load(&path, &ModelParams::default())?;
     let info = model.info();
-    eprintln!("model: {} [{}], {:.1}B params", info.name.as_deref().unwrap_or("?"), info.description, info.n_params as f64 / 1e9);
+    eprintln!(
+        "model: {} [{}], {:.1}B params",
+        info.name.as_deref().unwrap_or("?"),
+        info.description,
+        info.n_params as f64 / 1e9
+    );
 
     let mut chat = ChatSession::new(model, &SessionParams::default())?;
     let mut messages = vec![ChatMessage::system(system)];

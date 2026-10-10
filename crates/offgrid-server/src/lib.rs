@@ -11,9 +11,6 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use offgrid::{
-    ChatRequest, EmbedParams, Embedder, GpuLayers, Model, ModelParams, SessionParams, StreamEvent,
-};
 use axum::extract::{Path, Request, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::middleware::{self, Next};
@@ -21,6 +18,7 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use offgrid::{ChatRequest, EmbedParams, Embedder, GpuLayers, Model, ModelParams, SessionParams, StreamEvent};
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -66,7 +64,9 @@ fn now() -> u64 {
 }
 
 fn model_id(path: &std::path::Path, alias: &Option<String>) -> String {
-    alias.clone().unwrap_or_else(|| path.file_stem().map_or_else(|| "model".into(), |s| s.to_string_lossy().into_owned()))
+    alias
+        .clone()
+        .unwrap_or_else(|| path.file_stem().map_or_else(|| "model".into(), |s| s.to_string_lossy().into_owned()))
 }
 
 impl AppState {
@@ -150,7 +150,8 @@ async fn auth(State(state): State<Arc<AppState>>, headers: HeaderMap, req: Reque
             .and_then(|v| v.strip_prefix("Bearer "))
             .is_some_and(|given| given == key);
         if !ok {
-            return ApiError::new(StatusCode::UNAUTHORIZED, "invalid_api_key", "invalid or missing API key").into_response();
+            return ApiError::new(StatusCode::UNAUTHORIZED, "invalid_api_key", "invalid or missing API key")
+                .into_response();
         }
     }
     next.run(req).await
@@ -173,7 +174,11 @@ async fn list_models(State(state): State<Arc<AppState>>) -> Json<Value> {
 
 async fn get_model(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
     let known = state.chat.iter().map(|(i, _)| i).chain(state.embed.iter().map(|(i, _)| i)).any(|i| *i == id);
-    if known { Json(model_entry(&state, &id)).into_response() } else { ApiError::not_found("model not found").into_response() }
+    if known {
+        Json(model_entry(&state, &id)).into_response()
+    } else {
+        ApiError::not_found("model not found").into_response()
+    }
 }
 
 /// Cancels its request when dropped (the client went away). No-op once the request is done.
@@ -238,7 +243,8 @@ async fn chat_completions(
     let lease = pool.acquire().await;
     // Requests that waited in the queue during shutdown must not start a generation.
     if state.is_shutting_down() {
-        return ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "server_error", "server is shutting down").into_response();
+        return ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "server_error", "server is shutting down")
+            .into_response();
     }
 
     let cancel = CancelOnDrop(lease.next_request_cancel());
@@ -305,7 +311,12 @@ async fn embeddings(
         Some(Value::Array(items)) if items.iter().all(Value::is_string) => {
             items.iter().filter_map(|v| v.as_str().map(String::from)).collect()
         }
-        Some(Value::Array(_)) => return ApiError::bad_request("input must be a string or an array of strings (token arrays are not supported)").into_response(),
+        Some(Value::Array(_)) => {
+            return ApiError::bad_request(
+                "input must be a string or an array of strings (token arrays are not supported)",
+            )
+            .into_response();
+        }
         _ => return ApiError::bad_request("missing input").into_response(),
     };
     if inputs.is_empty() || inputs.iter().any(String::is_empty) {

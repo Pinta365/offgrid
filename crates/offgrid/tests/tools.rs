@@ -27,9 +27,7 @@ fn models() -> impl Iterator<Item = (&'static str, Arc<Model>)> {
     models_for(&["OFFGRID_TEST_MODEL", "OFFGRID_TEST_LLAMA_MODEL", "OFFGRID_TEST_GEMMA_MODEL"])
 }
 
-/// Configured models, loaded one at a time as the caller iterates. A model still in use by
-/// another (parallel) test is shared; otherwise it is loaded again, so a sequential run only
-/// ever holds one model.
+/// Configured models, loaded as the caller iterates; shared while another test still uses one.
 fn models_for(vars: &'static [&'static str]) -> impl Iterator<Item = (&'static str, Arc<Model>)> {
     static LIVE: OnceLock<Mutex<HashMap<&'static str, Weak<Model>>>> = OnceLock::new();
     vars.iter().filter_map(|&var| {
@@ -98,7 +96,12 @@ fn assert_valid_args(call: &ToolCall, tools: &[Tool]) -> Value {
 
 fn complete(chat: &mut ChatSession, req: &ChatRequest) -> (ChatResponse, String) {
     let mut streamed = String::new();
-    let r = chat.complete(req, |p| { streamed.push_str(p); true }).unwrap();
+    let r = chat
+        .complete(req, |p| {
+            streamed.push_str(p);
+            true
+        })
+        .unwrap();
     for leak in ["<tool_call>", "</tool_call>", "\"arguments\"", "\"parameters\"", "<think>"] {
         assert!(!streamed.contains(leak), "streamed text leaked {leak}: {streamed:?}");
     }
@@ -125,7 +128,8 @@ fn auto_calls_tool_when_useful() {
 fn auto_answers_directly_when_no_tool_fits() {
     for (name, model) in judging_models() {
         let mut chat = session(model);
-        let (r, streamed) = complete(&mut chat, &request(user("What is 12 times 12? Reply with just the number."), None));
+        let (r, streamed) =
+            complete(&mut chat, &request(user("What is 12 times 12? Reply with just the number."), None));
         println!("[{name}] {r:?}");
         assert!(r.tool_calls.is_empty(), "[{name}] unexpected call");
         assert!(r.content.contains("144"), "[{name}]");
@@ -180,11 +184,8 @@ fn parallel_calls_hermes() {
     let req = request(user("What's the weather in Paris and in Tokyo?"), None);
     let (r, _) = complete(&mut chat, &req);
     println!("{r:?}");
-    let cities: Vec<String> = r
-        .tool_calls
-        .iter()
-        .map(|c| assert_valid_args(c, &req.tools)["city"].as_str().unwrap().to_string())
-        .collect();
+    let cities: Vec<String> =
+        r.tool_calls.iter().map(|c| assert_valid_args(c, &req.tools)["city"].as_str().unwrap().to_string()).collect();
     assert_eq!(cities.len(), 2, "{cities:?}");
     assert!(cities.iter().any(|c| c.contains("Paris")) && cities.iter().any(|c| c.contains("Tokyo")));
     assert_ne!(r.tool_calls[0].id, r.tool_calls[1].id);

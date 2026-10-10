@@ -52,7 +52,10 @@ fn json_object_mode() {
     let Some(model) = model() else { return };
     let mut chat = ChatSession::new(model, &SessionParams::default()).unwrap();
     let r = chat
-        .complete(&request("Describe a cat with a few fields, as JSON.", Some(ResponseFormat::JsonObject { schema: None })), |_| true)
+        .complete(
+            &request("Describe a cat with a few fields, as JSON.", Some(ResponseFormat::JsonObject { schema: None })),
+            |_| true,
+        )
         .unwrap();
     println!("{}", r.content);
     let v: Value = serde_json::from_str(&r.content).expect("valid JSON");
@@ -138,8 +141,10 @@ fn grammar_and_response_format_conflict() {
 #[test]
 fn response_format_json_shapes() {
     // OpenAI wire format round-trips.
-    let f: ResponseFormat =
-        serde_json::from_value(json!({"type": "json_schema", "json_schema": {"name": "x", "schema": {"type": "object"}}})).unwrap();
+    let f: ResponseFormat = serde_json::from_value(
+        json!({"type": "json_schema", "json_schema": {"name": "x", "schema": {"type": "object"}}}),
+    )
+    .unwrap();
     assert!(matches!(f, ResponseFormat::JsonSchema { .. }));
     let f: ResponseFormat = serde_json::from_value(json!({"type": "json_object"})).unwrap();
     assert_eq!(f, ResponseFormat::JsonObject { schema: None });

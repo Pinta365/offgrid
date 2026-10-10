@@ -9,12 +9,12 @@ use offgrid_sys as sys;
 use serde::{Deserialize, Serialize};
 
 use crate::batch::Batch;
+use crate::media::{Chunks, MediaMemo, Segment, media_marker};
 use crate::sampling::Sampler;
 use crate::template::{ChatTemplate, RenderArgs, is_jinja};
 use crate::text::{PieceKind, Push, StreamFilter, TextStream};
 use crate::tool_parse::{self, ToolFormat};
 use crate::tools::{GrammarSpec, POLYFILL_STOP, Tool, ToolCall, ToolChoice, polyfill_messages, tool_grammar};
-use crate::media::{Chunks, MediaMemo, Segment, media_marker};
 use crate::{Error, Media, MediaKind, Model, Result, SamplingParams};
 
 const DEFAULT_MAX_CTX: u32 = 8192;
@@ -95,7 +95,10 @@ impl TryFrom<WireMessage> for ChatMessage {
                             texts.push(media_marker().to_string());
                         }
                         Some("input_audio") => {
-                            let data = part.pointer("/input_audio/data").and_then(|d| d.as_str()).ok_or("input_audio part without data")?;
+                            let data = part
+                                .pointer("/input_audio/data")
+                                .and_then(|d| d.as_str())
+                                .ok_or("input_audio part without data")?;
                             let format = part
                                 .pointer("/input_audio/format")
                                 .and_then(|f| f.as_str())
@@ -135,7 +138,9 @@ impl From<ChatMessage> for WireMessage {
                     && let Some(item) = media.next()
                 {
                     parts.push(match item.kind {
-                        MediaKind::Image => serde_json::json!({"type": "image_url", "image_url": {"url": item.to_data_url()}}),
+                        MediaKind::Image => {
+                            serde_json::json!({"type": "image_url", "image_url": {"url": item.to_data_url()}})
+                        }
                         MediaKind::Audio => {
                             let (data, format) = item.to_input_audio();
                             serde_json::json!({"type": "input_audio", "input_audio": {"data": data, "format": format}})
@@ -173,7 +178,6 @@ fn string_or_seq<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<
         Some(Stop::Many(v)) => v,
     })
 }
-
 
 impl ChatMessage {
     pub fn new(role: impl Into<String>, content: impl Into<String>) -> Self {
@@ -479,7 +483,9 @@ impl PartialEq for CacheItem {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
             (CacheItem::Token(a), CacheItem::Token(b)) => a == b,
-            (CacheItem::Media { id: a, n_tokens: na, .. }, CacheItem::Media { id: b, n_tokens: nb, .. }) => a == b && na == nb,
+            (CacheItem::Media { id: a, n_tokens: na, .. }, CacheItem::Media { id: b, n_tokens: nb, .. }) => {
+                a == b && na == nb
+            }
             _ => false,
         }
     }
@@ -617,7 +623,8 @@ impl ChatSession {
             }
             Some(_) if tools.is_some() => {
                 return Err(Error::InvalidArgument(
-                    "built-in chat templates can't show tools to the model; use the model's template or Jinja text".into(),
+                    "built-in chat templates can't show tools to the model; use the model's template or Jinja text"
+                        .into(),
                 ));
             }
             Some(name) => return Ok(Rendered::plain(self.apply_builtin_template(&req.messages, Some(name))?)),
@@ -666,10 +673,8 @@ impl ChatSession {
             .map(|m| Ok((CString::new(m.role.as_str())?, CString::new(m.content.as_str())?)))
             .collect::<Result<_, std::ffi::NulError>>()
             .map_err(|_| Error::InvalidArgument("message contains NUL".into()))?;
-        let msgs: Vec<sys::llama_chat_message> = owned
-            .iter()
-            .map(|(r, c)| sys::llama_chat_message { role: r.as_ptr(), content: c.as_ptr() })
-            .collect();
+        let msgs: Vec<sys::llama_chat_message> =
+            owned.iter().map(|(r, c)| sys::llama_chat_message { role: r.as_ptr(), content: c.as_ptr() }).collect();
         let tmpl = match template {
             Some(t) => Some(CString::new(t).map_err(|_| Error::InvalidArgument("template contains NUL".into()))?),
             None => self.model.chat_template().and_then(|t| CString::new(t).ok()),
@@ -743,13 +748,16 @@ impl ChatSession {
         } else {
             let model = self.model.clone();
             let projector = model.projector().ok_or_else(|| {
-                Error::InvalidArgument("request has images/audio but the model has no multimodal projector (mmproj)".into())
+                Error::InvalidArgument(
+                    "request has images/audio but the model has no multimodal projector (mmproj)".into(),
+                )
             })?;
             let bos = model.token_text(unsafe { sys::llama_vocab_bos(model.vocab()) });
             let add_bos = bos.is_empty() || !prompt.starts_with(&bos);
             // Media still in the KV cache is tokenized from its remembered shape (no decode).
             let cached = self.cached_media_hashes();
-            let mut chunks = projector.tokenize(&prompt, &media, add_bos, &mut self.media_memo, &|id| cached.contains(id))?;
+            let mut chunks =
+                projector.tokenize(&prompt, &media, add_bos, &mut self.media_memo, &|id| cached.contains(id))?;
             let segments = chunks.segments();
             if placeholder_after(&segments, self.reusable_prefix(&segment_items(&segments))) {
                 // The cache diverges before some remembered media: it must be encoded again.
@@ -807,7 +815,8 @@ impl ChatSession {
         if format == ToolFormat::Polyfill {
             stop.to_mut().push(POLYFILL_STOP.into());
         }
-        let mut result = self.run(prompt_input, req.max_tokens, &stop, &req.sampling, grammars.first(), use_tools, &mut on_piece);
+        let mut result =
+            self.run(prompt_input, req.max_tokens, &stop, &req.sampling, grammars.first(), use_tools, &mut on_piece);
         if let (Err(Error::Media(msg)), Some(_)) = (&result, &chunks)
             && msg == PLACEHOLDER_EVAL
         {
@@ -818,7 +827,15 @@ impl ChatSession {
             let bos = model.token_text(unsafe { sys::llama_vocab_bos(model.vocab()) });
             let add_bos = bos.is_empty() || !prompt.starts_with(&bos);
             let real = projector.tokenize(&prompt, &media, add_bos, &mut self.media_memo, &|_| false)?;
-            result = self.run(Prompt::Media(&real), req.max_tokens, &stop, &req.sampling, grammars.first(), use_tools, &mut on_piece);
+            result = self.run(
+                Prompt::Media(&real),
+                req.max_tokens,
+                &stop,
+                &req.sampling,
+                grammars.first(),
+                use_tools,
+                &mut on_piece,
+            );
         }
         let mut resp = result?;
         // Forget shapes of media no longer cached.
@@ -1051,7 +1068,13 @@ impl ChatSession {
                         return Ok(false);
                     }
                     let projector = self.model.projector().expect("media segments imply a projector");
-                    let new_pos = match projector.eval_chunk(self.ctx.as_ptr(), m, self.n_past as i32, self.n_batch as i32, item == last) {
+                    let new_pos = match projector.eval_chunk(
+                        self.ctx.as_ptr(),
+                        m,
+                        self.n_past as i32,
+                        self.n_batch as i32,
+                        item == last,
+                    ) {
                         Ok(pos) => pos,
                         // Aborted by the cancel callback while decoding the media embeddings.
                         Err(Error::Decode(2)) if self.cancel.is_cancelled() => return Ok(false),
@@ -1181,7 +1204,12 @@ fn ignores_tools(template: &ChatTemplate, base: &RenderArgs) -> bool {
         .is_ok_and(|prompt| !prompt.contains(PROBE))
 }
 
-fn render_polyfilled(template: &ChatTemplate, messages: &[ChatMessage], tools: Option<&[Tool]>, base: &RenderArgs) -> Result<String> {
+fn render_polyfilled(
+    template: &ChatTemplate,
+    messages: &[ChatMessage],
+    tools: Option<&[Tool]>,
+    base: &RenderArgs,
+) -> Result<String> {
     let render = |system_role| {
         let messages = template_messages(&polyfill_messages(messages, tools, system_role))?;
         template.render(&RenderArgs { messages: &messages, ..*base })
@@ -1212,7 +1240,6 @@ fn template_messages(messages: &[ChatMessage]) -> Result<serde_json::Value> {
     }
     Ok(value)
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -1257,7 +1284,8 @@ mod tests {
                 continue;
             }
             assert!(!src.contains("tools"), "{name} mentions tools but was judged to ignore them");
-            let prompt = render_polyfilled(&t, &messages, Some(&tools), &base).unwrap_or_else(|e| panic!("{name}: {e}"));
+            let prompt =
+                render_polyfilled(&t, &messages, Some(&tools), &base).unwrap_or_else(|e| panic!("{name}: {e}"));
             for part in ["# Tools", "\"name\": \"get_weather\"", "<tool_call>", "\"temp_c\": 4", "Weather in Oslo?"] {
                 assert!(prompt.contains(part), "{name}: missing {part:?} in {prompt}");
             }

@@ -82,11 +82,7 @@ pub(crate) fn split_reasoning(text: &str, think_open_in_prompt: bool) -> (Option
 pub(crate) fn parse_output(format: ToolFormat, text: &str, think_open_in_prompt: bool) -> Parsed {
     let (reasoning, rest) = split_reasoning(text, think_open_in_prompt);
     let (content, calls) = parse_calls(format, &rest);
-    Parsed {
-        content: content.trim().to_string(),
-        reasoning,
-        calls,
-    }
+    Parsed { content: content.trim().to_string(), reasoning, calls }
 }
 
 fn parse_calls(format: ToolFormat, text: &str) -> (String, Vec<ParsedCall>) {
@@ -120,10 +116,7 @@ fn normalize_arguments(v: Option<&Value>) -> String {
 fn call_from_object(obj: &Map<String, Value>) -> Option<ParsedCall> {
     let name = obj.get("name")?.as_str()?.to_string();
     let args = obj.get("arguments").or_else(|| obj.get("parameters"));
-    Some(ParsedCall {
-        name,
-        arguments: normalize_arguments(args),
-    })
+    Some(ParsedCall { name, arguments: normalize_arguments(args) })
 }
 
 fn call_from_json(text: &str) -> Option<ParsedCall> {
@@ -208,10 +201,7 @@ fn parse_xml_function(inner: &str) -> Option<ParsedCall> {
         map.insert(key.to_string(), parse_param_value(&vbody[..vpos]));
         body = &vbody[vpos + PCLOSE.len()..];
     }
-    Some(ParsedCall {
-        name: name.to_string(),
-        arguments: Value::Object(map).to_string(),
-    })
+    Some(ParsedCall { name: name.to_string(), arguments: Value::Object(map).to_string() })
 }
 
 /// XML parameter value: strip one leading/trailing newline, then use a JSON
@@ -227,19 +217,12 @@ fn parse_param_value(raw: &str) -> Value {
 
 fn parse_llama3(text: &str) -> (String, Vec<ParsedCall>) {
     let trimmed = text.trim();
-    let body = trimmed
-        .strip_prefix("<|python_tag|>")
-        .map(|s| s.trim_start())
-        .unwrap_or(trimmed);
+    let body = trimmed.strip_prefix("<|python_tag|>").map(|s| s.trim_start()).unwrap_or(trimmed);
 
     if let Some(call) = call_from_json(body) {
         return (String::new(), vec![call]);
     }
-    let parts: Vec<&str> = body
-        .split([';', '\n'])
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .collect();
+    let parts: Vec<&str> = body.split([';', '\n']).map(str::trim).filter(|s| !s.is_empty()).collect();
     if !parts.is_empty() {
         let mut calls = Vec::new();
         let mut all_ok = true;
@@ -271,9 +254,10 @@ fn parse_mistral_list(text: &str) -> (String, Vec<ParsedCall>) {
         let mut calls = Vec::new();
         for item in &arr {
             if let Some(obj) = item.as_object()
-                && let Some(c) = call_from_object(obj) {
-                    calls.push(c);
-                }
+                && let Some(c) = call_from_object(obj)
+            {
+                calls.push(c);
+            }
         }
         return (content, calls);
     }
@@ -302,10 +286,7 @@ fn parse_mistral_args(text: &str) -> (String, Vec<ParsedCall>) {
             }
             let argtext = seg[apos + ARGS.len()..].trim();
             if let Some(v) = parse_first_json(argtext) {
-                calls.push(ParsedCall {
-                    name: name.to_string(),
-                    arguments: normalize_arguments(Some(&v)),
-                });
+                calls.push(ParsedCall { name: name.to_string(), arguments: normalize_arguments(Some(&v)) });
             }
         }
     }
@@ -321,18 +302,20 @@ fn parse_generic(text: &str) -> (String, Vec<ParsedCall>) {
         return (String::new(), vec![call]);
     }
     if let Ok(Value::Object(obj)) = serde_json::from_str::<Value>(trimmed)
-        && let Some(Value::Array(arr)) = obj.get("tool_calls") {
-            let mut calls = Vec::new();
-            for item in arr {
-                if let Some(o) = item.as_object()
-                    && let Some(c) = call_from_object(o) {
-                        calls.push(c);
-                    }
-            }
-            if !calls.is_empty() {
-                return (String::new(), calls);
+        && let Some(Value::Array(arr)) = obj.get("tool_calls")
+    {
+        let mut calls = Vec::new();
+        for item in arr {
+            if let Some(o) = item.as_object()
+                && let Some(c) = call_from_object(o)
+            {
+                calls.push(c);
             }
         }
+        if !calls.is_empty() {
+            return (String::new(), calls);
+        }
+    }
     (text.to_string(), Vec::new())
 }
 
@@ -347,14 +330,10 @@ mod tests {
         let mut cands: Vec<PathBuf> = Vec::new();
         let f = std::path::Path::new(file!());
         if f.is_absolute()
-            && let Some(b) = f
-                .parent()
-                .and_then(|p| p.parent())
-                .and_then(|p| p.parent())
-                .and_then(|p| p.parent())
-            {
-                cands.push(b.to_path_buf());
-            }
+            && let Some(b) = f.parent().and_then(|p| p.parent()).and_then(|p| p.parent()).and_then(|p| p.parent())
+        {
+            cands.push(b.to_path_buf());
+        }
         let m = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         cands.push(m.join("../.."));
         cands.push(m.clone());
@@ -369,14 +348,12 @@ mod tests {
 
     fn template(name: &str) -> String {
         let p = repo_root().join("vendor/llama.cpp/models/templates").join(name);
-        std::fs::read_to_string(&p)
-            .unwrap_or_else(|e| panic!("cannot read {}: {e}", p.display()))
+        std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("cannot read {}: {e}", p.display()))
     }
 
     fn args(call: &ParsedCall) -> Value {
         serde_json::from_str(&call.arguments).expect("arguments must be JSON")
     }
-
 
     #[test]
     fn detect_qwen3_is_hermes() {
@@ -385,34 +362,22 @@ mod tests {
 
     #[test]
     fn detect_llama32_is_llama3json() {
-        assert_eq!(
-            detect_format(&template("meta-llama-Llama-3.2-3B-Instruct.jinja")),
-            ToolFormat::Llama3Json
-        );
+        assert_eq!(detect_format(&template("meta-llama-Llama-3.2-3B-Instruct.jinja")), ToolFormat::Llama3Json);
     }
 
     #[test]
     fn detect_qwen3_coder_is_xml() {
-        assert_eq!(
-            detect_format(&template("Qwen3-Coder.jinja")),
-            ToolFormat::Qwen3CoderXml
-        );
+        assert_eq!(detect_format(&template("Qwen3-Coder.jinja")), ToolFormat::Qwen3CoderXml);
     }
 
     #[test]
     fn detect_mistral_nemo_is_list() {
-        assert_eq!(
-            detect_format(&template("mistralai-Mistral-Nemo-Instruct-2407.jinja")),
-            ToolFormat::MistralList
-        );
+        assert_eq!(detect_format(&template("mistralai-Mistral-Nemo-Instruct-2407.jinja")), ToolFormat::MistralList);
     }
 
     #[test]
     fn detect_devstral_is_args() {
-        assert_eq!(
-            detect_format(&template("unsloth-mistral-Devstral-Small-2507.jinja")),
-            ToolFormat::MistralArgs
-        );
+        assert_eq!(detect_format(&template("unsloth-mistral-Devstral-Small-2507.jinja")), ToolFormat::MistralArgs);
     }
 
     #[test]
@@ -420,10 +385,10 @@ mod tests {
         assert_eq!(detect_format("You are a helpful assistant."), ToolFormat::Generic);
     }
 
-
     #[test]
     fn hermes_single_call() {
-        let text = "Hello\n<tool_call>\n{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Paris\"}}\n</tool_call>";
+        let text =
+            "Hello\n<tool_call>\n{\"name\": \"get_weather\", \"arguments\": {\"city\": \"Paris\"}}\n</tool_call>";
         let p = parse_output(ToolFormat::Hermes, text, false);
         assert_eq!(p.content, "Hello");
         assert_eq!(p.calls.len(), 1);
@@ -473,7 +438,6 @@ mod tests {
         assert_eq!(args(&p.calls[0]), json!({"x": 5}));
     }
 
-
     #[test]
     fn llama3_python_tag_single() {
         let text = "<|python_tag|>{\"name\":\"f\",\"parameters\":{\"x\":1}}";
@@ -516,7 +480,6 @@ mod tests {
         assert_eq!(p.content, text);
     }
 
-
     #[test]
     fn mistral_list_calls() {
         let text = "[TOOL_CALLS][{\"name\":\"a\",\"arguments\":{\"x\":1}},{\"name\":\"b\",\"arguments\":{}}]";
@@ -533,7 +496,6 @@ mod tests {
         assert_eq!(p.content, "Thinking...");
         assert_eq!(p.calls.len(), 1);
     }
-
 
     #[test]
     fn mistral_args_single() {
@@ -553,7 +515,6 @@ mod tests {
         assert_eq!(p.calls[1].name, "b");
         assert_eq!(args(&p.calls[1]), json!({"y": 2}));
     }
-
 
     #[test]
     fn qwen3_xml_single() {
@@ -580,7 +541,6 @@ mod tests {
         let p = parse_output(ToolFormat::Qwen3CoderXml, text, false);
         assert_eq!(args(&p.calls[0]), json!({"obj": {"a": 1}, "flag": true}));
     }
-
 
     #[test]
     fn generic_uses_hermes_blocks() {
@@ -611,7 +571,6 @@ mod tests {
         assert!(p.calls.is_empty());
         assert_eq!(p.content, text);
     }
-
 
     #[test]
     fn reasoning_leading_block() {
@@ -658,14 +617,14 @@ mod tests {
 
     #[test]
     fn parse_output_combines_reasoning_and_calls() {
-        let text = "<think>need weather</think>Sure!<tool_call>{\"name\":\"w\",\"arguments\":{\"city\":\"Rome\"}}</tool_call>";
+        let text =
+            "<think>need weather</think>Sure!<tool_call>{\"name\":\"w\",\"arguments\":{\"city\":\"Rome\"}}</tool_call>";
         let p = parse_output(ToolFormat::Hermes, text, false);
         assert_eq!(p.reasoning.as_deref(), Some("need weather"));
         assert_eq!(p.content, "Sure!");
         assert_eq!(p.calls.len(), 1);
         assert_eq!(args(&p.calls[0]), json!({"city": "Rome"}));
     }
-
 
     #[test]
     fn never_panics_on_garbage() {

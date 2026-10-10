@@ -65,7 +65,8 @@ fn understands_and_reuses_audio() {
     for (name, model) in audio_models() {
         let Some(clip) = sample("OFFGRID_TEST_AUDIO", "jfk.wav") else { return };
         let mut chat = session(model.clone());
-        let mut msgs = vec![ChatMessage::user_with_audio("Who is the speaker addressing? Answer in a few words.", vec![clip])];
+        let mut msgs =
+            vec![ChatMessage::user_with_audio("Who is the speaker addressing? Answer in a few words.", vec![clip])];
         let r = ask(&mut chat, msgs.clone());
         println!("[{name}] addressed: {:?}", r.content);
         assert!(r.content.to_lowercase().contains("american"), "[{name}] {}", r.content);
@@ -78,7 +79,11 @@ fn understands_and_reuses_audio() {
         let cold = ask(&mut session(model.clone()), msgs);
         println!(
             "[{name}] follow-up cached {}/{} tokens, prompt {:.0} ms (cold {:.0} ms): {:?}",
-            warm.usage.cached_tokens, warm.usage.prompt_tokens, warm.usage.prompt_ms, cold.usage.prompt_ms, warm.content
+            warm.usage.cached_tokens,
+            warm.usage.prompt_tokens,
+            warm.usage.prompt_ms,
+            cold.usage.prompt_ms,
+            warm.content
         );
         assert_eq!(warm.content, cold.content, "[{name}] reused audio KV changed the answer");
         assert!(warm.usage.cached_tokens >= r.usage.prompt_tokens - 1, "[{name}] audio not reused");
@@ -88,7 +93,9 @@ fn understands_and_reuses_audio() {
 #[test]
 fn image_and_audio_together() {
     let Some((name, model)) = load("OFFGRID_TEST_OMNI_MODEL", "OFFGRID_TEST_OMNI_MMPROJ") else { return };
-    let (Some(img), Some(clip)) = (sample("OFFGRID_TEST_IMAGES", "red_square.png"), sample("OFFGRID_TEST_AUDIO", "jfk.wav")) else {
+    let (Some(img), Some(clip)) =
+        (sample("OFFGRID_TEST_IMAGES", "red_square.png"), sample("OFFGRID_TEST_AUDIO", "jfk.wav"))
+    else {
         return;
     };
     assert!(model.info().vision && model.info().audio);
@@ -119,24 +126,33 @@ fn capability_and_format_errors() {
     let back = serde_json::to_value(&msg).unwrap();
     assert_eq!(back["content"][1]["type"], "input_audio");
     assert_eq!(serde_json::from_value::<ChatMessage>(back).unwrap(), msg);
-    assert!(serde_json::from_value::<ChatMessage>(json!({"role": "user", "content": [
+    assert!(
+        serde_json::from_value::<ChatMessage>(json!({"role": "user", "content": [
         {"type": "input_audio", "input_audio": {"data": "AAAA", "format": "ogg"}}]}))
-    .is_err());
+        .is_err()
+    );
 
     // Audio-only projector refuses images; vision-only refuses audio.
     if let Some((name, model)) = load("OFFGRID_TEST_AUDIO_MODEL", "OFFGRID_TEST_AUDIO_MMPROJ") {
         assert!(model.info().audio && !model.info().vision, "[{name}]");
         let mut chat = session(model);
         if let Some(img) = sample("OFFGRID_TEST_IMAGES", "red_square.png") {
-            let err = chat.complete(&ChatRequest::new(vec![ChatMessage::user_with_images("x", vec![img.clone()])]), |_| true).unwrap_err();
+            let err = chat
+                .complete(&ChatRequest::new(vec![ChatMessage::user_with_images("x", vec![img.clone()])]), |_| true)
+                .unwrap_err();
             assert!(err.to_string().contains("does not accept images"), "{err}");
             // Image bytes declared as audio.
             let fake = Media::audio(img.data);
-            let err = chat.complete(&ChatRequest::new(vec![ChatMessage::user_with_audio("x", vec![fake])]), |_| true).unwrap_err();
+            let err = chat
+                .complete(&ChatRequest::new(vec![ChatMessage::user_with_audio("x", vec![fake])]), |_| true)
+                .unwrap_err();
             assert!(matches!(err, Error::Media(_)), "{err}");
         }
         let err = chat
-            .complete(&ChatRequest::new(vec![ChatMessage::user_with_audio("x", vec![Media::audio(b"RIFFgarbage".to_vec())])]), |_| true)
+            .complete(
+                &ChatRequest::new(vec![ChatMessage::user_with_audio("x", vec![Media::audio(b"RIFFgarbage".to_vec())])]),
+                |_| true,
+            )
             .unwrap_err();
         assert!(matches!(err, Error::Media(_)), "{err}");
         assert!(!ask(&mut chat, vec![ChatMessage::user("Say OK.")]).content.is_empty(), "session usable after errors");
@@ -144,7 +160,8 @@ fn capability_and_format_errors() {
     if let Some((name, model)) = load("OFFGRID_TEST_VL_MODEL", "OFFGRID_TEST_VL_MMPROJ") {
         assert!(model.info().vision && !model.info().audio, "[{name}]");
         let mut chat = session(model);
-        let err = chat.complete(&ChatRequest::new(vec![ChatMessage::user_with_audio("x", vec![wav])]), |_| true).unwrap_err();
+        let err =
+            chat.complete(&ChatRequest::new(vec![ChatMessage::user_with_audio("x", vec![wav])]), |_| true).unwrap_err();
         assert!(err.to_string().contains("does not accept audio"), "{err}");
     }
 }

@@ -22,7 +22,11 @@ impl Tool {
     pub fn function(name: impl Into<String>, description: impl Into<String>, parameters: Value) -> Self {
         Self {
             kind: function_type(),
-            function: FunctionDef { name: name.into(), description: Some(description.into()), parameters: Some(parameters) },
+            function: FunctionDef {
+                name: name.into(),
+                description: Some(description.into()),
+                parameters: Some(parameters),
+            },
         }
     }
 }
@@ -136,7 +140,11 @@ fn new_call_id() -> String {
 /// Rewrite a conversation for a template that ignores `tools` (e.g. Gemma 3), like llama.cpp
 /// does: describe the tools in the system message and turn tool calls and results into
 /// `<tool_call>` text. Consecutive tool results become one user turn so roles alternate.
-pub(crate) fn polyfill_messages(messages: &[ChatMessage], tools: Option<&[Tool]>, system_role: bool) -> Vec<ChatMessage> {
+pub(crate) fn polyfill_messages(
+    messages: &[ChatMessage],
+    tools: Option<&[Tool]>,
+    system_role: bool,
+) -> Vec<ChatMessage> {
     let mut out: Vec<ChatMessage> = Vec::with_capacity(messages.len() + 1);
     // Call id → function name, to label tool results.
     let mut names: Vec<(&str, &str)> = Vec::new();
@@ -144,7 +152,8 @@ pub(crate) fn polyfill_messages(messages: &[ChatMessage], tools: Option<&[Tool]>
     for m in messages {
         if m.role == "tool" {
             let name = m.tool_call_id.as_deref().and_then(|id| names.iter().find(|(i, _)| *i == id)).map(|(_, n)| *n);
-            let content = serde_json::from_str::<Value>(&m.content).unwrap_or_else(|_| Value::String(m.content.clone()));
+            let content =
+                serde_json::from_str::<Value>(&m.content).unwrap_or_else(|_| Value::String(m.content.clone()));
             let text = match name {
                 Some(name) => format!(
                     "<tool_response>\n{{\"name\": {}, \"content\": {}}}\n</tool_response>",
@@ -188,7 +197,9 @@ pub(crate) fn polyfill_messages(messages: &[ChatMessage], tools: Option<&[Tool]>
     if let Some(tools) = tools.filter(|t| !t.is_empty()) {
         let instructions = tool_instructions(tools);
         match out.first_mut() {
-            Some(first) if first.role == "system" => first.content = format!("{}\n\n{instructions}", first.content.trim_end()),
+            Some(first) if first.role == "system" => {
+                first.content = format!("{}\n\n{instructions}", first.content.trim_end())
+            }
             _ => out.insert(0, ChatMessage::system(instructions)),
         }
     }
@@ -265,11 +276,9 @@ pub(crate) fn tool_grammar(
     let lazy = *choice == ToolChoice::Auto;
     let (args_key, wrapper, trigger) = match format {
         // <tool_call>{"name": ..., "arguments": {...}}</tool_call>
-        ToolFormat::Hermes | ToolFormat::Generic | ToolFormat::Polyfill => (
-            "arguments",
-            r#""<tool_call>" [ \n]* root [ \n]* "</tool_call>""#,
-            r"(<tool_call>)",
-        ),
+        ToolFormat::Hermes | ToolFormat::Generic | ToolFormat::Polyfill => {
+            ("arguments", r#""<tool_call>" [ \n]* root [ \n]* "</tool_call>""#, r"(<tool_call>)")
+        }
         // {"name": ..., "parameters": {...}} as the whole reply
         ToolFormat::Llama3Json => ("parameters", "root", r"^\s*(\{)[\s\S]*$"),
         // Control-token / XML formats: parse only.
@@ -319,11 +328,7 @@ pub(crate) fn tool_grammar(
     // Llama 3 has no call delimiter, so only a single call is constrained.
     let repeat = parallel && format != ToolFormat::Llama3Json;
     text.push_str(&format!("tool-call ::= {wrapper}\n"));
-    text.push_str(if repeat {
-        "tool-calls ::= tool-call ([ \\n]* tool-call)*"
-    } else {
-        "tool-calls ::= tool-call"
-    });
+    text.push_str(if repeat { "tool-calls ::= tool-call ([ \\n]* tool-call)*" } else { "tool-calls ::= tool-call" });
     // Prompt-taught models tend to write the tool response next; allow its opening tag
     // (a stop string, `POLYFILL_STOP`) so the turn ends instead of forcing more calls.
     if format == ToolFormat::Polyfill {
@@ -365,7 +370,10 @@ mod tests {
 
     #[test]
     fn tool_wire_format() {
-        let t: Tool = serde_json::from_value(json!({"type": "function", "function": {"name": "f", "parameters": {"type": "object"}}})).unwrap();
+        let t: Tool = serde_json::from_value(
+            json!({"type": "function", "function": {"name": "f", "parameters": {"type": "object"}}}),
+        )
+        .unwrap();
         assert_eq!(t.function.name, "f");
         assert_eq!(serde_json::to_value(&t).unwrap()["type"], "function");
     }
@@ -393,7 +401,8 @@ mod tests {
     #[test]
     fn named_choice_and_none() {
         let tools = [weather(), Tool::function("noop", "x", json!({"type": "object"}))];
-        let g = tool_grammar(ToolFormat::Llama3Json, &tools, &ToolChoice::Function("noop".into()), true).unwrap().unwrap();
+        let g =
+            tool_grammar(ToolFormat::Llama3Json, &tools, &ToolChoice::Function("noop".into()), true).unwrap().unwrap();
         assert!(g.text.contains("noop") && !g.text.contains("get_weather"));
         assert!(g.text.contains("parameters"));
         assert!(tool_grammar(ToolFormat::Hermes, &tools, &ToolChoice::None, true).unwrap().is_none());
@@ -410,17 +419,27 @@ mod tests {
             json!({"$defs": {"Addr": {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}},
                    "type": "object", "properties": {"a": {"$ref": "#/$defs/Addr"}}, "required": ["a"]}),
         );
-        let g = tool_grammar(ToolFormat::Hermes, std::slice::from_ref(&tool), &ToolChoice::Required, false).unwrap().unwrap();
+        let g = tool_grammar(ToolFormat::Hermes, std::slice::from_ref(&tool), &ToolChoice::Required, false)
+            .unwrap()
+            .unwrap();
         assert!(g.text.contains("city"), "{}", g.text);
         // Two tools sharing an identical definition is fine; conflicting ones are an error.
-        let other = Tool::function("other", "y", json!({"$defs": {"Addr": {"type": "string"}}, "type": "object",
-            "properties": {"b": {"$ref": "#/$defs/Addr"}}}));
+        let other = Tool::function(
+            "other",
+            "y",
+            json!({"$defs": {"Addr": {"type": "string"}}, "type": "object",
+            "properties": {"b": {"$ref": "#/$defs/Addr"}}}),
+        );
         assert!(tool_grammar(ToolFormat::Hermes, &[tool.clone(), tool.clone()], &ToolChoice::Auto, true).is_ok());
         assert!(tool_grammar(ToolFormat::Hermes, &[tool, other], &ToolChoice::Auto, true).is_err());
     }
 
     fn call(id: &str, name: &str, args: &str) -> ToolCall {
-        ToolCall { id: id.into(), kind: "function".into(), function: FunctionCall { name: name.into(), arguments: args.into() } }
+        ToolCall {
+            id: id.into(),
+            kind: "function".into(),
+            function: FunctionCall { name: name.into(), arguments: args.into() },
+        }
     }
 
     #[test]
@@ -457,7 +476,11 @@ mod tests {
     fn polyfill_without_offered_tools_only_rewrites_history() {
         // tool_choice none (e.g. run_tools' last round): history is rewritten, tools not shown.
         let a = call("call_a", "get_weather", "{}");
-        let messages = vec![ChatMessage::user("Hi"), ChatMessage::assistant_tool_calls("", vec![a.clone()]), ChatMessage::tool_result(&a, "ok")];
+        let messages = vec![
+            ChatMessage::user("Hi"),
+            ChatMessage::assistant_tool_calls("", vec![a.clone()]),
+            ChatMessage::tool_result(&a, "ok"),
+        ];
         let out = polyfill_messages(&messages, None, true);
         assert_eq!(out.iter().map(|m| m.role.as_str()).collect::<Vec<_>>(), ["user", "assistant", "user"]);
         assert!(!out.iter().any(|m| m.content.contains("# Tools")));
@@ -465,10 +488,15 @@ mod tests {
 
     #[test]
     fn polyfill_folds_system_into_user_without_system_role() {
-        let out = polyfill_messages(&[ChatMessage::system("Be brief."), ChatMessage::user("Hi")], Some(&[weather()]), false);
+        let out =
+            polyfill_messages(&[ChatMessage::system("Be brief."), ChatMessage::user("Hi")], Some(&[weather()]), false);
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].role, "user");
-        assert!(out[0].content.starts_with("Be brief.\n\n# Tools") && out[0].content.ends_with("\n\nHi"), "{}", out[0].content);
+        assert!(
+            out[0].content.starts_with("Be brief.\n\n# Tools") && out[0].content.ends_with("\n\nHi"),
+            "{}",
+            out[0].content
+        );
 
         let out = polyfill_messages(&[ChatMessage::user("Hi")], Some(&[weather()]), false);
         assert_eq!(out.len(), 1);

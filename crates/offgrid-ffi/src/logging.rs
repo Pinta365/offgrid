@@ -48,10 +48,8 @@ impl Log for FfiLogger {
 /// otherwise logging is off.
 pub(crate) fn install() {
     INSTALL.call_once(|| {
-        let level = std::env::var("OFFGRID_LOG")
-            .ok()
-            .and_then(|v| v.parse::<LevelFilter>().ok())
-            .unwrap_or(LevelFilter::Off);
+        let level =
+            std::env::var("OFFGRID_LOG").ok().and_then(|v| v.parse::<LevelFilter>().ok()).unwrap_or(LevelFilter::Off);
         if log::set_logger(&FfiLogger).is_ok() {
             log::set_max_level(level);
         }

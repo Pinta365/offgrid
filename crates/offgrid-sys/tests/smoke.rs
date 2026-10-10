@@ -1,15 +1,10 @@
 use std::ffi::{CStr, CString};
 
 unsafe fn cstr_or_null(p: *const std::ffi::c_char) -> String {
-    if p.is_null() {
-        "<null>".to_string()
-    } else {
-        unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned()
-    }
+    if p.is_null() { "<null>".to_string() } else { unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned() }
 }
 
-/// llama_backend_init, with the same AMD switchable-graphics layer workaround as offgrid::backend
-/// (the layer hangs vkCreateInstance on hybrid-GPU Windows laptops).
+/// llama_backend_init with offgrid::backend's AMD switchable-graphics layer workaround.
 unsafe fn backend_init() {
     static INIT: std::sync::Once = std::sync::Once::new();
     INIT.call_once(|| {

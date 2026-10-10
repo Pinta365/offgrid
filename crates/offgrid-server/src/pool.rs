@@ -61,7 +61,6 @@ impl Lease {
     pub fn next_request_cancel(&self) -> RequestCancel {
         self.pool.cancels[self.index].next_request()
     }
-
 }
 
 impl Drop for Lease {

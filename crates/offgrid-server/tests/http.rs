@@ -5,9 +5,9 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use base64::Engine;
 use offgrid::SessionParams;
 use offgrid_server::{AppState, ServerConfig, router};
-use base64::Engine;
 use serde_json::{Value, json};
 
 /// A server on an ephemeral port; shut down and its models freed on drop.
@@ -138,7 +138,8 @@ async fn health_models_auth_and_errors() {
     let (s, e) = post(url, "/v1/chat/completions", json!({"messages": []})).await;
     assert_eq!(s, 400);
     assert!(e["error"]["message"].as_str().unwrap().contains("empty"));
-    let (s, _) = post(url, "/v1/chat/completions", json!({"n": 2, "messages": [{"role": "user", "content": "x"}]})).await;
+    let (s, _) =
+        post(url, "/v1/chat/completions", json!({"n": 2, "messages": [{"role": "user", "content": "x"}]})).await;
     assert_eq!(s, 400);
     let r = client().post(format!("{url}/v1/chat/completions")).body("{not json").send().await.unwrap();
     assert_eq!(r.status(), 400);
@@ -159,7 +160,10 @@ async fn chat_and_stream_agree() {
     assert!(content.contains("Paris"));
     assert_eq!(r["choices"][0]["finish_reason"], "stop");
     let u = &r["usage"];
-    assert_eq!(u["total_tokens"].as_u64(), Some(u["prompt_tokens"].as_u64().unwrap() + u["completion_tokens"].as_u64().unwrap()));
+    assert_eq!(
+        u["total_tokens"].as_u64(),
+        Some(u["prompt_tokens"].as_u64().unwrap() + u["completion_tokens"].as_u64().unwrap())
+    );
 
     let mut body = greedy("What is the capital of France? One word.");
     body["stream"] = json!(true);
@@ -215,7 +219,9 @@ async fn tool_calls_http() {
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0][0]["index"], 0);
     assert_eq!(calls[0][0]["function"]["name"], "get_weather");
-    assert!(!chunks.iter().any(|c| c["choices"][0]["delta"]["content"].as_str().is_some_and(|t| t.contains("tool_call"))));
+    assert!(
+        !chunks.iter().any(|c| c["choices"][0]["delta"]["content"].as_str().is_some_and(|t| t.contains("tool_call")))
+    );
     assert_eq!(chunks.iter().find_map(|c| c["choices"][0]["finish_reason"].as_str()), Some("tool_calls"));
 }
 
@@ -242,7 +248,8 @@ async fn embeddings_float_and_base64() {
     assert_eq!(s, 200, "{r}");
     assert_eq!(r["data"].as_array().unwrap().len(), 2);
     let f: Vec<f32> = serde_json::from_value(r["data"][1]["embedding"].clone()).unwrap();
-    let (_, r) = post(url, "/v1/embeddings", json!({"input": ["a cat", "a kitten"], "encoding_format": "base64"})).await;
+    let (_, r) =
+        post(url, "/v1/embeddings", json!({"input": ["a cat", "a kitten"], "encoding_format": "base64"})).await;
     let bytes = base64::engine::general_purpose::STANDARD.decode(r["data"][1]["embedding"].as_str().unwrap()).unwrap();
     let b: Vec<f32> = bytes.as_chunks::<4>().0.iter().map(|c| f32::from_le_bytes(*c)).collect();
     assert_eq!(f, b);
@@ -255,7 +262,8 @@ async fn embeddings_float_and_base64() {
 async fn parallel_requests() {
     need_server!(url);
     let t = Instant::now();
-    let reqs = (0..4).map(|i| post(url, "/v1/chat/completions", greedy(&format!("Repeat exactly, nothing else: token-{i}"))));
+    let reqs =
+        (0..4).map(|i| post(url, "/v1/chat/completions", greedy(&format!("Repeat exactly, nothing else: token-{i}"))));
     let results = futures_util::future::join_all(reqs).await;
     for (i, (s, r)) in results.iter().enumerate() {
         assert_eq!(*s, 200, "{r}");
@@ -278,7 +286,12 @@ async fn disconnect_cancels_generation() {
     }
     drop(resp);
     let t = Instant::now();
-    let r = reqwest::Client::new().post(format!("{url}/v1/chat/completions")).json(&greedy("Say hi.")).send().await.unwrap();
+    let r = reqwest::Client::new()
+        .post(format!("{url}/v1/chat/completions"))
+        .json(&greedy("Say hi."))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(r.status(), 200);
     let waited = t.elapsed();
     println!("follow-up served after {waited:?}");
@@ -301,9 +314,11 @@ async fn reasoning_streams_over_sse() {
         .filter(|d| *d != "[DONE]")
         .map(|d| serde_json::from_str(d).unwrap())
         .collect();
-    let reasoning: String = chunks.iter().filter_map(|c| c["choices"][0]["delta"]["reasoning_content"].as_str()).collect();
+    let reasoning: String =
+        chunks.iter().filter_map(|c| c["choices"][0]["delta"]["reasoning_content"].as_str()).collect();
     let content: String = chunks.iter().filter_map(|c| c["choices"][0]["delta"]["content"].as_str()).collect();
-    let first_content = chunks.iter().position(|c| c["choices"][0]["delta"]["content"].as_str().is_some_and(|t| !t.is_empty()));
+    let first_content =
+        chunks.iter().position(|c| c["choices"][0]["delta"]["content"].as_str().is_some_and(|t| !t.is_empty()));
     let last_reasoning = chunks.iter().rposition(|c| c["choices"][0]["delta"].get("reasoning_content").is_some());
     let finish = chunks.iter().find_map(|c| c["choices"][0]["finish_reason"].as_str());
     println!("reasoning {} chars, content {content:?}, finish {finish:?}", reasoning.len());
@@ -316,12 +331,19 @@ async fn reasoning_streams_over_sse() {
 
 #[tokio::test]
 async fn vision_over_http() {
-    let (Ok(model), Ok(mmproj), Ok(images)) =
-        (std::env::var("OFFGRID_TEST_VL_MODEL"), std::env::var("OFFGRID_TEST_VL_MMPROJ"), std::env::var("OFFGRID_TEST_IMAGES"))
-    else {
+    let (Ok(model), Ok(mmproj), Ok(images)) = (
+        std::env::var("OFFGRID_TEST_VL_MODEL"),
+        std::env::var("OFFGRID_TEST_VL_MMPROJ"),
+        std::env::var("OFFGRID_TEST_IMAGES"),
+    ) else {
         return;
     };
-    let url = spawn(ServerConfig { model: Some(model.into()), mmproj: Some(mmproj.into()), parallel: 1, ..Default::default() });
+    let url = spawn(ServerConfig {
+        model: Some(model.into()),
+        mmproj: Some(mmproj.into()),
+        parallel: 1,
+        ..Default::default()
+    });
     let png = std::fs::read(std::path::Path::new(&images).join("text_hello.png")).unwrap();
     let data_url = format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(png));
     let body = json!({"temperature": 0, "max_tokens": 40, "messages": [{"role": "user", "content": [
@@ -352,7 +374,12 @@ async fn audio_over_http() {
     ) else {
         return;
     };
-    let url = spawn(ServerConfig { model: Some(model.into()), mmproj: Some(mmproj.into()), parallel: 1, ..Default::default() });
+    let url = spawn(ServerConfig {
+        model: Some(model.into()),
+        mmproj: Some(mmproj.into()),
+        parallel: 1,
+        ..Default::default()
+    });
     let mp3 = std::fs::read(std::path::Path::new(&audio).join("jfk.mp3")).unwrap();
     let body = json!({"temperature": 0, "max_tokens": 60, "stream": true, "messages": [{"role": "user", "content": [
         {"type": "text", "text": "Transcribe this audio exactly."},
@@ -381,7 +408,8 @@ async fn audio_over_http() {
 #[tokio::test]
 async fn large_bodies_and_body_errors() {
     let Ok(model) = std::env::var("OFFGRID_TEST_MODEL") else { return };
-    let url = spawn(ServerConfig { model: Some(model.into()), parallel: 1, max_body_bytes: 8 << 20, ..Default::default() });
+    let url =
+        spawn(ServerConfig { model: Some(model.into()), parallel: 1, max_body_bytes: 8 << 20, ..Default::default() });
     // 5 MB body (over axum's 2 MB default, under our 8 MB limit) reaches the handler.
     let filler = "x".repeat(5 << 20);
     let body = json!({"max_tokens": 1, "messages": [{"role": "user", "content": "hi"}], "pad": filler});
@@ -422,7 +450,12 @@ async fn disconnect_cancels_hidden_tool_call_output() {
     tokio::time::sleep(Duration::from_millis(300)).await;
     drop(resp);
     let t = Instant::now();
-    let r = reqwest::Client::new().post(format!("{url}/v1/chat/completions")).json(&greedy("Say hi.")).send().await.unwrap();
+    let r = reqwest::Client::new()
+        .post(format!("{url}/v1/chat/completions"))
+        .json(&greedy("Say hi."))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(r.status(), 200);
     println!("follow-up after hidden-output disconnect: {:?}", t.elapsed());
     assert!(t.elapsed() < Duration::from_secs(5), "session stayed busy after disconnect");

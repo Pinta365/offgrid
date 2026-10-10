@@ -1,7 +1,7 @@
 // Interactive streaming chat from Deno.
 // cargo build --release -p offgrid-ffi
 // deno run --allow-ffi --allow-env --allow-read examples/deno/chat.ts spike/models/<model>.gguf ["one-shot question"]
-import { Offgrid, type ChatMessage } from "../../bindings/deno/mod.ts";
+import { type ChatMessage, Offgrid } from "../../bindings/deno/mod.ts";
 
 const path = Deno.args[0];
 if (!path) {

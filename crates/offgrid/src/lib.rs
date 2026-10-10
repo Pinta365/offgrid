@@ -22,22 +22,22 @@ mod error;
 mod json_schema;
 #[cfg(feature = "dynamic-backends")]
 mod loader;
+mod media;
 mod model;
 mod sampling;
 mod template;
 mod text;
 mod tool_parse;
 mod tools;
-mod media;
 
 pub use backend::{DeviceInfo, DeviceKind, devices, system_info, version};
 pub use chat::{
-    CancelToken, ChatMessage, ChatRequest, ChatResponse, ChatSession, FinishReason, JsonSchemaFormat,
-    RequestCancel, ResponseFormat, SessionParams, StreamEvent, Usage,
+    CancelToken, ChatMessage, ChatRequest, ChatResponse, ChatSession, FinishReason, JsonSchemaFormat, RequestCancel,
+    ResponseFormat, SessionParams, StreamEvent, Usage,
 };
 pub use embed::{EmbedParams, Embedder};
 pub use error::{Error, Result};
+pub use media::{Media, MediaKind, media_marker};
 pub use model::{GpuLayers, Model, ModelInfo, ModelParams};
 pub use sampling::SamplingParams;
 pub use tools::{FunctionCall, FunctionDef, Tool, ToolCall, ToolChoice};
-pub use media::{Media, MediaKind, media_marker};

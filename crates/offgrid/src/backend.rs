@@ -56,11 +56,7 @@ unsafe extern "C" fn log_callback(level: sys::ggml_log_level, text: *const c_cha
 }
 
 pub(crate) unsafe fn cstr_to_string(ptr: *const c_char) -> String {
-    if ptr.is_null() {
-        String::new()
-    } else {
-        unsafe { CStr::from_ptr(ptr) }.to_string_lossy().into_owned()
-    }
+    if ptr.is_null() { String::new() } else { unsafe { CStr::from_ptr(ptr) }.to_string_lossy().into_owned() }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

@@ -1,10 +1,10 @@
 //! OpenAI wire-format responses and errors.
 
-use offgrid::{ChatResponse, FinishReason, ToolCall, Usage};
 use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use base64::Engine;
+use offgrid::{ChatResponse, FinishReason, ToolCall, Usage};
 use serde_json::{Value, json};
 
 /// Per-request response metadata shared by all chunks.
@@ -139,9 +139,13 @@ impl ApiError {
     pub fn from_core(e: offgrid::Error) -> Self {
         use offgrid::Error::*;
         match e {
-            InvalidArgument(_) | ContextOverflow { .. } | ChatTemplate(_) | Grammar | JsonSchema(_) | Tokenize | Media(_) => {
-                Self::bad_request(e.to_string())
-            }
+            InvalidArgument(_)
+            | ContextOverflow { .. }
+            | ChatTemplate(_)
+            | Grammar
+            | JsonSchema(_)
+            | Tokenize
+            | Media(_) => Self::bad_request(e.to_string()),
             other => Self::internal(other.to_string()),
         }
     }

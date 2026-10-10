@@ -59,7 +59,8 @@ impl Media {
         if !meta.ends_with(";base64") {
             return Err(Error::InvalidArgument("data: URL must be base64-encoded".into()));
         }
-        let data = base64_decode(payload).ok_or_else(|| Error::InvalidArgument("invalid base64 in data: URL".into()))?;
+        let data =
+            base64_decode(payload).ok_or_else(|| Error::InvalidArgument("invalid base64 in data: URL".into()))?;
         Ok(Self::image(data))
     }
 
@@ -69,10 +70,13 @@ impl Media {
         if !matches!(format, "wav" | "mp3" | "flac") {
             return Err(Error::InvalidArgument(format!("unsupported audio format '{format}' (wav, mp3, flac)")));
         }
-        let bytes = base64_decode(data).ok_or_else(|| Error::InvalidArgument("invalid base64 in input_audio".into()))?;
+        let bytes =
+            base64_decode(data).ok_or_else(|| Error::InvalidArgument("invalid base64 in input_audio".into()))?;
         match audio_format(&bytes) {
             Some(detected) if detected == format => Ok(Self::audio(bytes)),
-            Some(detected) => Err(Error::InvalidArgument(format!("input_audio declared '{format}' but the data is {detected}"))),
+            Some(detected) => {
+                Err(Error::InvalidArgument(format!("input_audio declared '{format}' but the data is {detected}")))
+            }
             None => Err(Error::InvalidArgument(format!("input_audio data is not {format}"))),
         }
     }
@@ -168,9 +172,8 @@ impl Drop for Projector {
 /// Headroom for the projector's compute buffer on top of its weights.
 const PROJECTOR_GPU_MARGIN: u64 = 512 << 20;
 
-/// Whether the projector's weights (plus a margin) fit in free memory on the GPU clip.cpp will
-/// pick. clip.cpp aborts (GGML_ASSERT) instead of failing when that allocation fails, so a
-/// projector that won't fit is loaded on the CPU instead.
+/// Whether the projector fits in free memory on the GPU clip.cpp will pick; clip.cpp aborts
+/// instead of failing when it doesn't.
 fn projector_fits_gpu(path: &Path, device: sys::ggml_backend_dev_t) -> bool {
     let Ok(size) = std::fs::metadata(path).map(|m| m.len()) else { return true };
     let dev = {
@@ -222,7 +225,8 @@ impl Projector {
             unsafe { sys::mtmd_init_from_file(c_path.as_ptr(), model, params) }
         };
         let ctx = NonNull::new(ctx).ok_or_else(|| Error::ModelLoad(path.to_path_buf()))?;
-        let (vision, audio) = unsafe { (sys::mtmd_support_vision(ctx.as_ptr()), sys::mtmd_support_audio(ctx.as_ptr())) };
+        let (vision, audio) =
+            unsafe { (sys::mtmd_support_vision(ctx.as_ptr()), sys::mtmd_support_audio(ctx.as_ptr())) };
         if !vision && !audio {
             unsafe { sys::mtmd_free(ctx.as_ptr()) };
             return Err(Error::InvalidArgument(format!("{} supports neither images nor audio", path.display())));
@@ -273,13 +277,20 @@ impl Projector {
             }
             let opt = unsafe { sys::mtmd_helper_init_opt_default() };
             let w = unsafe {
-                sys::mtmd_helper_bitmap_init_from_buf(self.ctx.as_ptr(), item.data.as_ptr(), item.data.len(), false, opt)
+                sys::mtmd_helper_bitmap_init_from_buf(
+                    self.ctx.as_ptr(),
+                    item.data.as_ptr(),
+                    item.data.len(),
+                    false,
+                    opt,
+                )
             };
             let what = match item.kind {
                 MediaKind::Image => "image",
                 MediaKind::Audio => "audio",
             };
-            let bitmap = NonNull::new(w.bitmap).ok_or_else(|| Error::Media(format!("{what} {i} could not be decoded")))?;
+            let bitmap =
+                NonNull::new(w.bitmap).ok_or_else(|| Error::Media(format!("{what} {i} could not be decoded")))?;
             let bitmap = Bitmap(bitmap);
             // mtmd detects the real type from the bytes; it must match what was declared.
             if unsafe { sys::mtmd_bitmap_is_audio(bitmap.0.as_ptr()) } != (item.kind == MediaKind::Audio) {
@@ -300,10 +311,18 @@ impl Projector {
             bitmaps.push(bitmap);
         }
         let text = CString::new(prompt).map_err(|_| Error::InvalidArgument("prompt contains NUL".into()))?;
-        let input = sys::mtmd_input_text { text: text.as_ptr(), text_len: prompt.len(), add_special: add_bos, parse_special: true };
-        let chunks = Chunks(NonNull::new(unsafe { sys::mtmd_input_chunks_init() }).ok_or(Error::Tokenize)?, placeholders);
+        let input = sys::mtmd_input_text {
+            text: text.as_ptr(),
+            text_len: prompt.len(),
+            add_special: add_bos,
+            parse_special: true,
+        };
+        let chunks =
+            Chunks(NonNull::new(unsafe { sys::mtmd_input_chunks_init() }).ok_or(Error::Tokenize)?, placeholders);
         let ptrs: Vec<*const sys::mtmd_bitmap> = bitmaps.iter().map(|b| b.0.as_ptr() as *const _).collect();
-        match unsafe { sys::mtmd_tokenize(self.ctx.as_ptr(), chunks.0.as_ptr(), &input, ptrs.as_ptr() as *mut _, ptrs.len()) } {
+        match unsafe {
+            sys::mtmd_tokenize(self.ctx.as_ptr(), chunks.0.as_ptr(), &input, ptrs.as_ptr() as *mut _, ptrs.len())
+        } {
             0 => Ok(chunks),
             1 => Err(Error::Media(format!(
                 "{} media item(s) but the prompt has a different number of media markers",
@@ -326,7 +345,16 @@ impl Projector {
         let _guard = self.eval_lock.lock().unwrap_or_else(|e| e.into_inner());
         let mut new_n_past = 0;
         let rc = unsafe {
-            sys::mtmd_helper_eval_chunk_single(self.ctx.as_ptr(), lctx, chunk.ptr, n_past, 0, n_batch, logits_last, &mut new_n_past)
+            sys::mtmd_helper_eval_chunk_single(
+                self.ctx.as_ptr(),
+                lctx,
+                chunk.ptr,
+                n_past,
+                0,
+                n_batch,
+                logits_last,
+                &mut new_n_past,
+            )
         };
         if rc != 0 {
             return Err(Error::Decode(rc));
@@ -379,10 +407,15 @@ impl Chunks {
                 if sys::mtmd_input_chunk_get_type(chunk) == sys::mtmd_input_chunk_type_MTMD_INPUT_CHUNK_TYPE_TEXT {
                     let mut len = 0usize;
                     let toks = sys::mtmd_input_chunk_get_tokens_text(chunk, &mut len);
-                    Segment::Text(if toks.is_null() { Vec::new() } else { std::slice::from_raw_parts(toks, len).to_vec() })
+                    Segment::Text(if toks.is_null() {
+                        Vec::new()
+                    } else {
+                        std::slice::from_raw_parts(toks, len).to_vec()
+                    })
                 } else {
                     let id_ptr = sys::mtmd_input_chunk_get_id(chunk);
-                    let placeholder = !id_ptr.is_null() && self.1.contains(CStr::from_ptr(id_ptr).to_string_lossy().as_ref());
+                    let placeholder =
+                        !id_ptr.is_null() && self.1.contains(CStr::from_ptr(id_ptr).to_string_lossy().as_ref());
                     let id = if id_ptr.is_null() {
                         // No content hash: never matches a cached entry.
                         format!("unhashed-{}", UNHASHED.fetch_add(1, Ordering::Relaxed))

@@ -39,7 +39,12 @@ fn ask(chat: &mut ChatSession, messages: Vec<ChatMessage>) -> ChatResponse {
         ..ChatRequest::new(messages)
     };
     let mut streamed = String::new();
-    let r = chat.complete(&req, |p| { streamed.push_str(p); true }).unwrap();
+    let r = chat
+        .complete(&req, |p| {
+            streamed.push_str(p);
+            true
+        })
+        .unwrap();
     assert_eq!(streamed.trim(), r.content);
     r
 }
@@ -110,8 +115,15 @@ fn errors_and_wire_format() {
     let again: ChatMessage = serde_json::from_value(back).unwrap();
     assert_eq!(again, msg);
     // Remote URLs and unknown parts are rejected.
-    assert!(serde_json::from_value::<ChatMessage>(json!({"role": "user", "content": [{"type": "image_url", "image_url": {"url": "https://x/y.png"}}]})).is_err());
-    assert!(serde_json::from_value::<ChatMessage>(json!({"role": "user", "content": [{"type": "input_audio"}]})).is_err());
+    assert!(
+        serde_json::from_value::<ChatMessage>(
+            json!({"role": "user", "content": [{"type": "image_url", "image_url": {"url": "https://x/y.png"}}]})
+        )
+        .is_err()
+    );
+    assert!(
+        serde_json::from_value::<ChatMessage>(json!({"role": "user", "content": [{"type": "input_audio"}]})).is_err()
+    );
 
     // Image sent to a text-only model; corrupt image to a vision model.
     if let Ok(path) = std::env::var("OFFGRID_TEST_MODEL") {
@@ -123,7 +135,8 @@ fn errors_and_wire_format() {
     }
     for (name, model) in vision_models().take(1) {
         let mut chat = session(model);
-        let req = ChatRequest::new(vec![ChatMessage::user_with_images("hi", vec![Media::image(b"not an image".to_vec())])]);
+        let req =
+            ChatRequest::new(vec![ChatMessage::user_with_images("hi", vec![Media::image(b"not an image".to_vec())])]);
         let err = chat.complete(&req, |_| true).unwrap_err();
         assert!(matches!(err, Error::Media(_)), "[{name}] {err}");
         // Session still works afterwards.
@@ -156,7 +169,11 @@ fn image_prompt_cache_reuse() {
         let cold = ask(&mut session(model.clone()), q2.clone());
         println!(
             "[{name}] follow-up: cached {}/{} tokens, prompt {:.0} ms (cold {:.0} ms): {:?}",
-            warm.usage.cached_tokens, warm.usage.prompt_tokens, warm.usage.prompt_ms, cold.usage.prompt_ms, warm.content
+            warm.usage.cached_tokens,
+            warm.usage.prompt_tokens,
+            warm.usage.prompt_ms,
+            cold.usage.prompt_ms,
+            warm.content
         );
         assert_eq!(warm.content, cold.content, "[{name}] reused KV changed the answer");
         assert!(warm.usage.cached_tokens >= r1.usage.prompt_tokens - 1, "[{name}] first turn incl. image not reused");
@@ -187,7 +204,10 @@ fn image_prompt_cache_reuse() {
         let b = ask(&mut chat3, two("stripes.jpg"));
         drop(chat3);
         let b_fresh = ask(&mut session(model.clone()), two("stripes.jpg"));
-        println!("[{name}] second image swapped: cached {}/{} tokens: {:?}", b.usage.cached_tokens, b.usage.prompt_tokens, b.content);
+        println!(
+            "[{name}] second image swapped: cached {}/{} tokens: {:?}",
+            b.usage.cached_tokens, b.usage.prompt_tokens, b.content
+        );
         assert!(b.usage.cached_tokens > 20, "[{name}] first image not reused");
         assert!(b.usage.cached_tokens < b.usage.prompt_tokens - 20, "[{name}] second image wrongly reused");
         assert_eq!(b.content, b_fresh.content, "[{name}] partial reuse changed the answer");
@@ -212,10 +232,8 @@ fn media_placeholder_fallback() {
         // divergence point, so it can't be reused and must be re-encoded.
         let changed = ask(&mut chat, conv("You are a terse assistant. Answer in as few words as possible."));
         drop(chat);
-        let fresh = ask(
-            &mut session(model.clone()),
-            conv("You are a terse assistant. Answer in as few words as possible."),
-        );
+        let fresh =
+            ask(&mut session(model.clone()), conv("You are a terse assistant. Answer in as few words as possible."));
         println!("[{name}] fallback: cached {} -> {:?}", changed.usage.cached_tokens, changed.content);
         assert_eq!(changed.content, fresh.content, "[{name}]");
         assert!(changed.content.to_uppercase().contains("HELLO"), "[{name}] {}", changed.content);

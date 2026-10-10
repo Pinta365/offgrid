@@ -1,7 +1,7 @@
 // deno test --allow-ffi --allow-env --allow-read bindings/deno/mod_test.ts
 // Model tests need OFFGRID_TEST_MODEL / OFFGRID_TEST_EMBED_MODEL; they are skipped otherwise.
 import { assert, assertEquals, assertRejects, assertStringIncludes, assertThrows } from "@std/assert";
-import { Offgrid, audioPart, type ChatRequest, dot, imagePart } from "./mod.ts";
+import { audioPart, type ChatRequest, dot, imagePart, Offgrid } from "./mod.ts";
 
 const chatModel = Deno.env.get("OFFGRID_TEST_MODEL");
 const thinkingModel = Deno.env.get("OFFGRID_TEST_THINKING_MODEL");

@@ -5,7 +5,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use offgrid::{ChatMessage, ChatRequest, ChatResponse, ChatSession, Model, ModelParams, RequestCancel, SessionParams, StreamEvent};
+use offgrid::{
+    ChatMessage, ChatRequest, ChatResponse, ChatSession, Model, ModelParams, RequestCancel, SessionParams, StreamEvent,
+};
 use serde::Serialize;
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -63,10 +65,7 @@ fn find_model(app: &AppHandle) -> Result<PathBuf, String> {
         })
         .collect();
     models.sort();
-    models
-        .into_iter()
-        .next()
-        .ok_or_else(|| format!("no .gguf model in {} (or set OFFGRID_MODEL)", dir.display()))
+    models.into_iter().next().ok_or_else(|| format!("no .gguf model in {} (or set OFFGRID_MODEL)", dir.display()))
 }
 
 fn load(app: &AppHandle, engine: &Engine) -> Result<Status, String> {
@@ -85,11 +84,8 @@ fn open_session(path: &Path) -> Result<(ChatSession, Status), String> {
         .into_iter()
         .find(|d| matches!(d.kind, offgrid::DeviceKind::Gpu | offgrid::DeviceKind::Igpu))
         .map_or_else(|| "CPU".to_string(), |d| d.description);
-    let status = Status::Ready {
-        model: info.name.unwrap_or_else(|| info.description.clone()),
-        device,
-        n_ctx: session.n_ctx(),
-    };
+    let status =
+        Status::Ready { model: info.name.unwrap_or_else(|| info.description.clone()), device, n_ctx: session.n_ctx() };
     Ok((session, status))
 }
 
@@ -118,7 +114,11 @@ async fn chat(
 }
 
 /// Generate a reply to `messages`. `on_delta` returns `false` to stop.
-fn generate(engine: &Engine, messages: Vec<ChatMessage>, mut on_delta: impl FnMut(Delta) -> bool) -> Result<ChatResponse, String> {
+fn generate(
+    engine: &Engine,
+    messages: Vec<ChatMessage>,
+    mut on_delta: impl FnMut(Delta) -> bool,
+) -> Result<ChatResponse, String> {
     let mut session = lock(&engine.session);
     let session = session.as_mut().ok_or("the model is not loaded")?;
     // Taken while holding the session, so Stop can't hit a different request.
