@@ -7,30 +7,44 @@
 //! Judgment tests (when to call, answering from results) run only on OFFGRID_TEST_MODEL:
 //! Llama 3.2 3B re-calls tools instead of answering (llama-server does the same).
 
-use std::sync::{Arc, OnceLock};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use offgrid::*;
 use serde_json::{Value, json};
 
-/// Models trusted to make good tool-use decisions.
-fn judging_models() -> Vec<(&'static str, Arc<Model>)> {
-    models().into_iter().filter(|(v, _)| matches!(*v, "OFFGRID_TEST_MODEL" | "OFFGRID_TEST_GEMMA_MODEL")).collect()
+/// A session with a context that fits small GPUs (the tests' prompts are short).
+fn session(model: Arc<Model>) -> ChatSession {
+    ChatSession::new(model, &SessionParams { n_ctx: 2048, ..Default::default() }).unwrap()
 }
 
-/// Each configured model, loaded once and shared by the tests (they run in parallel).
-fn models() -> Vec<(&'static str, Arc<Model>)> {
-    static MODELS: OnceLock<Vec<(&'static str, Arc<Model>)>> = OnceLock::new();
-    MODELS
-        .get_or_init(|| {
-            ["OFFGRID_TEST_MODEL", "OFFGRID_TEST_LLAMA_MODEL", "OFFGRID_TEST_GEMMA_MODEL"]
-                .iter()
-                .filter_map(|var| {
-                    let path = std::env::var(var).ok()?;
-                    Some((*var, Model::load(path, &ModelParams::default()).expect("model loads")))
-                })
-                .collect()
-        })
-        .clone()
+/// Models trusted to make good tool-use decisions.
+fn judging_models() -> impl Iterator<Item = (&'static str, Arc<Model>)> {
+    models_for(&["OFFGRID_TEST_MODEL", "OFFGRID_TEST_GEMMA_MODEL"])
+}
+
+fn models() -> impl Iterator<Item = (&'static str, Arc<Model>)> {
+    models_for(&["OFFGRID_TEST_MODEL", "OFFGRID_TEST_LLAMA_MODEL", "OFFGRID_TEST_GEMMA_MODEL"])
+}
+
+/// Configured models, loaded one at a time as the caller iterates. A model still in use by
+/// another (parallel) test is shared; otherwise it is loaded again, so a sequential run only
+/// ever holds one model.
+fn models_for(vars: &'static [&'static str]) -> impl Iterator<Item = (&'static str, Arc<Model>)> {
+    static LIVE: OnceLock<Mutex<HashMap<&'static str, Weak<Model>>>> = OnceLock::new();
+    vars.iter().filter_map(|&var| {
+        let path = std::env::var(var).ok()?;
+        let mut live = LIVE.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
+        let model = match live.get(var).and_then(Weak::upgrade) {
+            Some(m) => m,
+            None => {
+                let m = Model::load(path, &ModelParams::default()).expect("model loads");
+                live.insert(var, Arc::downgrade(&m));
+                m
+            }
+        };
+        Some((var, model))
+    })
 }
 
 fn weather_tool() -> Tool {
@@ -94,7 +108,7 @@ fn complete(chat: &mut ChatSession, req: &ChatRequest) -> (ChatResponse, String)
 #[test]
 fn auto_calls_tool_when_useful() {
     for (name, model) in models() {
-        let mut chat = ChatSession::new(model, &SessionParams::default()).unwrap();
+        let mut chat = session(model);
         let req = request(user("What's the weather like in Paris right now?"), None);
         let (r, _) = complete(&mut chat, &req);
         println!("[{name}] {r:?}");
@@ -110,7 +124,7 @@ fn auto_calls_tool_when_useful() {
 #[test]
 fn auto_answers_directly_when_no_tool_fits() {
     for (name, model) in judging_models() {
-        let mut chat = ChatSession::new(model, &SessionParams::default()).unwrap();
+        let mut chat = session(model);
         let (r, streamed) = complete(&mut chat, &request(user("What is 12 times 12? Reply with just the number."), None));
         println!("[{name}] {r:?}");
         assert!(r.tool_calls.is_empty(), "[{name}] unexpected call");
@@ -122,7 +136,7 @@ fn auto_answers_directly_when_no_tool_fits() {
 #[test]
 fn required_and_named_choice() {
     for (name, model) in models() {
-        let mut chat = ChatSession::new(model, &SessionParams::default()).unwrap();
+        let mut chat = session(model);
         let req = request(user("Hello!"), Some(ToolChoice::Required));
         let (r, _) = complete(&mut chat, &req);
         println!("[{name}] required: {r:?}");
@@ -141,7 +155,7 @@ fn required_and_named_choice() {
 #[test]
 fn round_trip_uses_tool_result() {
     for (name, model) in judging_models() {
-        let mut chat = ChatSession::new(model, &SessionParams::default()).unwrap();
+        let mut chat = session(model);
         let mut messages = user("What's the weather in Berlin? Answer in one sentence.");
         let (r, _) = complete(&mut chat, &request(messages.clone(), None));
         assert_eq!(r.finish_reason, FinishReason::ToolCalls, "[{name}] {r:?}");
@@ -161,8 +175,8 @@ fn round_trip_uses_tool_result() {
 
 #[test]
 fn parallel_calls_hermes() {
-    let Some((_, model)) = models().into_iter().find(|(v, _)| *v == "OFFGRID_TEST_MODEL") else { return };
-    let mut chat = ChatSession::new(model, &SessionParams::default()).unwrap();
+    let Some((_, model)) = models_for(&["OFFGRID_TEST_MODEL"]).next() else { return };
+    let mut chat = session(model);
     let req = request(user("What's the weather in Paris and in Tokyo?"), None);
     let (r, _) = complete(&mut chat, &req);
     println!("{r:?}");
@@ -179,7 +193,7 @@ fn parallel_calls_hermes() {
 #[test]
 fn choice_none_hides_tools() {
     for (name, model) in models() {
-        let mut chat = ChatSession::new(model, &SessionParams::default()).unwrap();
+        let mut chat = session(model);
         let req = request(user("What's the weather in Paris?"), Some(ToolChoice::None));
         assert!(!chat.render_prompt(&req).unwrap().contains("get_weather"), "[{name}]");
         let (r, _) = complete(&mut chat, &req);
@@ -192,7 +206,7 @@ fn choice_none_hides_tools() {
 #[test]
 fn tools_visible_in_prompt() {
     for (name, model) in models() {
-        let mut chat = ChatSession::new(model, &SessionParams::default()).unwrap();
+        let mut chat = session(model);
         let prompt = chat.render_prompt(&request(user("hi"), None)).unwrap();
         assert!(prompt.contains("get_weather") && prompt.contains("get_time"), "[{name}] {prompt}");
     }
@@ -203,7 +217,7 @@ fn tool_history_renders_natively() {
     // Assistant tool calls and tool results go through the model's own template, with
     // arguments as objects and JSON results not double-encoded.
     for (name, model) in models() {
-        let mut chat = ChatSession::new(model, &SessionParams::default()).unwrap();
+        let mut chat = session(model);
         let call = ToolCall {
             id: "call_1".into(),
             kind: "function".into(),
