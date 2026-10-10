@@ -75,7 +75,7 @@ impl AppState {
         let chat = match &config.model {
             Some(path) => {
                 let params = ModelParams { mmproj: config.mmproj.clone(), ..config.model_params.clone() };
-                let model = Model::load(path, &params)?;
+                let model = load_model(path, &params)?;
                 let pool = ChatPool::new(model, &config.session, config.parallel)?;
                 Some((model_id(path, &config.alias), pool))
             }
@@ -84,7 +84,7 @@ impl AppState {
         let embed = match &config.embedding_model {
             Some(path) => {
                 let params = ModelParams { mmproj: None, ..config.model_params.clone() };
-                let model = Model::load(path, &params)?;
+                let model = load_model(path, &params)?;
                 let emb = Embedder::new(model, &EmbedParams::default())?;
                 Some((model_id(path, &config.embedding_alias), Arc::new(Mutex::new(emb))))
             }
@@ -317,6 +317,14 @@ async fn embeddings(
         Ok(Err(e)) => ApiError::from_core(e).into_response(),
         Err(e) => ApiError::internal(format!("worker failed: {e}")).into_response(),
     }
+}
+
+fn load_model(path: &std::path::Path, params: &ModelParams) -> offgrid::Result<Arc<Model>> {
+    log::info!("loading {}", path.display());
+    let start = std::time::Instant::now();
+    let model = Model::load(path, params)?;
+    log::info!("loaded {} in {:.1}s", path.display(), start.elapsed().as_secs_f64());
+    Ok(model)
 }
 
 /// Parse a `--gpu-layers` value: `all`, `none` or a count.

@@ -89,6 +89,9 @@ fn main() {
         log::warn!("listening on {addr} without --api-key: anyone on the network can use this server");
     }
 
+    for d in offgrid::devices() {
+        log::info!("device {} ({:?}): {}", d.name, d.kind, d.description);
+    }
     let state = AppState::load(&config).unwrap_or_else(|e| fail(format!("startup failed: {e}")));
     let runtime = tokio::runtime::Runtime::new().unwrap_or_else(|e| fail(e.to_string()));
     runtime.block_on(async move {
@@ -129,24 +132,32 @@ async fn shutdown_signal() {
     }
 }
 
-/// Minimal stderr logger; level from OFFGRID_LOG (default: info for the server, warn for llama.cpp).
+/// Minimal stderr logger with seconds since start. OFFGRID_LOG sets the level for the server
+/// and llama.cpp; unset, the server logs info and llama.cpp warnings.
 fn init_logging() {
-    struct Logger(log::LevelFilter);
+    struct Logger {
+        level: log::LevelFilter,
+        llama: log::LevelFilter,
+        start: std::time::Instant,
+    }
     impl log::Log for Logger {
         fn enabled(&self, m: &log::Metadata) -> bool {
-            let level = if m.target() == "llama.cpp" { self.0.min(log::LevelFilter::Warn) } else { self.0 };
-            m.level() <= level
+            m.level() <= if m.target() == "llama.cpp" { self.llama } else { self.level }
         }
         fn log(&self, r: &log::Record) {
             if self.enabled(r.metadata()) {
-                eprintln!("[{} {}] {}", r.level(), r.target(), r.args());
+                let t = self.start.elapsed().as_secs_f64();
+                eprintln!("[{t:7.2}s {} {}] {}", r.level(), r.target(), r.args());
             }
         }
         fn flush(&self) {}
     }
-    let level = std::env::var("OFFGRID_LOG").ok().and_then(|v| v.parse().ok()).unwrap_or(log::LevelFilter::Info);
-    if log::set_logger(Box::leak(Box::new(Logger(level)))).is_ok() {
-        log::set_max_level(level);
+    let env = std::env::var("OFFGRID_LOG").ok().and_then(|v| v.parse().ok());
+    let level = env.unwrap_or(log::LevelFilter::Info);
+    let llama = env.unwrap_or(log::LevelFilter::Warn);
+    let logger = Logger { level, llama, start: std::time::Instant::now() };
+    if log::set_logger(Box::leak(Box::new(logger))).is_ok() {
+        log::set_max_level(level.max(llama));
     }
 }
 
