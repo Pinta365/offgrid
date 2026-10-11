@@ -1,37 +1,159 @@
-# offgrid for Deno
+# @pinta365/offgrid
 
-FFI bindings to `liboffgrid` (see the repo root README). Long-running calls use `nonblocking` FFI, so they return
-Promises and never block the event loop; tokens stream back through a thread-safe callback.
+Local, offline AI for Deno: chat, tool calling, structured JSON output, embeddings, and image and audio input, running
+GGUF models through [llama.cpp](https://github.com/ggml-org/llama.cpp) on any GPU (Vulkan) or the CPU. Inference runs
+in-process through FFI. There's no server, no cloud, and model files are always local paths.
+
+This is the Deno binding of [offgrid](https://github.com/Pinta365/offgrid).
 
 ```ts
-import { Offgrid } from "./mod.ts";
+import { Offgrid } from "jsr:@pinta365/offgrid";
 
-using core = Offgrid.open(); // $OFFGRID_LIB, else ../../target/{release,debug}
-using model = await core.loadModel("model.gguf", { gpu_layers: "all" });
-using chat = await model.createChat({ n_ctx: 8192 });
+using core = await Offgrid.load(); // finds or downloads the native library (see below)
+using model = await core.loadModel("Qwen3-4B-Instruct-2507-Q4_K_M.gguf");
+using chat = await model.createChat();
 
 const res = await chat.complete(
-  { messages: [{ role: "user", content: "Hi!" }], max_tokens: 200 },
-  { onToken: (t) => void Deno.stdout.writeSync(new TextEncoder().encode(t)), signal: AbortSignal.timeout(10_000) },
+  { messages: [{ role: "user", content: "Name three rivers." }], max_tokens: 200 },
+  { onToken: (t) => void Deno.stdout.writeSync(new TextEncoder().encode(t)) },
 );
 console.log(res.finish_reason, res.usage);
-
-for await (const piece of chat.stream({ messages: [{ role: "user", content: "Tell me a story" }] })) {
-  // breaking out of the loop cancels generation
-}
-
-using embedModel = await core.loadModel("embed.gguf");
-using emb = await embedModel.createEmbedder();
-const [a, b] = await emb.embed(["first text", "second text"]); // Float32Array, normalized
 ```
 
-Permissions: `--allow-ffi --allow-env --allow-read`.
+```sh
+deno run --allow-ffi --allow-env --allow-read --allow-write --allow-net=github.com,release-assets.githubusercontent.com app.ts
+```
 
-Rules:
+## The native library
 
-- One request at a time per `ChatSession`/`Embedder` (a second concurrent call throws "busy"). Create several sessions
+The package is TypeScript; the inference engine is a native library (about 20–26 MB with its GPU and CPU backends).
+`Offgrid.load()` looks for it in this order and uses the first one found:
+
+1. The `path` argument: `Offgrid.load("/opt/myapp/offgrid/lib/liboffgrid.so")`.
+2. The `OFFGRID_LIB` environment variable.
+3. A build in the offgrid repository (`target/release` or `target/debug`), when the binding is used from a checkout.
+4. The download cache.
+5. **Otherwise it downloads it**, once:
+   - It fetches the prebuilt package for your platform from the
+     [GitHub release](https://github.com/Pinta365/offgrid/releases) with the same version as this package
+     (`offgrid-<version>-linux-x86_64.tar.gz` or `offgrid-<version>-windows-x86_64.tar.gz`).
+   - It checks the archive's SHA-256 against the checksum published inside this package, and refuses it if it doesn't
+     match.
+   - It unpacks it into the cache and loads it from there. Later runs use the cached copy and need no network.
+
+Only the library is ever downloaded. Models are never downloaded; you pass paths to GGUF files you provide.
+
+**Cache location** (override with `OFFGRID_CACHE`):
+
+| OS      | Default                                            |
+| ------- | -------------------------------------------------- |
+| Linux   | `$XDG_CACHE_HOME/offgrid`, else `~/.cache/offgrid` |
+| Windows | `%LOCALAPPDATA%\offgrid`                           |
+
+Each version gets its own folder (`<cache>/<version>/<platform>/`); deleting it forces a fresh download.
+
+**Supported platforms:** Linux x86_64 (glibc 2.28+, e.g. Ubuntu 20.04+, Debian 10+, RHEL 8+) and Windows x86_64. On
+other platforms, build the library from source and point `OFFGRID_LIB` at it.
+
+### Permissions
+
+|                 | First run (download)                              | Later runs, or with `OFFGRID_LIB` |
+| --------------- | ------------------------------------------------- | --------------------------------- |
+| `--allow-ffi`   | yes                                               | yes                               |
+| `--allow-env`   | yes (library and cache lookup)                    | yes                               |
+| `--allow-read`  | yes                                               | yes                               |
+| `--allow-write` | yes (the cache)                                   | no                                |
+| `--allow-net`   | `github.com,release-assets.githubusercontent.com` | no                                |
+
+### Offline and bundled apps
+
+`Offgrid.open()` is the same lookup **without** step 5: it never touches the network, and falls back to the system
+library search path. For an app that must run offline from the start (or a `deno compile` binary), ship the unpacked
+release package next to it and point at it:
+
+```ts
+import { dirname, join } from "jsr:@std/path";
+
+using core = Offgrid.open(join(dirname(Deno.execPath()), "offgrid", "lib", "liboffgrid.so"));
+```
+
+or set `OFFGRID_LIB` (on Windows: `...\offgrid\bin\offgrid.dll`). Keep the package folder together: the library loads
+its GPU and CPU backends from the files next to it.
+
+To fill the cache ahead of time, for example in a setup or install step, call `await downloadLibrary()`.
+
+## Usage
+
+**Streaming** with an `AsyncGenerator`; breaking out of the loop cancels generation:
+
+```ts
+for await (const piece of chat.stream({ messages: [{ role: "user", content: "Tell me a story." }] })) {
+  Deno.stdout.writeSync(new TextEncoder().encode(piece));
+}
+```
+
+**Cancellation**: pass `signal` (an `AbortSignal`) to `complete` or `stream`, or call `chat.cancel()`.
+
+**Reasoning models** (Qwen3 thinking mode, ...): `onReasoning` streams the `<think>` text; the response has it as
+`reasoning_content`.
+
+**Structured output**: `response_format: { type: "json_schema", json_schema: { schema } }` makes the output valid JSON
+for the schema.
+
+**Tool calling** with OpenAI-style `tools`; `runTools` runs the call, execute, answer loop:
+
+```ts
+const { response } = await chat.runTools(
+  {
+    messages: [{ role: "user", content: "What is 1234 * 5678?" }],
+    tools: [{
+      type: "function",
+      function: {
+        name: "multiply",
+        parameters: { type: "object", properties: { a: { type: "integer" }, b: { type: "integer" } } },
+      },
+    }],
+  },
+  { multiply: ({ a, b }) => ({ product: (a as number) * (b as number) }) },
+);
+```
+
+**Images and audio** need the model's projector (`mmproj-*.gguf`):
+
+```ts
+import { imagePart } from "jsr:@pinta365/offgrid";
+
+using vl = await core.loadModel("Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf", { mmproj: "mmproj-Qwen2.5-VL-3B.gguf" });
+using vchat = await vl.createChat();
+const r = await vchat.complete({
+  messages: [{
+    role: "user",
+    content: [{ type: "text", text: "What's in this picture?" }, await imagePart("photo.jpg")],
+  }],
+});
+```
+
+`audioPart()` does the same for WAV, MP3 and FLAC with an audio-capable model.
+
+**Embeddings**:
+
+```ts
+import { dot } from "jsr:@pinta365/offgrid";
+
+using embedModel = await core.loadModel("Qwen3-Embedding-0.6B-Q8_0.gguf");
+using emb = await embedModel.createEmbedder();
+const [a, b] = await emb.embed(["The cat sits on the mat.", "A kitten rests on a rug."]); // normalized
+console.log(dot(a, b)); // cosine similarity
+```
+
+**GPU**: Vulkan is used automatically when available, with a fallback to the CPU. `core.devices()` lists the devices;
+`loadModel(path, { gpu_layers: "none" })` forces the CPU and `{ devices: ["Vulkan0"] }` picks a GPU. Logging:
+`OFFGRID_LOG=debug`.
+
+## Rules
+
+- One request at a time per `ChatSession` or `Embedder`; a second concurrent call throws "busy". Create several sessions
   for parallel work.
-- Handles are `Disposable` (`using`); a session keeps its model alive natively.
-- `free()` throws while a request is running; cancel and await it first.
-
-Tests: `OFFGRID_TEST_MODEL=… OFFGRID_TEST_EMBED_MODEL=… deno task test`
+- Handles are `Disposable` (`using`). A session keeps its model alive natively.
+- `free()` throws while a request is running; cancel it and await it first.
+- Calls run off the JS thread (`nonblocking` FFI), so they never block the event loop.

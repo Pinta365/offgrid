@@ -35,7 +35,7 @@ jobs:
           (cd examples/tauri/src-tauri && cargo fmt -- --check)
       - name: deno fmt, lint, check
         run: |
-          (cd bindings/deno && deno fmt --check && deno lint && deno check mod.ts mod_test.ts)
+          (cd bindings/deno && deno fmt --check && deno lint && deno check mod.ts mod_test.ts native.ts native_test.ts && deno publish --dry-run --allow-dirty)
           deno fmt --check --line-width 120 examples/deno scripts/openai-compat.ts
           deno lint examples/deno scripts/openai-compat.ts
           deno check examples/deno/*.ts scripts/openai-compat.ts

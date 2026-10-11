@@ -1,7 +1,7 @@
 name: Release
 
-# Push a tag matching the crate version (e.g. v0.1.0) to build both packages and create a draft
-# GitHub release with them attached. Publish the draft by hand.
+# Push a tag matching the crate version (e.g. v0.2.0) to build both packages and create a draft
+# GitHub release with them attached. Publishing the draft by hand runs publish.yml.
 on:
   push:
     tags: ["v*"]
@@ -25,6 +25,8 @@ jobs:
           version=$(cargo metadata --no-deps --format-version 1 \
             | jq -r '.packages[] | select(.name == "offgrid-ffi") | .version')
           [ "$GITHUB_REF_NAME" = "v$version" ] || { echo "::error::tag $GITHUB_REF_NAME != v$version"; exit 1; }
+          [ "$(jq -r .version bindings/deno/deno.json)" = "$version" ] \
+            || { echo "::error::bindings/deno/deno.json version != $version"; exit 1; }
       - uses: actions/download-artifact@v4
         with:
           path: dist

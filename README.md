@@ -44,6 +44,9 @@ Windows.
 
 ### Rust (or Tauri)
 
+`cargo add offgrid` (builds llama.cpp from source: CMake, a C/C++ compiler and, for the default
+`vulkan` feature, the Vulkan headers and `glslc`; `default-features = false` for CPU only).
+
 ```rust
 use offgrid::*;
 
@@ -93,9 +96,9 @@ ABI version: `offgrid_abi_version()` (currently 1). Examples are in `examples/c/
 ### Deno
 
 ```ts
-import { Offgrid, imagePart } from "./bindings/deno/mod.ts";
+import { Offgrid, imagePart } from "jsr:@pinta365/offgrid";
 
-using core = Offgrid.open();                       // finds liboffgrid next to the repo, or $OFFGRID_LIB
+using core = await Offgrid.load();  // $OFFGRID_LIB, the cache, or a one-time verified download of the release package
 using model = await core.loadModel("qwen3-4b.gguf");
 using chat = await model.createChat();
 
@@ -111,7 +114,9 @@ Calls are nonblocking, so the event loop keeps running. The binding also offers:
 - `imagePart()` and `audioPart()` helpers
 - `Disposable` handles that guard against freeing while a call is in flight
 
-Examples are in `examples/deno/`.
+`Offgrid.load()` downloads this version's prebuilt package from the GitHub release on first use, checks its
+SHA-256 and caches it; `Offgrid.open()` and `OFFGRID_LIB` never touch the network. See the
+[package README](bindings/deno/README.md) for the details and permissions. Examples are in `examples/deno/`.
 
 ### HTTP (any language): `offgrid-server`
 

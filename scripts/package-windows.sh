@@ -22,7 +22,7 @@ PKG="$ROOT/dist/$PKG_NAME"
 ZIPFILE="$ROOT/dist/$PKG_NAME.zip"
 
 # Remove previous output first so a failed build can't leave a stale package behind.
-rm -rf "$PKG" "$ZIPFILE"
+rm -rf "$PKG" "$ZIPFILE" "${ZIPFILE%.zip}.tar.gz"
 
 echo ">> building offgrid-ffi ${VERSION} for ${TARGET} with --features dynamic-backends"
 # Ask cargo which offgrid-sys build-script output this build actually used; several
@@ -143,6 +143,8 @@ if command -v zip >/dev/null 2>&1; then
 else
     (cd "$ROOT/dist" && python3 -m zipfile -c "$(basename "$ZIPFILE")" "$PKG_NAME")
 fi
+# Same contents as .tar.gz, for the Deno binding's download (Deno can't unpack zip).
+tar -C "$ROOT/dist" -czf "${ZIPFILE%.zip}.tar.gz" "$PKG_NAME"
 
 echo
 echo ">> size summary"

@@ -2,7 +2,8 @@
  * Deno bindings for offgrid (embeddable offline AI core).
  *
  * Long-running calls run off the JS thread via `nonblocking` FFI and return Promises.
- * Requires `--allow-ffi` (and `--allow-env`/`--allow-read` to locate the library).
+ * Needs `--allow-ffi --allow-env --allow-read`; `Offgrid.load()` also needs `--allow-net` and
+ * `--allow-write` the first time, to download and cache the native library.
  * @module
  */
 
@@ -21,7 +22,16 @@ import type {
   VersionInfo,
 } from "./types.ts";
 
+import { cachedLibPath, downloadLibrary, localLibPath } from "./native.ts";
+
 export type * from "./types.ts";
+export { cacheRoot, downloadLibrary } from "./native.ts";
+
+const LIB_FILE = Deno.build.os === "windows"
+  ? "offgrid.dll"
+  : Deno.build.os === "darwin"
+  ? "liboffgrid.dylib"
+  : "liboffgrid.so";
 
 /** ABI version these bindings were written against. */
 export const ABI_VERSION = 1;
@@ -126,29 +136,6 @@ class ErrorSlot {
 }
 
 /** file: URL to a native path (decodes %XX, handles Windows drive letters). */
-function fromFileUrl(url: URL): string {
-  const path = decodeURIComponent(url.pathname);
-  return Deno.build.os === "windows" ? path.replace(/^\/([A-Za-z]:)/, "$1").replaceAll("/", "\\") : path;
-}
-
-function defaultLibPath(): string {
-  const env = Deno.env.get("OFFGRID_LIB");
-  if (env) return env;
-  const file = Deno.build.os === "windows"
-    ? "offgrid.dll"
-    : Deno.build.os === "darwin"
-    ? "liboffgrid.dylib"
-    : "liboffgrid.so";
-  for (const profile of ["release", "debug"]) {
-    const url = new URL(`../../target/${profile}/${file}`, import.meta.url);
-    try {
-      Deno.statSync(url);
-      return fromFileUrl(url);
-    } catch { /* try next */ }
-  }
-  return file; // fall back to the system loader search path
-}
-
 /** Handle to the loaded native library. */
 export class Offgrid implements Disposable {
   readonly #dylib: Deno.DynamicLibrary<typeof symbols>;
@@ -160,8 +147,23 @@ export class Offgrid implements Disposable {
     this.lib = dylib.symbols;
   }
 
-  /** Load the native library. Path defaults to `$OFFGRID_LIB`, then the repo's target/ dir. */
-  static open(path: string = defaultLibPath()): Offgrid {
+  /**
+   * Load the native library, downloading this version's release package on first use.
+   *
+   * The library is looked up in order: `path`, `$OFFGRID_LIB`, this repository's `target/` dir,
+   * the download cache (`$OFFGRID_CACHE`, else the platform cache dir). If none has it, the
+   * matching package is downloaded from the GitHub release, its SHA-256 checked, and cached.
+   */
+  static async load(path?: string): Promise<Offgrid> {
+    return Offgrid.open(path ?? localLibPath() ?? cachedLibPath() ?? await downloadLibrary());
+  }
+
+  /**
+   * Load the native library without downloading: `path`, `$OFFGRID_LIB`, this repository's
+   * `target/` dir, the download cache, then the system library search path.
+   */
+  static open(path?: string): Offgrid {
+    path ??= localLibPath() ?? cachedLibPath() ?? LIB_FILE;
     const dylib = Deno.dlopen(path, symbols);
     const abi = dylib.symbols.offgrid_abi_version();
     if (abi !== ABI_VERSION) {

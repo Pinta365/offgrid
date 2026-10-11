@@ -104,5 +104,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: offgrid-windows-x86_64
-          path: dist/offgrid-*-windows-x86_64.zip
+          path: |
+            dist/offgrid-*-windows-x86_64.zip
+            dist/offgrid-*-windows-x86_64.tar.gz
           if-no-files-found: error

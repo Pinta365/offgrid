@@ -1204,7 +1204,7 @@ dependencies = [
 
 [[package]]
 name = "offgrid"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "jsonschema",
  "libc",
@@ -1220,7 +1220,7 @@ dependencies = [
 
 [[package]]
 name = "offgrid-ffi"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "cbindgen",
  "log",
@@ -1231,7 +1231,7 @@ dependencies = [
 
 [[package]]
 name = "offgrid-server"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -1248,7 +1248,7 @@ dependencies = [
 
 [[package]]
 name = "offgrid-sys"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "bindgen",
  "cmake",

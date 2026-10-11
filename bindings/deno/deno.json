@@ -1,9 +1,13 @@
 {
   "name": "@pinta365/offgrid",
-  "version": "0.1.0",
+  "version": "0.2.0",
+  "license": "MIT",
   "exports": "./mod.ts",
+  "publish": {
+    "include": ["mod.ts", "types.ts", "native.ts", "release.ts", "README.md"]
+  },
   "tasks": {
-    "test": "deno test --allow-ffi --allow-env --allow-read mod_test.ts"
+    "test": "deno test --allow-ffi --allow-env --allow-read --allow-write --allow-net=127.0.0.1 mod_test.ts native_test.ts"
   },
   "fmt": {
     "lineWidth": 120
@@ -16,6 +20,8 @@
     }
   },
   "imports": {
-    "@std/assert": "jsr:@std/assert@^1"
+    "@std/assert": "jsr:@std/assert@^1",
+    "@std/path": "jsr:@std/path@^1",
+    "@std/tar": "jsr:@std/tar@^0.1"
   }
 }
