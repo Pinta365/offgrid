@@ -1250,7 +1250,7 @@ mod tests {
     /// get the polyfill and render a whole tool conversation with it.
     #[test]
     fn tool_polyfill_over_template_corpus() {
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../vendor/llama.cpp/models/templates");
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../offgrid-sys/llama.cpp/models/templates");
         let base = RenderArgs {
             messages: &serde_json::Value::Null,
             tools: None,

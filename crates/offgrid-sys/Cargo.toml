@@ -4,8 +4,42 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 links = "llama"
+rust-version.workspace = true
+repository.workspace = true
 description = "Low-level FFI bindings to llama.cpp (Vulkan/CPU), built from source."
+keywords = ["llama", "llm", "gguf", "ffi", "vulkan"]
+categories = ["external-ffi-bindings"]
 build = "build.rs"
+# The parts of the llama.cpp submodule the build uses (core, ggml CPU/Vulkan/CUDA, mtmd).
+include = [
+    "/Cargo.toml",
+    "/README.md",
+    "/build.rs",
+    "/src/**",
+    "/tests/**",
+    "/windows/**",
+    "/llama.cpp/LICENSE",
+    "/llama.cpp/licenses/**",
+    "/llama.cpp/CMakeLists.txt",
+    "/llama.cpp/cmake/**",
+    "/llama.cpp/include/**",
+    "/llama.cpp/src/**",
+    "/llama.cpp/ggml/CMakeLists.txt",
+    "/llama.cpp/ggml/cmake/**",
+    "/llama.cpp/ggml/include/**",
+    "/llama.cpp/ggml/src/*.*",
+    "/llama.cpp/ggml/src/CMakeLists.txt",
+    "/llama.cpp/ggml/src/ggml-cpu/**",
+    "/llama.cpp/ggml/src/ggml-vulkan/**",
+    "/llama.cpp/ggml/src/ggml-cuda/**",
+    "/llama.cpp/tools/mtmd/**",
+    "/llama.cpp/vendor/CMakeLists.txt",
+    "/llama.cpp/vendor/hash/**",
+    "/llama.cpp/vendor/miniaudio/**",
+    "/llama.cpp/vendor/nlohmann/**",
+    "/llama.cpp/vendor/sheredom/**",
+    "/llama.cpp/vendor/stb/**",
+]
 
 [features]
 default = ["vulkan"]

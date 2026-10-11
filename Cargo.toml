@@ -6,12 +6,13 @@ members = ["crates/*"]
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
+repository = "https://github.com/Pinta365/offgrid"
 # let-chains (`if ... && let ...`) need 1.88
 rust-version = "1.88"
 
 [workspace.dependencies]
-offgrid-sys = { path = "crates/offgrid-sys", default-features = false }
-offgrid = { path = "crates/offgrid", default-features = false }
+offgrid-sys = { path = "crates/offgrid-sys", version = "0.1.0", default-features = false }
+offgrid = { path = "crates/offgrid", version = "0.1.0", default-features = false }
 
 [profile.release]
 lto = "thin"

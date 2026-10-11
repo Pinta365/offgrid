@@ -75,6 +75,12 @@ jobs:
         run: |
           cargo build -p offgrid-ffi
           (cd bindings/deno && deno task test)
+      - name: Crates package (offgrid-sys must stay under crates.io's 10 MB limit)
+        run: |
+          cargo package -p offgrid-sys -p offgrid -p offgrid-server --no-verify
+          size=$(stat -c %s target/package/offgrid-sys-*.crate)
+          echo "offgrid-sys crate: $((size / 1048576)) MB"
+          [ "$size" -lt $((8 * 1048576)) ]
       - name: C examples
         run: make -C examples/c LIBDIR=../../target/debug chat embed cancel
       - name: Smoke model

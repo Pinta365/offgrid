@@ -325,29 +325,13 @@ mod tests {
     use serde_json::json;
     use std::path::PathBuf;
 
-    /// Locate the repository root so tests can read the real chat templates.
-    fn repo_root() -> PathBuf {
-        let mut cands: Vec<PathBuf> = Vec::new();
-        let f = std::path::Path::new(file!());
-        if f.is_absolute()
-            && let Some(b) = f.parent().and_then(|p| p.parent()).and_then(|p| p.parent()).and_then(|p| p.parent())
-        {
-            cands.push(b.to_path_buf());
-        }
-        let m = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        cands.push(m.join("../.."));
-        cands.push(m.clone());
-        cands.push(m.join(".."));
-        for c in cands {
-            if c.join("vendor/llama.cpp").is_dir() {
-                return c;
-            }
-        }
-        PathBuf::from(".")
+    /// llama.cpp's chat template corpus (in the offgrid-sys crate).
+    fn templates_dir() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../offgrid-sys/llama.cpp/models/templates")
     }
 
     fn template(name: &str) -> String {
-        let p = repo_root().join("vendor/llama.cpp/models/templates").join(name);
+        let p = templates_dir().join(name);
         std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("cannot read {}: {e}", p.display()))
     }
 

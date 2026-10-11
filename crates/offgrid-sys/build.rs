@@ -8,7 +8,7 @@ fn main() {
 
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let llama_dir = {
-        let p = manifest_dir.join("../../vendor/llama.cpp");
+        let p = manifest_dir.join("llama.cpp");
         let p = p.canonicalize().unwrap_or(p);
         // Windows canonicalize() yields a `\\?\` verbatim path, which CMake's ExternalProject rejects.
         match p.to_str().and_then(|s| s.strip_prefix(r"\\?\")) {
@@ -24,9 +24,12 @@ fn main() {
     for header in ["tools/mtmd/mtmd.h", "tools/mtmd/mtmd-helper.h", "ggml/include/ggml.h"] {
         println!("cargo:rerun-if-changed={}", llama_dir.join(header).display());
     }
-    let submodule_head = manifest_dir.join("../../.git/modules/vendor/llama.cpp/HEAD");
-    if submodule_head.exists() {
-        println!("cargo:rerun-if-changed={}", submodule_head.display());
+    // In a git checkout, llama.cpp/.git points at the submodule's git dir.
+    let submodule_head = std::fs::read_to_string(llama_dir.join(".git"))
+        .ok()
+        .and_then(|s| s.trim().strip_prefix("gitdir:").map(|d| llama_dir.join(d.trim()).join("HEAD")));
+    if let Some(head) = submodule_head.filter(|h| h.exists()) {
+        println!("cargo:rerun-if-changed={}", head.display());
     }
 
     let vulkan = env::var_os("CARGO_FEATURE_VULKAN").is_some();

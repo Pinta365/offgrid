@@ -1,7 +1,7 @@
 # offgrid-sys
 
 Raw bindgen bindings to [llama.cpp](https://github.com/ggml-org/llama.cpp) and mtmd, built
-from the pinned `vendor/llama.cpp` submodule (always in CMake `Release`). The safe wrapper is
+from the pinned `llama.cpp` submodule (always in CMake `Release`). The safe wrapper is
 the `offgrid` crate.
 
 On Windows laptops with an AMD iGPU plus another GPU, AMD's switchable-graphics Vulkan layer
@@ -41,10 +41,10 @@ cargo build -p offgrid-sys --no-default-features
 ## Bumping the pinned llama.cpp commit
 
 ```bash
-cd vendor/llama.cpp
+cd crates/offgrid-sys/llama.cpp
 git fetch --depth 1 origin <new-commit-sha>
 git checkout <new-commit-sha>
-cd ../..
-git add vendor/llama.cpp
+cd ../../..
+git add crates/offgrid-sys/llama.cpp
 cargo clean -p offgrid-sys && cargo build -p offgrid-sys
 ```

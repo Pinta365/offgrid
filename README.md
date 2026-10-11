@@ -21,7 +21,7 @@ Windows.
                                   offgrid  (safe Rust core)
                    sessions · KV-cache reuse · templates · grammars · tools · media
                                                │
-                     offgrid-sys ── llama.cpp + mtmd (vendor/, pinned commit)
+                     offgrid-sys ── llama.cpp + mtmd (pinned submodule)
                                    └─ backends loaded at runtime:
                                       Vulkan · 14 CPU variants · (CUDA)
 ```
@@ -271,12 +271,11 @@ Model-backed tests are enabled through environment variables pointing at GGUF fi
 
 | Path | Contents |
 |---|---|
-| `crates/offgrid-sys` | bindgen bindings to llama.cpp and mtmd; builds `vendor/llama.cpp` with CMake |
+| `crates/offgrid-sys` | bindgen bindings to llama.cpp and mtmd; builds the pinned `llama.cpp` submodule with CMake |
 | `crates/offgrid` | Safe Rust core: models, sessions, templates, grammars, tools, media, embeddings |
 | `crates/offgrid-ffi` | C ABI (`liboffgrid`) and the generated `include/offgrid.h` |
 | `crates/offgrid-server` | OpenAI-compatible HTTP server |
 | `bindings/deno` | Deno binding and its tests |
 | `examples/` | C, Deno and Tauri examples (Rust examples are in `crates/offgrid/examples/`) |
 | `scripts/` | Packaging and check scripts, cross-compile environment, OpenAI SDK compatibility check |
-| `vendor/llama.cpp` | Pinned llama.cpp submodule |
 | `spike/` | Benchmark notes, test images and audio (models are gitignored) |

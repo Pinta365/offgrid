@@ -316,7 +316,7 @@ mod tests {
     /// Every template in llama.cpp's corpus must render a plain conversation.
     #[test]
     fn llama_cpp_template_corpus() {
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../vendor/llama.cpp/models/templates");
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../offgrid-sys/llama.cpp/models/templates");
         let messages = json!([
             {"role": "system", "content": "You are helpful."},
             {"role": "user", "content": "Hi there"},

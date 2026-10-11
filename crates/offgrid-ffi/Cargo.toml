@@ -5,6 +5,8 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+# Shipped as the C library in the release packages, not on crates.io.
+publish = false
 
 [lib]
 # Produces liboffgrid.so / offgrid.dll / liboffgrid.a
