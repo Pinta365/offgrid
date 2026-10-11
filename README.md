@@ -207,9 +207,11 @@ Cross-compiling for Windows needs [llvm-mingw](https://github.com/mstorsjo/llvm-
 (`mise install zig@0.16.0`) and `cargo install cargo-zigbuild` when they are available.
 
 Building natively on Windows (MSVC) needs Visual Studio Build Tools with the
-C++ workload, CMake, the [Vulkan SDK](https://vulkan.lunarg.com/) (`VULKAN_SDK` set by its
-installer) and LLVM for bindgen (`LIBCLANG_PATH` if it isn't found). Clone with
-`--recursive`, then `cargo build --release`.
+C++ workload, CMake and the [Vulkan SDK](https://vulkan.lunarg.com/) (`VULKAN_SDK` set by its
+installer). Clone with `--recursive`, then `cargo build --release`.
+
+The bindings to llama.cpp are committed (`crates/offgrid-sys/src/bindings`), so building doesn't
+need libclang. After bumping llama.cpp, regenerate them with `scripts/gen-bindings.sh`.
 
 ## Testing
 

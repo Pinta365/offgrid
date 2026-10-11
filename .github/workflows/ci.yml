@@ -67,6 +67,8 @@ jobs:
       - uses: denoland/setup-deno@v2
         with:
           deno-version: v2.x
+      - name: Committed bindings match llama.cpp
+        run: scripts/gen-bindings.sh --check linux
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Tests (model tests skip without models)

@@ -14,6 +14,7 @@ initializing; code calling `llama_backend_init` directly should do the same.
 |---|---|---|
 | `vulkan` | yes | Enables the GGML Vulkan backend (`GGML_VULKAN=ON`) and links `vulkan`. |
 | `cuda` | no | Enables the GGML CUDA backend (`GGML_CUDA=ON`). Requires a CUDA toolkit. |
+| `bindgen` | no | Regenerate the bindings with bindgen (needs libclang) instead of using the committed `src/bindings/{linux,windows}.rs`; required on other targets. |
 | `dynamic-backends` | no | Shared libs with runtime-loaded backends and all CPU variants (used by the packages). |
 
 CPU-only builds: `cargo build -p offgrid-sys --no-default-features`.
@@ -45,6 +46,7 @@ cd crates/offgrid-sys/llama.cpp
 git fetch --depth 1 origin <new-commit-sha>
 git checkout <new-commit-sha>
 cd ../../..
-git add crates/offgrid-sys/llama.cpp
+scripts/gen-bindings.sh            # regenerate src/bindings/{linux,windows}.rs
+git add crates/offgrid-sys/llama.cpp crates/offgrid-sys/src/bindings
 cargo clean -p offgrid-sys && cargo build -p offgrid-sys
 ```

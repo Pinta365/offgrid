@@ -32,12 +32,20 @@ fn main() {
         println!("cargo:rerun-if-changed={}", head.display());
     }
 
+    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
+    write_bindings(&manifest_dir, &llama_dir, &target_os, &out_dir.join("bindings.rs"));
+    if env::var_os("OFFGRID_SYS_WRITE_BINDINGS").is_some() {
+        // Regenerating the committed bindings only (scripts/gen-bindings.sh): skip the llama.cpp build.
+        println!("cargo:rustc-env=OFFGRID_SYS_BACKEND_DIR=");
+        return;
+    }
+
     let vulkan = env::var_os("CARGO_FEATURE_VULKAN").is_some();
     let cuda = env::var_os("CARGO_FEATURE_CUDA").is_some();
     // Portable mode: shared libs + backends as runtime-loaded modules + every CPU variant.
     let dynamic = env::var_os("CARGO_FEATURE_DYNAMIC_BACKENDS").is_some();
     let native = env::var("OFFGRID_NATIVE").map(|v| v == "1").unwrap_or(false);
-    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let msvc = env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc");
     let unix_like = matches!(target_os.as_str(), "linux" | "freebsd" | "netbsd" | "openbsd" | "dragonfly");
 
@@ -120,7 +128,25 @@ fn main() {
         println!("cargo:rustc-env=OFFGRID_SYS_BACKEND_DIR=");
         link_static(&dst, vulkan, cuda, &target_os);
     }
+}
 
+/// Bindings for `target_os`: the committed `src/bindings/<os>.rs`, or freshly generated with the
+/// `bindgen` feature (which also writes them to `$OFFGRID_SYS_WRITE_BINDINGS` when set).
+#[cfg(not(feature = "bindgen"))]
+fn write_bindings(manifest_dir: &Path, _llama_dir: &Path, target_os: &str, out: &Path) {
+    let os = match target_os {
+        "windows" => "windows",
+        "linux" => "linux",
+        other => panic!("offgrid-sys: no pregenerated bindings for {other}; enable the `bindgen` feature"),
+    };
+    let src = manifest_dir.join("src/bindings").join(format!("{os}.rs"));
+    println!("cargo:rerun-if-changed={}", src.display());
+    std::fs::copy(&src, out).expect("offgrid-sys: failed to copy pregenerated bindings");
+}
+
+#[cfg(feature = "bindgen")]
+fn write_bindings(_manifest_dir: &Path, llama_dir: &Path, _target_os: &str, out: &Path) {
+    println!("cargo:rerun-if-env-changed=OFFGRID_SYS_WRITE_BINDINGS");
     let bindings = bindgen::Builder::default()
         .header_contents("offgrid_sys.h", "#include \"llama.h\"\n#include \"mtmd.h\"\n#include \"mtmd-helper.h\"\n")
         .clang_arg(format!("-I{}", llama_dir.join("include").display()))
@@ -129,11 +155,13 @@ fn main() {
         .allowlist_function("llama_.*|ggml_backend_.*|ggml_log_.*|mtmd_.*")
         .allowlist_type("llama_.*|ggml_.*|mtmd_.*")
         .allowlist_var("LLAMA_.*")
+        .formatter(bindgen::Formatter::Prettyplease)
         .generate()
         .expect("offgrid-sys: bindgen failed to generate bindings");
-
-    let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
-    bindings.write_to_file(out_dir.join("bindings.rs")).expect("offgrid-sys: failed to write bindings.rs");
+    bindings.write_to_file(out).expect("offgrid-sys: failed to write bindings.rs");
+    if let Some(dest) = env::var_os("OFFGRID_SYS_WRITE_BINDINGS") {
+        std::fs::copy(out, dest).expect("offgrid-sys: failed to write OFFGRID_SYS_WRITE_BINDINGS");
+    }
 }
 
 /// Cross-compiling ggml-vulkan for Windows from Linux without a Vulkan SDK: use the

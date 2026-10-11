@@ -96,6 +96,8 @@ jobs:
           max-size: 2G
       - name: Package (cross-compiled with llvm-mingw)
         run: scripts/package-windows.sh
+      - name: Committed Windows bindings match llama.cpp
+        run: scripts/gen-bindings.sh --check windows
       - name: Static checks
         run: scripts/check-windows.sh dist/offgrid-*-windows-x86_64
       - if: inputs.upload

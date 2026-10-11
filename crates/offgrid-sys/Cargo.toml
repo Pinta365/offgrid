@@ -47,7 +47,9 @@ vulkan = []
 cuda = []
 # Shared libs + runtime-loaded backends + all CPU variants (for distributable builds).
 dynamic-backends = []
+# Regenerate the bindings with bindgen (needs libclang) instead of using the committed ones.
+bindgen = ["dep:bindgen"]
 
 [build-dependencies]
 cmake = "0.1.58"
-bindgen = "0.73"
+bindgen = { version = "0.73", optional = true, features = ["prettyplease"] }
