@@ -334,12 +334,15 @@ pub(crate) fn tool_grammar(
     if format == ToolFormat::Polyfill {
         text.push_str(&format!(" ([ \\n]* \"{POLYFILL_STOP}\")?"));
     }
+    let mut lazy_patterns = if lazy { vec![trigger.to_string()] } else { Vec::new() };
+    // Prompt-taught models sometimes drop the tags after a few rounds and reply with a bare
+    // call object; constrain that form too when the reply starts with it.
+    if format == ToolFormat::Polyfill && lazy {
+        text.push_str(" | root");
+        lazy_patterns.push(r#"^\s*(\{\s*"name")[\s\S]*$"#.into());
+    }
     text.push('\n');
-    Ok(Some(GrammarSpec {
-        text,
-        root: "tool-calls".into(),
-        lazy_patterns: if lazy { vec![trigger.into()] } else { Vec::new() },
-    }))
+    Ok(Some(GrammarSpec { text, root: "tool-calls".into(), lazy_patterns }))
 }
 
 #[cfg(test)]
@@ -396,6 +399,18 @@ mod tests {
         let g = tool_grammar(ToolFormat::Hermes, &tools, &ToolChoice::Required, false).unwrap().unwrap();
         assert!(g.lazy_patterns.is_empty());
         assert!(g.text.contains("tool-calls ::= tool-call\n"));
+    }
+
+    #[test]
+    fn polyfill_grammar_also_accepts_bare_call() {
+        let tools = [weather()];
+        let g = tool_grammar(ToolFormat::Polyfill, &tools, &ToolChoice::Auto, true).unwrap().unwrap();
+        assert_eq!(g.lazy_patterns.len(), 2);
+        assert!(g.lazy_patterns[1].starts_with('^'), "bare form only at the start of the reply");
+        assert!(g.text.lines().any(|l| l.starts_with("tool-calls ::=") && l.ends_with(" | root")));
+        let g = tool_grammar(ToolFormat::Polyfill, &tools, &ToolChoice::Required, false).unwrap().unwrap();
+        assert!(g.lazy_patterns.is_empty());
+        assert!(!g.text.contains(" | root"));
     }
 
     #[test]

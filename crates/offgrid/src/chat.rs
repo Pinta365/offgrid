@@ -794,7 +794,8 @@ impl ChatSession {
         // block opened by the prompt can never close: don't treat the output as reasoning.
         let think_open = think_open && !grammars.first().is_some_and(|g| g.lazy_patterns.is_empty());
         let marker = if use_tools { tool_parse::tool_call_start_marker(format) } else { None };
-        let mut filter = StreamFilter::new(marker, use_tools && format == ToolFormat::Llama3Json, think_open);
+        let json_start = use_tools && matches!(format, ToolFormat::Llama3Json | ToolFormat::Polyfill);
+        let mut filter = StreamFilter::new(marker, json_start, think_open);
         let mut cancelled_by_callback = false;
         let mut streamed = String::new(); // content delivered so far
         let mut deliver = |pieces: Vec<(PieceKind, String)>, on_event: &mut dyn FnMut(StreamEvent<'_>) -> bool| {

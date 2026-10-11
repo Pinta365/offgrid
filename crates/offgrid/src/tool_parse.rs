@@ -87,12 +87,13 @@ pub(crate) fn parse_output(format: ToolFormat, text: &str, think_open_in_prompt:
 
 fn parse_calls(format: ToolFormat, text: &str) -> (String, Vec<ParsedCall>) {
     match format {
-        ToolFormat::Hermes | ToolFormat::Polyfill => parse_hermes(text),
+        ToolFormat::Hermes => parse_hermes(text),
         ToolFormat::Llama3Json => parse_llama3(text),
         ToolFormat::MistralList => parse_mistral_list(text),
         ToolFormat::MistralArgs => parse_mistral_args(text),
         ToolFormat::Qwen3CoderXml => parse_qwen3_xml(text),
-        ToolFormat::Generic => parse_generic(text),
+        // Polyfill: tagged calls, or a bare call object when the model drops the tags.
+        ToolFormat::Generic | ToolFormat::Polyfill => parse_generic(text),
     }
 }
 
@@ -538,6 +539,21 @@ mod tests {
         let p = parse_output(ToolFormat::Generic, "{\"name\":\"f\",\"arguments\":{\"a\":1}}", false);
         assert_eq!(p.calls.len(), 1);
         assert_eq!(args(&p.calls[0]), json!({"a": 1}));
+    }
+
+    #[test]
+    fn polyfill_tagged_and_bare() {
+        let tagged = parse_output(
+            ToolFormat::Polyfill,
+            "<tool_call>{\"name\":\"f\",\"arguments\":{\"a\":1}}</tool_call>",
+            false,
+        );
+        let bare = parse_output(ToolFormat::Polyfill, "{\"name\": \"f\", \"arguments\": {\"a\": 1}}", false);
+        for p in [tagged, bare] {
+            assert_eq!(p.calls.len(), 1);
+            assert_eq!(args(&p.calls[0]), json!({"a": 1}));
+            assert!(p.content.is_empty());
+        }
     }
 
     #[test]
