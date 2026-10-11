@@ -42,6 +42,9 @@
     }
   },
   "workspace": {
+    "dependencies": [
+      "npm:openai@5"
+    ],
     "members": {
       "bindings/deno": {
         "dependencies": [

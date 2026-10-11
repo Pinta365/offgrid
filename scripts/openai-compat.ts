@@ -5,7 +5,7 @@
 //
 // <baseURL> should include /v1, e.g. http://127.0.0.1:18080/v1
 
-import OpenAI, { AuthenticationError } from "npm:openai@^5";
+import OpenAI, { AuthenticationError } from "openai";
 
 const [baseURL, apiKey, thinkingBaseURL] = Deno.args;
 if (!baseURL || !apiKey) {

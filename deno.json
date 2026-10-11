@@ -1,3 +1,6 @@
 {
-  "workspace": ["./bindings/deno"]
+  "workspace": ["./bindings/deno"],
+  "imports": {
+    "openai": "npm:openai@^5"
+  }
 }
