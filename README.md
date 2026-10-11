@@ -13,15 +13,25 @@ Windows.
 
 ```mermaid
 flowchart TD
-    rust["Rust / Tauri"] --> core
-    capps["C / C++ · Python · Go · C#"] --> abi
-    deno["Deno"] --> abi
-    http["Any HTTP client"] --> server
-    abi["C ABI: liboffgrid (offgrid.h)<br/>JSON in/out, streaming callbacks"] --> core
-    server["offgrid-server<br/>OpenAI-compatible API"] --> core
-    core["offgrid: safe Rust core<br/>sessions · KV-cache reuse · templates · grammars · tools · media"] --> sys
-    sys["offgrid-sys: llama.cpp + mtmd (pinned)"] --> backends
-    backends["Backends loaded at runtime<br/>Vulkan · 14 CPU variants · CUDA"]
+    subgraph app["Your app"]
+        direction LR
+        rust["Rust / Tauri"]
+        capps["C · C++ · Python · Go · C#"]
+        deno["Deno"]
+        http["Any HTTP client"]
+    end
+    abi["C ABI · liboffgrid"]
+    server["offgrid-server · OpenAI API"]
+    core["offgrid · Rust core"]
+    sys["offgrid-sys · llama.cpp"]
+    gpu["Vulkan · CPU · CUDA"]
+    rust --> core
+    capps --> abi
+    deno --> abi
+    http --> server
+    abi --> core
+    server --> core
+    core --> sys --> gpu
 ```
 
 ## What it does
