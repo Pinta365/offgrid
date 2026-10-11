@@ -1,13 +1,28 @@
 # @pinta365/offgrid
 
-Local, offline AI for Deno: chat, tool calling, structured JSON output, embeddings, and image and audio input, running
-GGUF models through [llama.cpp](https://github.com/ggml-org/llama.cpp) on any GPU (Vulkan) or the CPU. Inference runs
-in-process through FFI. There's no server, no cloud, and model files are always local paths.
+Run AI models locally from Deno: no server, no cloud, no API keys. offgrid loads GGUF models with
+[llama.cpp](https://github.com/ggml-org/llama.cpp) inside your process and runs them on any GPU through Vulkan, or on
+the CPU.
 
-This is the Deno binding of [offgrid](https://github.com/Pinta365/offgrid).
+- **Chat** with streaming, cancellation and KV-cache reuse across turns
+- **Tool calling** with OpenAI-style `tools` and a ready-made call/execute loop (`runTools`)
+- **Structured output**: JSON that always matches your JSON Schema
+- **Reasoning models**: `<think>` text streamed separately
+- **Images and audio** as input, with multimodal models
+- **Embeddings** for search and similarity
+- OpenAI-compatible request and response shapes throughout
+
+This is the Deno binding of [offgrid](https://github.com/Pinta365/offgrid), which is also available for Rust, C and over
+HTTP.
+
+## Quick start
+
+```sh
+deno add jsr:@pinta365/offgrid
+```
 
 ```ts
-import { Offgrid } from "jsr:@pinta365/offgrid";
+import { Offgrid } from "@pinta365/offgrid";
 
 using core = await Offgrid.load(); // finds or downloads the native library (see below)
 using model = await core.loadModel("Qwen3-4B-Instruct-2507-Q4_K_M.gguf");
@@ -23,6 +38,14 @@ console.log(res.finish_reason, res.usage);
 ```sh
 deno run --allow-ffi --allow-env --allow-read --allow-write --allow-net=github.com,release-assets.githubusercontent.com app.ts
 ```
+
+**Models** are GGUF files you provide; nothing is downloaded for you. Good starting points on Hugging Face:
+[Qwen3-4B-Instruct](https://huggingface.co/unsloth/Qwen3-4B-Instruct-2507-GGUF) (Q4_K_M, 2.5 GB) for chat and tools,
+[Qwen3-Embedding-0.6B](https://huggingface.co/Qwen/Qwen3-Embedding-0.6B-GGUF) for embeddings, and
+[Qwen2.5-VL-3B](https://huggingface.co/ggml-org/Qwen2.5-VL-3B-Instruct-GGUF) (with its `mmproj` file) for images.
+
+> **Just published?** Recent Deno versions refuse package versions younger than 24 hours by default. To use a new
+> release right away, pass `--minimum-dependency-age=0` (or set `"minimumDependencyAge"` in `deno.json`).
 
 ## The native library
 
@@ -121,7 +144,7 @@ const { response } = await chat.runTools(
 **Images and audio** need the model's projector (`mmproj-*.gguf`):
 
 ```ts
-import { imagePart } from "jsr:@pinta365/offgrid";
+import { imagePart } from "@pinta365/offgrid";
 
 using vl = await core.loadModel("Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf", { mmproj: "mmproj-Qwen2.5-VL-3B.gguf" });
 using vchat = await vl.createChat();
@@ -138,7 +161,7 @@ const r = await vchat.complete({
 **Embeddings**:
 
 ```ts
-import { dot } from "jsr:@pinta365/offgrid";
+import { dot } from "@pinta365/offgrid";
 
 using embedModel = await core.loadModel("Qwen3-Embedding-0.6B-Q8_0.gguf");
 using emb = await embedModel.createEmbedder();

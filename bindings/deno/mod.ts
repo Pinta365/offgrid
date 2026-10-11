@@ -1,11 +1,4 @@
-/**
- * Deno bindings for offgrid (embeddable offline AI core).
- *
- * Long-running calls run off the JS thread via `nonblocking` FFI and return Promises.
- * Needs `--allow-ffi --allow-env --allow-read`; `Offgrid.load()` also needs `--allow-net` and
- * `--allow-write` the first time, to download and cache the native library.
- * @module
- */
+// Deno bindings for offgrid. No @module doc on purpose: JSR then shows README.md as the overview.
 
 import type {
   ChatMessage,
@@ -36,6 +29,7 @@ const LIB_FILE = Deno.build.os === "windows"
 /** ABI version these bindings were written against. */
 export const ABI_VERSION = 1;
 
+/** @internal FFI symbol table of the native library. */
 const symbols = {
   offgrid_abi_version: { parameters: [], result: "u32" },
   offgrid_version_json: { parameters: [], result: "pointer" },
@@ -75,6 +69,7 @@ const symbols = {
   offgrid_embedder_free: { parameters: ["pointer"], result: "void" },
 } as const satisfies Deno.ForeignLibraryInterface;
 
+/** @internal */
 type Lib = Deno.DynamicLibrary<typeof symbols>["symbols"];
 
 const TOKEN_CALLBACK = {
@@ -173,14 +168,17 @@ export class Offgrid implements Disposable {
     return new Offgrid(dylib);
   }
 
+  /** Versions of the library and its llama.cpp. */
   version(): VersionInfo {
     return JSON.parse(takeString(this.lib, this.lib.offgrid_version_json())!);
   }
 
+  /** Compute devices llama.cpp can use (GPUs, then the CPU). */
   devices(): DeviceInfo[] {
     return JSON.parse(takeString(this.lib, this.lib.offgrid_devices_json())!);
   }
 
+  /** Load a GGUF model (and its `mmproj` projector, if given). */
   async loadModel(path: string, params?: ModelParams): Promise<Model> {
     const err = new ErrorSlot();
     const ptr = await this.lib.offgrid_model_load(cstr(path), jsonArg(params), err.buf);
@@ -193,17 +191,20 @@ export class Offgrid implements Disposable {
     this.#dylib.close();
   }
 
+  /** Same as `close()`. */
   [Symbol.dispose](): void {
     this.close();
   }
 }
 
-abstract class Handle implements Disposable {
+/** Base of the native handles: free with `free()` or `using`. */
+export abstract class Handle implements Disposable {
   #ptr: Deno.PointerObject | null;
   #busy = false;
   /** Native calls in flight that use this handle (it must not be freed meanwhile). */
   #pending = 0;
 
+  /** @internal */
   constructor(readonly core: Offgrid, ptr: Deno.PointerObject) {
     this.#ptr = ptr;
   }
@@ -213,6 +214,7 @@ abstract class Handle implements Disposable {
     return this.#ptr;
   }
 
+  /** @internal */
   protected get lib(): Lib {
     return this.core.lib;
   }
@@ -246,6 +248,7 @@ abstract class Handle implements Disposable {
     }
   }
 
+  /** @internal */
   protected abstract release(ptr: Deno.PointerObject): void;
 
   /** Free the native handle. Throws if a request is still running. */
@@ -256,6 +259,7 @@ abstract class Handle implements Disposable {
     this.#ptr = null;
   }
 
+  /** Same as `free()`. */
   [Symbol.dispose](): void {
     this.free();
   }
@@ -263,10 +267,12 @@ abstract class Handle implements Disposable {
 
 /** A loaded GGUF model. Sessions/embedders keep it alive natively, so it may be freed first. */
 export class Model extends Handle {
+  /** Model metadata, including whether it accepts images or audio. */
   info(): ModelInfo {
     return JSON.parse(takeString(this.lib, this.lib.offgrid_model_info_json(this.ptr))!);
   }
 
+  /** Create a chat session (one inference context with its own KV cache). */
   createChat(params?: SessionParams): Promise<ChatSession> {
     return this.pinned(async (model) => {
       const err = new ErrorSlot();
@@ -276,6 +282,7 @@ export class Model extends Handle {
     });
   }
 
+  /** Create an embedder; needs an embedding model (e.g. Qwen3-Embedding). */
   createEmbedder(params?: EmbedParams): Promise<Embedder> {
     return this.pinned(async (model) => {
       const err = new ErrorSlot();
@@ -286,11 +293,13 @@ export class Model extends Handle {
     });
   }
 
+  /** @internal */
   protected release(ptr: Deno.PointerObject): void {
     this.lib.offgrid_model_free(ptr);
   }
 }
 
+/** Streaming callbacks and cancellation for a request. */
 export interface CompleteOptions {
   /** Called with each streamed piece of reply text. Return `false` to stop. */
   onToken?: (piece: string) => boolean | void;
@@ -303,6 +312,7 @@ export interface CompleteOptions {
 /** Implementations of tools, keyed by function name. Receives parsed arguments. */
 export type ToolHandlers = Record<string, (args: Record<string, unknown>, call: ToolCall) => unknown>;
 
+/** Options for `ChatSession.runTools`. */
 export interface RunToolsOptions extends CompleteOptions {
   /** Max tool rounds before a final answer is forced with `tool_choice: "none"` (default 5). */
   maxRounds?: number;
@@ -440,6 +450,7 @@ export class ChatSession extends Handle {
     });
   }
 
+  /** @internal */
   protected release(ptr: Deno.PointerObject): void {
     this.lib.offgrid_chat_free(ptr);
   }
@@ -466,6 +477,7 @@ export class Embedder extends Handle {
     });
   }
 
+  /** @internal */
   protected release(ptr: Deno.PointerObject): void {
     this.lib.offgrid_embedder_free(ptr);
   }

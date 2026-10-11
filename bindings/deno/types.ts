@@ -1,7 +1,9 @@
-/** JSON shapes exchanged with the native library (mirror the Rust serde types). */
+// JSON shapes exchanged with the native library (mirror the Rust serde types).
 
+/** How many layers to offload to the GPU: all that fit (default), none (CPU only), or a count. */
 export type GpuLayers = "all" | "none" | { count: number };
 
+/** Options for `Offgrid.loadModel`. */
 export interface ModelParams {
   gpu_layers?: GpuLayers;
   /** Restrict offloading to these device names, e.g. `["Vulkan0"]`. */
@@ -10,20 +12,29 @@ export interface ModelParams {
   mmproj?: string | null;
 }
 
+/** Options for `Model.createChat`. */
 export interface SessionParams {
   /** Context size in tokens; 0 = model default capped at 8192. */
   n_ctx?: number;
+  /** Tokens per decode call while processing the prompt. */
   n_batch?: number;
+  /** CPU threads; default half the hardware threads. */
   n_threads?: number | null;
 }
 
+/** Options for `Model.createEmbedder`. */
 export interface EmbedParams {
+  /** Max tokens per input; 0 = model default capped at 8192. */
   n_ctx?: number;
+  /** Max inputs embedded together in one batch. */
   max_batch_inputs?: number;
+  /** L2-normalize the vectors (default true), so `dot` gives cosine similarity. */
   normalize?: boolean;
+  /** CPU threads; default half the hardware threads. */
   n_threads?: number | null;
 }
 
+/** Sampling settings (OpenAI / llama.cpp server names). */
 export interface SamplingParams {
   /** <= 0 means greedy. */
   temperature?: number;
@@ -34,6 +45,7 @@ export interface SamplingParams {
   repeat_last_n?: number;
   frequency_penalty?: number;
   presence_penalty?: number;
+  /** Fixed seed for reproducible sampling; default random. */
   seed?: number | null;
   /** GBNF grammar with a `root` rule. */
   grammar?: string | null;
@@ -51,6 +63,7 @@ export type ContentPart =
   | { type: "image_url"; image_url: { url: string } }
   | { type: "input_audio"; input_audio: { data: string; format: "wav" | "mp3" | "flac" } };
 
+/** An OpenAI-style chat message. */
 export interface ChatMessage {
   role: Role;
   /** Text, parts (text + images), or `null` for assistant turns that only call tools. */
@@ -65,6 +78,7 @@ export interface ChatMessage {
   name?: string;
 }
 
+/** A function the model may call. */
 export interface ToolFunction {
   name: string;
   description?: string;
@@ -72,11 +86,13 @@ export interface ToolFunction {
   parameters?: JsonSchema;
 }
 
+/** OpenAI `tools` entry. */
 export interface Tool {
   type: "function";
   function: ToolFunction;
 }
 
+/** A tool call made by the model. */
 export interface ToolCall {
   id: string;
   type: "function";
@@ -84,10 +100,13 @@ export interface ToolCall {
   function: { name: string; arguments: string };
 }
 
+/** Whether and which tool the model must call. */
 export type ToolChoice = "none" | "auto" | "required" | { type: "function"; function: { name: string } };
 
+/** A chat completion request (OpenAI format). Requests are stateless: send the whole conversation each time. */
 export interface ChatRequest extends SamplingParams {
   messages: ChatMessage[];
+  /** Max tokens to generate; default until the end of the reply or the context is full. */
   max_tokens?: number | null;
   stop?: string[];
   /** Jinja template text or a llama.cpp built-in name (e.g. "chatml"); default = the model's own template. */
@@ -107,27 +126,35 @@ export interface ChatRequest extends SamplingParams {
 /** JSON Schema object (draft 2020-12 subset supported by the grammar converter). */
 export type JsonSchema = Record<string, unknown>;
 
+/** OpenAI `response_format`; JSON formats are enforced with a grammar. */
 export type ResponseFormat =
   | { type: "text" }
   | { type: "json_object"; schema?: JsonSchema }
   | { type: "json_schema"; json_schema: { name?: string; schema: JsonSchema; strict?: boolean } };
 
+/** Raw text completion request for `ChatSession.generate` (no chat template). */
 export interface GenerateRequest extends SamplingParams {
   prompt: string;
   max_tokens?: number | null;
   stop?: string[];
 }
 
+/** Why generation stopped. */
 export type FinishReason = "stop" | "length" | "cancelled" | "tool_calls";
 
+/** Token counts and timings of a request. */
 export interface Usage {
   prompt_tokens: number;
+  /** Prompt tokens reused from the KV cache of the previous request. */
   cached_tokens: number;
   completion_tokens: number;
+  /** Prompt processing time in milliseconds. */
   prompt_ms: number;
+  /** Generation time in milliseconds. */
   generation_ms: number;
 }
 
+/** Result of a chat completion. */
 export interface ChatResponse {
   /** Reply text without reasoning or tool-call markup. */
   content: string;
@@ -139,20 +166,26 @@ export interface ChatResponse {
   usage: Usage;
 }
 
+/** A compute device llama.cpp can use. */
 export interface DeviceInfo {
+  /** Backend device name for `ModelParams.devices`, e.g. `Vulkan0`. */
   name: string;
   description: string;
   kind: "cpu" | "gpu" | "igpu" | "accel" | "other";
+  /** Bytes. */
   memory_free: number;
+  /** Bytes. */
   memory_total: number;
 }
 
+/** Metadata of a loaded model. */
 export interface ModelInfo {
   name: string | null;
   architecture: string | null;
   description: string;
   n_params: number;
   size_bytes: number;
+  /** Context length the model was trained with. */
   n_ctx_train: number;
   n_embd: number;
   n_layer: number;
@@ -165,8 +198,10 @@ export interface ModelInfo {
   audio: boolean;
 }
 
+/** Versions of the native library. */
 export interface VersionInfo {
   offgrid: string;
+  /** C ABI version; must equal `ABI_VERSION`. */
   abi: number;
   llama_cpp: string;
 }
