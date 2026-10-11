@@ -155,6 +155,9 @@ fn write_bindings(_manifest_dir: &Path, llama_dir: &Path, _target_os: &str, out:
         .allowlist_function("llama_.*|ggml_backend_.*|ggml_log_.*|mtmd_.*")
         .allowlist_type("llama_.*|ggml_.*|mtmd_.*")
         .allowlist_var("LLAMA_.*")
+        // libc's FILE layout differs between C libraries; only pointers to it cross the API.
+        .blocklist_type("FILE|_IO_.*|_iobuf|__off(64)?_t|__uint64_t")
+        .raw_line("/// C `FILE`, opaque.\n#[repr(C)]\npub struct FILE {\n    _private: [u8; 0],\n}")
         .formatter(bindgen::Formatter::Prettyplease)
         .generate()
         .expect("offgrid-sys: bindgen failed to generate bindings");

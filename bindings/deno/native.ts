@@ -1,8 +1,8 @@
 // Locating the native library: OFFGRID_LIB, a repository build, or the release package
 // downloaded once into a per-user cache.
 
-import { UntarStream } from "jsr:@std/tar@^0.1/untar-stream";
-import { dirname, isAbsolute, join, normalize } from "jsr:@std/path@^1";
+import { UntarStream } from "@std/tar/untar-stream";
+import { dirname, isAbsolute, join, normalize } from "@std/path";
 import { RELEASE, type ReleaseAsset } from "./release.ts";
 
 const LIB_FILE = Deno.build.os === "windows"
