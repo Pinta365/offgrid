@@ -11,19 +11,17 @@ It is written in Rust on top of [llama.cpp](https://github.com/ggml-org/llama.cp
 on any GPU through Vulkan, falls back to the CPU automatically, and is packaged for Linux and
 Windows.
 
-```
-  Rust / Tauri ─────── offgrid crate ───────────┐
-  C / C++ ────────┐                            │
-  Deno ───────────┼── C ABI: liboffgrid ────────┤   JSON in/out, streaming callbacks
-  Python / Go / C#┘   (offgrid.h)               │
-  any HTTP client ─── offgrid-server ───────────┤   OpenAI-compatible API (optional sidecar)
-                                               │
-                                  offgrid  (safe Rust core)
-                   sessions · KV-cache reuse · templates · grammars · tools · media
-                                               │
-                     offgrid-sys ── llama.cpp + mtmd (pinned submodule)
-                                   └─ backends loaded at runtime:
-                                      Vulkan · 14 CPU variants · (CUDA)
+```mermaid
+flowchart TD
+    rust["Rust / Tauri"] --> core
+    capps["C / C++ · Python · Go · C#"] --> abi
+    deno["Deno"] --> abi
+    http["Any HTTP client"] --> server
+    abi["C ABI: liboffgrid (offgrid.h)<br/>JSON in/out, streaming callbacks"] --> core
+    server["offgrid-server<br/>OpenAI-compatible API"] --> core
+    core["offgrid: safe Rust core<br/>sessions · KV-cache reuse · templates · grammars · tools · media"] --> sys
+    sys["offgrid-sys: llama.cpp + mtmd (pinned)"] --> backends
+    backends["Backends loaded at runtime<br/>Vulkan · 14 CPU variants · CUDA"]
 ```
 
 ## What it does
