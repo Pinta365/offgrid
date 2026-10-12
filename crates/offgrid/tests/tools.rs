@@ -234,22 +234,26 @@ fn tool_history_renders_natively() {
     }
 }
 
-/// Prompt-taught models (Gemma 3) drift to bare `{"name": ...}` calls without the tags after a
-/// few rounds, and earlier bare replies in the history reinforce it. Those must still be calls.
+/// Models drift to bare `{"name": ...}` calls without their markup (Gemma 3 after a few rounds),
+/// and earlier bare replies in the history reinforce it. Those must still be calls, in any format.
 #[test]
-fn polyfill_accepts_bare_call() {
-    let Some((_, model)) = models_for(&["OFFGRID_TEST_GEMMA_MODEL"]).next() else { return };
-    let mut chat = session(model);
-    let bare = |city: &str| format!(r#"{{"name": "get_weather", "arguments": {{"city": "{city}"}}}}"#);
-    let mut messages = user("What's the weather in Oslo?");
-    messages.push(ChatMessage::new("assistant", bare("Oslo")));
-    messages.push(ChatMessage::user("And in Stockholm?"));
-    messages.push(ChatMessage::new("assistant", bare("Stockholm")));
-    messages.push(ChatMessage::user("And in Paris?"));
-    let req = request(messages, None);
-    let (r, streamed) = complete(&mut chat, &req);
-    println!("{r:?}");
-    assert_eq!(r.finish_reason, FinishReason::ToolCalls, "{r:?}");
-    assert!(assert_valid_args(&r.tool_calls[0], &req.tools)["city"].as_str().unwrap().contains("Paris"));
-    assert!(streamed.trim().is_empty(), "bare call streamed as content: {streamed:?}");
+fn bare_calls_in_history_still_parse() {
+    for (name, model) in models() {
+        let mut chat = session(model);
+        let bare = |city: &str| format!(r#"{{"name": "get_weather", "arguments": {{"city": "{city}"}}}}"#);
+        let mut messages = user("What's the weather in Oslo?");
+        messages.push(ChatMessage::new("assistant", bare("Oslo")));
+        messages.push(ChatMessage::user("And in Stockholm?"));
+        messages.push(ChatMessage::new("assistant", bare("Stockholm")));
+        messages.push(ChatMessage::user("And in Paris?"));
+        let req = request(messages, None);
+        let (r, streamed) = complete(&mut chat, &req);
+        println!("[{name}] {r:?}");
+        assert_eq!(r.finish_reason, FinishReason::ToolCalls, "[{name}] {r:?}");
+        assert!(
+            assert_valid_args(&r.tool_calls[0], &req.tools)["city"].as_str().unwrap().contains("Paris"),
+            "[{name}]"
+        );
+        assert!(streamed.trim().is_empty(), "[{name}] bare call streamed as content: {streamed:?}");
+    }
 }

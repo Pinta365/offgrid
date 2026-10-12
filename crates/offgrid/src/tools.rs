@@ -326,30 +326,43 @@ pub(crate) fn tool_grammar(
     let mut text = crate::json_schema::json_schema_to_grammar(&schema).map_err(Error::JsonSchema)?;
 
     text.push_str(&format!("tool-call ::= {wrapper}\n"));
-    text.push_str(match (parallel, format) {
-        (false, _) => "tool-calls ::= tool-call",
-        // Llama 3 separates several calls with `; `.
-        (true, ToolFormat::Llama3Json) => "tool-calls ::= tool-call ([ \\n]* \";\"? [ \\n]* tool-call)*",
-        (true, _) => "tool-calls ::= tool-call ([ \\n]* tool-call)*",
-    });
+    // Several calls may be separated by whitespace or `;` (Llama 3 writes `; `). The separator is
+    // bounded: unbounded whitespace lets a model pad after its last call until max_tokens.
+    let many = |item: &str| {
+        if parallel { format!("{item} ([ \\n]{{0,2}} \";\"? [ \\n]{{0,2}} {item})*") } else { item.into() }
+    };
+    text.push_str(&format!("tool-calls ::= {}", many("tool-call")));
     // Prompt-taught models tend to write the tool response next; allow its opening tag
     // (a stop string, `POLYFILL_STOP`) so the turn ends instead of forcing more calls.
     if format == ToolFormat::Polyfill {
         text.push_str(&format!(" ([ \\n]* \"{POLYFILL_STOP}\")?"));
     }
-    let mut lazy_patterns = if lazy { vec![trigger.to_string()] } else { Vec::new() };
-    // Llama 3.1+ may open its calls with the `<|python_tag|>` token; constrain from the `{`.
-    if format == ToolFormat::Llama3Json && lazy {
-        lazy_patterns.push(r"^\s*<\|python_tag\|>\s*(\{)[\s\S]*$".into());
-    }
-    // Prompt-taught models sometimes drop the tags after a few rounds and reply with a bare
-    // call object; constrain that form too when the reply starts with it.
-    if format == ToolFormat::Polyfill && lazy {
-        text.push_str(" | root");
-        lazy_patterns.push(r#"^\s*(\{\s*"name")[\s\S]*$"#.into());
+    let mut lazy_patterns = Vec::new();
+    if lazy {
+        lazy_patterns.push(trigger.to_string());
+        if format == ToolFormat::Llama3Json {
+            // Llama 3.1+ may open its calls with the `<|python_tag|>` token.
+            lazy_patterns.push(r"^\s*<\|python_tag\|>\s*(\{)[\s\S]*$".into());
+        } else {
+            // Models in any format sometimes drop their markup and reply with bare call
+            // objects; constrain those too when the reply starts with one naming an offered tool.
+            let names: Vec<String> = selected.iter().map(|t| regex_escape(&t.function.name)).collect();
+            text.push_str(&format!(" | {}", many("root")));
+            lazy_patterns.push(format!(r#"^\s*(\{{\s*"name"\s*:\s*"(?:{})")[\s\S]*$"#, names.join("|")));
+        }
     }
     text.push('\n');
     Ok(Some(GrammarSpec { text, root: "tool-calls".into(), lazy_patterns }))
+}
+
+fn regex_escape(s: &str) -> String {
+    s.chars().fold(String::new(), |mut out, c| {
+        if r"\^$.|?*+()[]{}/".contains(c) {
+            out.push('\\');
+        }
+        out.push(c);
+        out
+    })
 }
 
 #[cfg(test)]
@@ -400,7 +413,8 @@ mod tests {
         let tools = [weather()];
         let g = tool_grammar(ToolFormat::Hermes, &tools, &ToolChoice::Auto, true).unwrap().unwrap();
         assert_eq!(g.root, "tool-calls");
-        assert_eq!(g.lazy_patterns, vec!["(<tool_call>)".to_string()]);
+        assert_eq!(g.lazy_patterns[0], "(<tool_call>)");
+        assert_eq!(g.lazy_patterns[1], r#"^\s*(\{\s*"name"\s*:\s*"(?:get_weather)")[\s\S]*$"#);
         assert!(g.text.contains("tool-call ::= \"<tool_call>\""));
         assert!(g.text.contains("get_weather"));
         let g = tool_grammar(ToolFormat::Hermes, &tools, &ToolChoice::Required, false).unwrap().unwrap();
@@ -414,21 +428,24 @@ mod tests {
         let g = tool_grammar(ToolFormat::Llama3Json, &tools, &ToolChoice::Auto, true).unwrap().unwrap();
         assert_eq!(g.lazy_patterns.len(), 2);
         assert!(g.lazy_patterns[1].contains(r"<\|python_tag\|>"));
-        assert!(g.text.contains(r#"tool-calls ::= tool-call ([ \n]* ";"? [ \n]* tool-call)*"#));
+        assert!(g.text.contains(r#"tool-calls ::= tool-call ([ \n]{0,2} ";"? [ \n]{0,2} tool-call)*"#));
         let g = tool_grammar(ToolFormat::Llama3Json, &tools, &ToolChoice::Auto, false).unwrap().unwrap();
         assert!(g.text.contains("tool-calls ::= tool-call\n"));
     }
 
     #[test]
-    fn polyfill_grammar_also_accepts_bare_call() {
+    fn bare_call_alternative_for_tagged_formats() {
         let tools = [weather()];
-        let g = tool_grammar(ToolFormat::Polyfill, &tools, &ToolChoice::Auto, true).unwrap().unwrap();
-        assert_eq!(g.lazy_patterns.len(), 2);
-        assert!(g.lazy_patterns[1].starts_with('^'), "bare form only at the start of the reply");
-        assert!(g.text.lines().any(|l| l.starts_with("tool-calls ::=") && l.ends_with(" | root")));
-        let g = tool_grammar(ToolFormat::Polyfill, &tools, &ToolChoice::Required, false).unwrap().unwrap();
-        assert!(g.lazy_patterns.is_empty());
-        assert!(!g.text.contains(" | root"));
+        for format in [ToolFormat::Hermes, ToolFormat::Generic, ToolFormat::Polyfill] {
+            let g = tool_grammar(format, &tools, &ToolChoice::Auto, false).unwrap().unwrap();
+            assert_eq!(g.lazy_patterns.len(), 2, "{format:?}");
+            assert!(g.lazy_patterns[1].starts_with('^'), "bare form only at the start of the reply");
+            assert!(g.text.lines().any(|l| l.starts_with("tool-calls ::=") && l.ends_with(" | root")), "{format:?}");
+            let g = tool_grammar(format, &tools, &ToolChoice::Required, false).unwrap().unwrap();
+            assert!(g.lazy_patterns.is_empty());
+            assert!(!g.text.contains(" | root"));
+        }
+        assert_eq!(regex_escape("a.b|c"), r"a\.b\|c");
     }
 
     #[test]

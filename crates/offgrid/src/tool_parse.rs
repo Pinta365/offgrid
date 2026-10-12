@@ -86,15 +86,16 @@ pub(crate) fn parse_output(format: ToolFormat, text: &str, think_open_in_prompt:
 }
 
 fn parse_calls(format: ToolFormat, text: &str) -> (String, Vec<ParsedCall>) {
-    match format {
-        ToolFormat::Hermes => parse_hermes(text),
-        ToolFormat::Llama3Json => parse_llama3(text),
+    let (content, calls) = match format {
+        ToolFormat::Hermes | ToolFormat::Polyfill => parse_hermes(text),
+        ToolFormat::Llama3Json => parse_json_calls(text),
         ToolFormat::MistralList => parse_mistral_list(text),
         ToolFormat::MistralArgs => parse_mistral_args(text),
         ToolFormat::Qwen3CoderXml => parse_qwen3_xml(text),
-        // Polyfill: tagged calls, or a bare call object when the model drops the tags.
-        ToolFormat::Generic | ToolFormat::Polyfill => parse_generic(text),
-    }
+        ToolFormat::Generic => parse_generic(text),
+    };
+    // Models in any format sometimes drop their markup and reply with bare call objects.
+    if calls.is_empty() { parse_json_calls(text) } else { (content, calls) }
 }
 
 /// Normalize an arguments value into compact JSON object text.
@@ -227,10 +228,10 @@ fn parse_param_value(raw: &str) -> Value {
     }
 }
 
-/// One or more call objects (optionally after `<|python_tag|>`), separated by `;` or whitespace.
-/// Stops at the first value that isn't a complete call, so a reply cut off by `max_tokens`
-/// still yields the calls before it.
-fn parse_llama3(text: &str) -> (String, Vec<ParsedCall>) {
+/// A reply made of bare call objects (optionally after Llama's `<|python_tag|>`), separated by
+/// `;` or whitespace. Stops at the first value that isn't a complete call, so a reply cut off
+/// by `max_tokens` still yields the calls before it.
+fn parse_json_calls(text: &str) -> (String, Vec<ParsedCall>) {
     let trimmed = text.trim();
     let mut rest = trimmed.strip_prefix("<|python_tag|>").unwrap_or(trimmed);
     let mut calls = Vec::new();
@@ -304,9 +305,6 @@ fn parse_generic(text: &str) -> (String, Vec<ParsedCall>) {
         return parse_hermes(text);
     }
     let trimmed = text.trim();
-    if let Some(call) = call_from_json(trimmed) {
-        return (String::new(), vec![call]);
-    }
     if let Ok(Value::Object(obj)) = serde_json::from_str::<Value>(trimmed)
         && let Some(Value::Array(arr)) = obj.get("tool_calls")
     {
@@ -560,6 +558,19 @@ mod tests {
         assert_eq!(args(&p.calls[0]), json!({"x": "1; 2"}));
         assert_eq!(args(&p.calls[2]), json!({"y": 2}));
         assert!(p.content.is_empty());
+    }
+
+    #[test]
+    fn bare_call_fallback_in_any_format() {
+        let text = "{\"name\": \"f\", \"arguments\": {\"a\": 1}}";
+        for format in [ToolFormat::Hermes, ToolFormat::Qwen3CoderXml, ToolFormat::MistralList, ToolFormat::Generic] {
+            let p = parse_output(format, text, false);
+            assert_eq!(p.calls.len(), 1, "{format:?}");
+            assert!(p.content.is_empty());
+        }
+        let p = parse_output(ToolFormat::Hermes, "Just text {not a call}", false);
+        assert!(p.calls.is_empty());
+        assert_eq!(p.content, "Just text {not a call}");
     }
 
     #[test]

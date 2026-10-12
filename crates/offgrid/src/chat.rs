@@ -643,10 +643,7 @@ impl ChatSession {
         let polyfill = (use_tools || tool_history) && template.as_ref().is_ok_and(|t| ignores_tools(t, &base));
         let rendered = match template {
             Ok(t) if polyfill => render_polyfilled(t, &req.messages, use_tools.then_some(req.tools.as_slice()), &base),
-            Ok(t) => {
-                let messages = template_messages(&req.messages)?;
-                t.render(&RenderArgs { messages: &messages, tools: tools.as_ref(), ..base })
-            }
+            Ok(t) => render_jinja(t, &req.messages, &RenderArgs { tools: tools.as_ref(), ..base }),
             Err(e) => Err(Error::ChatTemplate(e)),
         };
         if req.chat_template.is_some() {
@@ -794,8 +791,8 @@ impl ChatSession {
         // block opened by the prompt can never close: don't treat the output as reasoning.
         let think_open = think_open && !grammars.first().is_some_and(|g| g.lazy_patterns.is_empty());
         let marker = if use_tools { tool_parse::tool_call_start_marker(format) } else { None };
-        let json_start = use_tools && matches!(format, ToolFormat::Llama3Json | ToolFormat::Polyfill);
-        let mut filter = StreamFilter::new(marker, json_start, think_open);
+        // Hold back a reply starting with `{`: it may be a bare call object (any format).
+        let mut filter = StreamFilter::new(marker, use_tools, think_open);
         let mut cancelled_by_callback = false;
         let mut streamed = String::new(); // content delivered so far
         let mut deliver = |pieces: Vec<(PieceKind, String)>, on_event: &mut dyn FnMut(StreamEvent<'_>) -> bool| {
@@ -1219,6 +1216,56 @@ fn render_polyfilled(
     render(true).or_else(|e| render(false).map_err(|_| e))
 }
 
+/// Render with the model's own template. Some templates only accept one call per assistant
+/// turn (Llama 3.x raises); on failure, retry with multi-call turns split into one per call.
+fn render_jinja(template: &ChatTemplate, messages: &[ChatMessage], base: &RenderArgs) -> Result<String> {
+    let render = |messages: &[ChatMessage]| {
+        let messages = template_messages(messages)?;
+        template.render(&RenderArgs { messages: &messages, ..*base })
+    };
+    render(messages).or_else(|e| match split_multi_calls(messages) {
+        Some(split) => render(&split).map_err(|_| e),
+        None => Err(e),
+    })
+}
+
+/// Each assistant turn with several calls becomes one turn per call, each followed by its
+/// result. `None` when no turn has more than one call.
+fn split_multi_calls(messages: &[ChatMessage]) -> Option<Vec<ChatMessage>> {
+    if !messages.iter().any(|m| m.tool_calls.len() > 1) {
+        return None;
+    }
+    let mut out = Vec::with_capacity(messages.len() * 2);
+    let mut i = 0;
+    while i < messages.len() {
+        let msg = &messages[i];
+        i += 1;
+        if msg.tool_calls.len() < 2 {
+            out.push(msg.clone());
+            continue;
+        }
+        let mut results: Vec<ChatMessage> = Vec::new();
+        while i < messages.len() && messages[i].role == "tool" {
+            results.push(messages[i].clone());
+            i += 1;
+        }
+        for (n, call) in msg.tool_calls.iter().enumerate() {
+            out.push(ChatMessage {
+                tool_calls: vec![call.clone()],
+                content: if n == 0 { msg.content.clone() } else { String::new() },
+                reasoning_content: if n == 0 { msg.reasoning_content.clone() } else { None },
+                media: if n == 0 { msg.media.clone() } else { Vec::new() },
+                ..msg.clone()
+            });
+            if let Some(pos) = results.iter().position(|r| r.tool_call_id.as_deref() == Some(call.id.as_str())) {
+                out.push(results.remove(pos));
+            }
+        }
+        out.extend(results);
+    }
+    Some(out)
+}
+
 fn tools_active(req: &ChatRequest) -> bool {
     !req.tools.is_empty() && req.tool_choice != Some(ToolChoice::None)
 }
@@ -1249,6 +1296,48 @@ mod tests {
 
     /// Over llama.cpp's template corpus: templates that mention `tools` show them; the rest
     /// get the polyfill and render a whole tool conversation with it.
+    /// Llama 3.2's template raises on an assistant turn with several calls; those turns are
+    /// rendered split, one call per turn, each followed by its result.
+    #[test]
+    fn single_call_templates_get_split_turns() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../offgrid-sys/llama.cpp/models/templates");
+        let src = std::fs::read_to_string(dir.join("meta-llama-Llama-3.2-3B-Instruct.jinja")).unwrap();
+        let t = ChatTemplate::new(&src).unwrap();
+        let call = |id: &str, city: &str| ToolCall {
+            id: id.into(),
+            kind: "function".into(),
+            function: FunctionCall { name: "get_weather".into(), arguments: format!(r#"{{"city":"{city}"}}"#) },
+        };
+        let (a, b) = (call("call_a", "Oslo"), call("call_b", "Paris"));
+        let messages = vec![
+            ChatMessage::user("Weather in Oslo and Paris?"),
+            ChatMessage::assistant_tool_calls("", vec![a.clone(), b.clone()]),
+            ChatMessage::tool_result(&a, r#"{"temp_c": 4}"#),
+            ChatMessage::tool_result(&b, r#"{"temp_c": 15}"#),
+        ];
+        let tools =
+            serde_json::to_value([Tool::function("get_weather", "Weather", serde_json::json!({"type": "object"}))])
+                .unwrap();
+        let base = RenderArgs {
+            messages: &serde_json::Value::Null,
+            tools: Some(&tools),
+            add_generation_prompt: true,
+            bos_token: "<|begin_of_text|>",
+            eos_token: "<|eot_id|>",
+            extra: None,
+        };
+        let direct = t.render(&RenderArgs { messages: &template_messages(&messages).unwrap(), ..base });
+        assert!(direct.unwrap_err().to_string().contains("single tool-calls"));
+        let prompt = render_jinja(&t, &messages, &base).unwrap();
+        let (oslo, temp4, paris, temp15) = (
+            prompt.find("Oslo\"").unwrap(),
+            prompt.find("\"temp_c\": 4").unwrap(),
+            prompt.find("Paris\"").unwrap(),
+            prompt.find("15").unwrap(),
+        );
+        assert!(oslo < temp4 && temp4 < paris && paris < temp15, "each call followed by its result:\n{prompt}");
+    }
+
     #[test]
     fn tool_polyfill_over_template_corpus() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../offgrid-sys/llama.cpp/models/templates");
