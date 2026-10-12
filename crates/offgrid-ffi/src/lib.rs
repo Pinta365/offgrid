@@ -379,6 +379,7 @@ pub unsafe extern "C" fn offgrid_image_model_load(
     params_json: *const c_char,
     error_out: *mut *mut c_char,
 ) -> *mut OffgridImageModel {
+    logging::install();
     guard(error_out, std::ptr::null_mut(), || {
         #[cfg(feature = "image")]
         {
