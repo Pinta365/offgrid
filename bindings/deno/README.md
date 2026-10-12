@@ -189,7 +189,8 @@ const refined = await painter.generate({ prompt: "...", steps: 8, cfg_scale: 1, 
 ```
 
 One image generates at a time; `signal` or `onProgress` returning `false` cancels. Z-Image-Turbo needs about 6 GB of GPU
-memory; on smaller GPUs pass `max_vram_gib` so part of it stays in RAM, or free the chat model first.
+memory. Next to a chat model, `vae_tiling: true` keeps its weights resident between images; on small GPUs add
+`text_encoder_on_cpu: true` (saves 2.4 GB) or `max_vram_gib`.
 
 **GPU**: Vulkan is used automatically when available, with a fallback to the CPU. `core.devices()` lists the devices;
 `loadModel(path, { gpu_layers: "none" })` forces the CPU and `{ devices: ["Vulkan0"] }` picks a GPU. Logging:
