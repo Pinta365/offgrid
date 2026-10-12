@@ -114,9 +114,20 @@ fn normalize_arguments(v: Option<&Value>) -> String {
     }
 }
 
+/// `{"name", "arguments"|"parameters"}`, also with the name in `"function"` (a string, or an
+/// object holding name and arguments), as small models write it.
 fn call_from_object(obj: &Map<String, Value>) -> Option<ParsedCall> {
-    let name = obj.get("name")?.as_str()?.to_string();
-    let args = obj.get("arguments").or_else(|| obj.get("parameters"));
+    let inner = obj.get("function").and_then(Value::as_object);
+    let name = obj
+        .get("name")
+        .and_then(Value::as_str)
+        .or_else(|| obj.get("function").and_then(Value::as_str))
+        .or_else(|| inner.and_then(|f| f.get("name")).and_then(Value::as_str))?
+        .to_string();
+    let args = obj
+        .get("arguments")
+        .or_else(|| obj.get("parameters"))
+        .or_else(|| inner.and_then(|f| f.get("arguments").or_else(|| f.get("parameters"))));
     Some(ParsedCall { name, arguments: normalize_arguments(args) })
 }
 
@@ -216,31 +227,25 @@ fn parse_param_value(raw: &str) -> Value {
     }
 }
 
+/// One or more call objects (optionally after `<|python_tag|>`), separated by `;` or whitespace.
+/// Stops at the first value that isn't a complete call, so a reply cut off by `max_tokens`
+/// still yields the calls before it.
 fn parse_llama3(text: &str) -> (String, Vec<ParsedCall>) {
     let trimmed = text.trim();
-    let body = trimmed.strip_prefix("<|python_tag|>").map(|s| s.trim_start()).unwrap_or(trimmed);
-
-    if let Some(call) = call_from_json(body) {
-        return (String::new(), vec![call]);
-    }
-    let parts: Vec<&str> = body.split([';', '\n']).map(str::trim).filter(|s| !s.is_empty()).collect();
-    if !parts.is_empty() {
-        let mut calls = Vec::new();
-        let mut all_ok = true;
-        for part in &parts {
-            match call_from_json(part) {
-                Some(c) => calls.push(c),
-                None => {
-                    all_ok = false;
-                    break;
-                }
-            }
+    let mut rest = trimmed.strip_prefix("<|python_tag|>").unwrap_or(trimmed);
+    let mut calls = Vec::new();
+    loop {
+        rest = rest.trim_start_matches(|c: char| c.is_whitespace() || c == ';');
+        if !rest.starts_with('{') {
+            break;
         }
-        if all_ok && !calls.is_empty() {
-            return (String::new(), calls);
-        }
+        let mut values = serde_json::Deserializer::from_str(rest).into_iter::<Value>();
+        let Some(Ok(Value::Object(obj))) = values.next() else { break };
+        let Some(call) = call_from_object(&obj) else { break };
+        calls.push(call);
+        rest = &rest[values.byte_offset()..];
     }
-    (text.to_string(), Vec::new())
+    if calls.is_empty() { (text.to_string(), calls) } else { (String::new(), calls) }
 }
 
 fn parse_mistral_list(text: &str) -> (String, Vec<ParsedCall>) {
@@ -539,6 +544,22 @@ mod tests {
         let p = parse_output(ToolFormat::Generic, "{\"name\":\"f\",\"arguments\":{\"a\":1}}", false);
         assert_eq!(p.calls.len(), 1);
         assert_eq!(args(&p.calls[0]), json!({"a": 1}));
+    }
+
+    #[test]
+    fn llama3_python_tag_shapes_and_truncation() {
+        let text = concat!(
+            "<|python_tag|>{\"type\": \"function\", \"function\": \"a\", \"parameters\": {\"x\": \"1; 2\"}}; ",
+            "{\"type\": \"function\", \"name\": \"b\", \"parameters\": {}}; ",
+            "{\"type\": \"function\", \"function\": {\"name\": \"c\", \"arguments\": {\"y\": 2}}}; ",
+            "{\"type\": \"function\", \"name\": \"d\", \"parameters\": {\"z\": \"cut off"
+        );
+        let p = parse_output(ToolFormat::Llama3Json, text, false);
+        let names: Vec<&str> = p.calls.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, ["a", "b", "c"], "the truncated last call is dropped");
+        assert_eq!(args(&p.calls[0]), json!({"x": "1; 2"}));
+        assert_eq!(args(&p.calls[2]), json!({"y": 2}));
+        assert!(p.content.is_empty());
     }
 
     #[test]

@@ -325,16 +325,23 @@ pub(crate) fn tool_grammar(
     }
     let mut text = crate::json_schema::json_schema_to_grammar(&schema).map_err(Error::JsonSchema)?;
 
-    // Llama 3 has no call delimiter, so only a single call is constrained.
-    let repeat = parallel && format != ToolFormat::Llama3Json;
     text.push_str(&format!("tool-call ::= {wrapper}\n"));
-    text.push_str(if repeat { "tool-calls ::= tool-call ([ \\n]* tool-call)*" } else { "tool-calls ::= tool-call" });
+    text.push_str(match (parallel, format) {
+        (false, _) => "tool-calls ::= tool-call",
+        // Llama 3 separates several calls with `; `.
+        (true, ToolFormat::Llama3Json) => "tool-calls ::= tool-call ([ \\n]* \";\"? [ \\n]* tool-call)*",
+        (true, _) => "tool-calls ::= tool-call ([ \\n]* tool-call)*",
+    });
     // Prompt-taught models tend to write the tool response next; allow its opening tag
     // (a stop string, `POLYFILL_STOP`) so the turn ends instead of forcing more calls.
     if format == ToolFormat::Polyfill {
         text.push_str(&format!(" ([ \\n]* \"{POLYFILL_STOP}\")?"));
     }
     let mut lazy_patterns = if lazy { vec![trigger.to_string()] } else { Vec::new() };
+    // Llama 3.1+ may open its calls with the `<|python_tag|>` token; constrain from the `{`.
+    if format == ToolFormat::Llama3Json && lazy {
+        lazy_patterns.push(r"^\s*<\|python_tag\|>\s*(\{)[\s\S]*$".into());
+    }
     // Prompt-taught models sometimes drop the tags after a few rounds and reply with a bare
     // call object; constrain that form too when the reply starts with it.
     if format == ToolFormat::Polyfill && lazy {
@@ -398,6 +405,17 @@ mod tests {
         assert!(g.text.contains("get_weather"));
         let g = tool_grammar(ToolFormat::Hermes, &tools, &ToolChoice::Required, false).unwrap().unwrap();
         assert!(g.lazy_patterns.is_empty());
+        assert!(g.text.contains("tool-calls ::= tool-call\n"));
+    }
+
+    #[test]
+    fn llama3_grammar_triggers_on_python_tag_and_repeats_with_semicolons() {
+        let tools = [weather()];
+        let g = tool_grammar(ToolFormat::Llama3Json, &tools, &ToolChoice::Auto, true).unwrap().unwrap();
+        assert_eq!(g.lazy_patterns.len(), 2);
+        assert!(g.lazy_patterns[1].contains(r"<\|python_tag\|>"));
+        assert!(g.text.contains(r#"tool-calls ::= tool-call ([ \n]* ";"? [ \n]* tool-call)*"#));
+        let g = tool_grammar(ToolFormat::Llama3Json, &tools, &ToolChoice::Auto, false).unwrap().unwrap();
         assert!(g.text.contains("tool-calls ::= tool-call\n"));
     }
 
