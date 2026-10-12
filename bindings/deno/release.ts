@@ -13,18 +13,18 @@ export interface ReleaseAsset {
 }
 
 export const RELEASE = {
-  version: "0.2.2",
-  baseUrl: "https://github.com/Pinta365/offgrid/releases/download/v0.2.2",
+  version: "0.3.0",
+  baseUrl: "https://github.com/Pinta365/offgrid/releases/download/v0.3.0",
   assets: {
     "linux-x86_64": {
-      file: "offgrid-0.2.2-linux-x86_64.tar.gz",
+      file: "offgrid-0.3.0-linux-x86_64.tar.gz",
       sha256: "",
-      lib: "offgrid-0.2.2-linux-x86_64/lib/liboffgrid.so",
+      lib: "offgrid-0.3.0-linux-x86_64/lib/liboffgrid.so",
     },
     "windows-x86_64": {
-      file: "offgrid-0.2.2-windows-x86_64.tar.gz",
+      file: "offgrid-0.3.0-windows-x86_64.tar.gz",
       sha256: "",
-      lib: "offgrid-0.2.2-windows-x86_64/bin/offgrid.dll",
+      lib: "offgrid-0.3.0-windows-x86_64/bin/offgrid.dll",
     },
   } as Record<string, ReleaseAsset>,
 };
