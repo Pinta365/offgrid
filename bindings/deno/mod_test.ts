@@ -240,3 +240,26 @@ Deno.test({ name: "embeddings", ignore: !embedModel }, async () => {
   assertEquals(cat.length, emb.dim);
   assert(dot(cat, kitten) > dot(cat, tax) + 0.2);
 });
+
+const imageModel = Deno.env.get("OFFGRID_TEST_IMAGE_MODEL");
+const imageVae = Deno.env.get("OFFGRID_TEST_IMAGE_VAE");
+const imageEncoder = Deno.env.get("OFFGRID_TEST_IMAGE_TEXT_ENCODER");
+
+Deno.test({ name: "image generation", ignore: !imageModel || !imageVae || !imageEncoder }, async () => {
+  using core = Offgrid.open();
+  using model = await core.loadImageModel({ diffusion_model: imageModel, vae: imageVae, text_encoder: imageEncoder });
+  const request = { prompt: "A red apple on a white table", width: 512, height: 384, steps: 8, cfg_scale: 1, seed: 7 };
+  const phases = new Set<string>();
+  const img = await model.generate(request, { onProgress: (p) => void phases.add(p.phase) });
+  assertEquals([img.width, img.height], [512, 384]);
+  assertEquals([...img.png.subarray(1, 4)], [0x50, 0x4e, 0x47]); // "PNG"
+  assertEquals([...phases].sort(), ["decoding", "loading", "sampling"]);
+
+  await assertRejects(
+    () => model.generate(request, { onProgress: (p) => !(p.phase === "sampling" && p.done >= 2) }),
+    Error,
+    "cancelled",
+  );
+  const refined = await model.generate({ ...request, width: 1024, init_image: img.png, strength: 0.6 });
+  assertEquals([refined.width, refined.height], [512, 384], "image-to-image keeps the init image's size");
+});

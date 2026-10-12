@@ -205,3 +205,59 @@ export interface VersionInfo {
   abi: number;
   llama_cpp: string;
 }
+
+/** Model files for `Offgrid.loadImageModel`: a single-file checkpoint (`model`), or a
+ * `diffusion_model` with the encoders and VAE its family needs (Z-Image: `text_encoder` =
+ * Qwen3-4B, `vae`). */
+export interface ImageModelParams {
+  /** Single-file checkpoint (SD 1.x/2.x/XL). */
+  model?: string;
+  /** Diffusion model alone (Z-Image, FLUX, ...). */
+  diffusion_model?: string;
+  /** LLM text encoder (Z-Image and Qwen-Image use a Qwen GGUF). */
+  text_encoder?: string;
+  clip_l?: string;
+  clip_g?: string;
+  t5xxl?: string;
+  vae?: string;
+  /** Use the GPU when available (default true); false runs on the CPU. */
+  gpu?: boolean;
+  /** GiB of GPU memory the model may use; weights beyond it stay in RAM. */
+  max_vram_gib?: number;
+  /** Flash attention in the diffusion model (default true). */
+  flash_attn?: boolean;
+  /** CPU threads; default half the hardware threads. */
+  n_threads?: number;
+}
+
+/** An image generation request; unset options use the model's defaults. */
+export interface ImageRequest {
+  prompt: string;
+  negative_prompt?: string;
+  /** Pixels, a multiple of 16 (default 1024). */
+  width?: number;
+  /** Pixels, a multiple of 16 (default 1024). */
+  height?: number;
+  /** Sampling steps (Z-Image-Turbo: 8). */
+  steps?: number;
+  /** Classifier-free guidance scale (Z-Image-Turbo: 1.0). */
+  cfg_scale?: number;
+  /** Default random. */
+  seed?: number;
+  /** Sampler, e.g. `euler`, `euler_a`, `dpm++2m`. */
+  sampler?: string;
+  /** Noise schedule, e.g. `discrete`, `karras`, `simple`. */
+  scheduler?: string;
+  /** Image-to-image: start from this PNG (bytes, or base64). The output has its size. */
+  init_image?: Uint8Array | string;
+  /** How far to move away from `init_image`: 0 keeps it, 1 ignores it. Default 0.75. */
+  strength?: number;
+}
+
+/** Image generation progress. Weights load lazily, so `loading` can follow `sampling`. */
+export interface ImageProgress {
+  phase: "loading" | "sampling" | "decoding";
+  /** Steps or items done. */
+  done: number;
+  total: number;
+}

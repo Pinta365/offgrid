@@ -25,6 +25,8 @@ no_includes = true
 "OffgridTokenCallback" = "offgrid_token_callback"
 "OffgridLogCallback" = "offgrid_log_callback"
 "OffgridEventCallback" = "offgrid_event_callback"
+"OffgridImageModel" = "offgrid_image_model"
+"OffgridImageProgressCallback" = "offgrid_image_progress_callback"
 
 [fn]
 args = "horizontal"

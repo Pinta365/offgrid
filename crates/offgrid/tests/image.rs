@@ -92,3 +92,33 @@ fn generates_while_chatting() {
     let img = painter.join().unwrap().unwrap();
     assert_eq!(img.rgb.len(), 512 * 512 * 3);
 }
+
+/// Image-to-image keeps much more of the start image than a fresh generation does.
+#[test]
+fn refines_an_init_image() {
+    let Some(params) = params() else { return };
+    let mut model = ImageModel::load(&params).unwrap();
+    let base = model.generate(&request("A red apple on a white table"), |_| true).unwrap();
+    assert_eq!(Image::from_png(&base.to_png()).unwrap(), base, "PNG round trip");
+
+    let refine = ImageRequest {
+        init_image: Some(base.clone()),
+        strength: Some(0.6),
+        width: 1024, // ignored: the output takes the init image's size
+        ..request("A green apple on a white table")
+    };
+    let json = serde_json::to_string(&refine).unwrap();
+    let back: ImageRequest = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.init_image.as_ref(), Some(&base), "base64 PNG in JSON");
+
+    let refined = model.generate(&refine, |_| true).unwrap();
+    let fresh = model.generate(&request("A green apple on a white table"), |_| true).unwrap();
+    assert_eq!((refined.width, refined.height), (512, 512));
+    let diff = |a: &Image, b: &Image| {
+        a.rgb.iter().zip(&b.rgb).map(|(&x, &y)| (x as i32 - y as i32).unsigned_abs() as u64).sum::<u64>() as f64
+            / a.rgb.len() as f64
+    };
+    let (kept, new) = (diff(&refined, &base), diff(&fresh, &base));
+    println!("mean abs diff to the start image: refined {kept:.1}, fresh {new:.1}");
+    assert!(kept < new * 0.7, "refined {kept:.1} vs fresh {new:.1}");
+}

@@ -353,3 +353,105 @@ pub unsafe extern "C" fn offgrid_embedder_free(emb: *mut OffgridEmbedder) {
         });
     }
 }
+
+/// Opaque image model handle.
+pub struct OffgridImageModel {
+    #[cfg(feature = "image")]
+    inner: Mutex<offgrid::ImageModel>,
+}
+
+/// Image generation phase passed to the progress callback: weights loading.
+pub const OFFGRID_IMAGE_LOADING: i32 = 0;
+/// Image generation phase: a sampling step (`done` of `total` steps).
+pub const OFFGRID_IMAGE_SAMPLING: i32 = 1;
+/// Image generation phase: VAE decoding.
+pub const OFFGRID_IMAGE_DECODING: i32 = 2;
+
+/// Image progress callback: `phase` is an `OFFGRID_IMAGE_*` value. Return `false` to cancel.
+pub type OffgridImageProgressCallback =
+    Option<unsafe extern "C" fn(phase: i32, done: u32, total: u32, user_data: *mut c_void) -> bool>;
+
+/// Load an image model (needs a build with image generation). `params_json`:
+/// `{"diffusion_model","text_encoder","vae"}` or `{"model"}` for single-file checkpoints, plus
+/// optional `"gpu"`, `"max_vram_gib"`, `"flash_attn"`, `"n_threads"`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn offgrid_image_model_load(
+    params_json: *const c_char,
+    error_out: *mut *mut c_char,
+) -> *mut OffgridImageModel {
+    guard(error_out, std::ptr::null_mut(), || {
+        #[cfg(feature = "image")]
+        {
+            let params: offgrid::ImageModelParams = json_arg(params_json, "params")?;
+            let model = offgrid::ImageModel::load(&params).map_err(|e| e.to_string())?;
+            Ok(Box::into_raw(Box::new(OffgridImageModel { inner: Mutex::new(model) })))
+        }
+        #[cfg(not(feature = "image"))]
+        {
+            let _ = params_json;
+            Err("this build of offgrid has no image generation".into())
+        }
+    })
+}
+
+/// Generate an image; returns PNG bytes (free with [`offgrid_bytes_free`]) and their length in
+/// `*len_out`, or NULL on error. `request_json`: `{"prompt","negative_prompt","width","height",
+/// "steps","cfg_scale","seed","sampler","scheduler"}`, plus `"init_image"` (base64 PNG) and
+/// `"strength"` for image-to-image. A callback returning `false` cancels; the error is then
+/// "cancelled". One generation runs at a time per process.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn offgrid_image_generate(
+    model: *const OffgridImageModel,
+    request_json: *const c_char,
+    callback: OffgridImageProgressCallback,
+    user_data: *mut c_void,
+    len_out: *mut usize,
+    error_out: *mut *mut c_char,
+) -> *mut u8 {
+    guard(error_out, std::ptr::null_mut(), || {
+        let model = handle(model, "model")?;
+        if len_out.is_null() {
+            return Err("len_out is NULL".into());
+        }
+        #[cfg(feature = "image")]
+        {
+            let req: offgrid::ImageRequest = json_arg(request_json, "request")?;
+            let mut model = model.inner.lock().unwrap_or_else(|e| e.into_inner());
+            let image = model
+                .generate(&req, |p| {
+                    let Some(cb) = callback else { return true };
+                    let (phase, done, total) = match p {
+                        offgrid::ImageProgress::Loading { done, total } => (OFFGRID_IMAGE_LOADING, done, total),
+                        offgrid::ImageProgress::Sampling { step, steps } => (OFFGRID_IMAGE_SAMPLING, step, steps),
+                        offgrid::ImageProgress::Decoding { done, total } => (OFFGRID_IMAGE_DECODING, done, total),
+                    };
+                    unsafe { cb(phase, done, total, user_data) }
+                })
+                .map_err(|e| e.to_string())?;
+            let png = image.to_png().into_boxed_slice();
+            unsafe { *len_out = png.len() };
+            Ok(Box::into_raw(png) as *mut u8)
+        }
+        #[cfg(not(feature = "image"))]
+        {
+            let _ = (model, request_json, callback, user_data);
+            Err("this build of offgrid has no image generation".into())
+        }
+    })
+}
+
+/// Free bytes returned by offgrid (e.g. [`offgrid_image_generate`]); `len` is the returned length.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn offgrid_bytes_free(bytes: *mut u8, len: usize) {
+    if !bytes.is_null() {
+        drop(unsafe { Box::from_raw(std::ptr::slice_from_raw_parts_mut(bytes, len)) });
+    }
+}
+
+/// Free an image model and its memory (NULL is ignored).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn offgrid_image_model_free(model: *mut OffgridImageModel) {
+    if !model.is_null() {
+        drop(unsafe { Box::from_raw(model) });
+    }
+}

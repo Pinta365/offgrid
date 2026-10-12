@@ -75,6 +75,12 @@ pub struct ImageRequest {
     pub sampler: Option<String>,
     /// Noise schedule, e.g. `discrete`, `karras`, `simple`.
     pub scheduler: Option<String>,
+    /// Image-to-image: start from this image instead of noise. The output has its size (a
+    /// multiple of 16); `width` and `height` are ignored. In JSON, a base64 PNG.
+    #[serde(with = "png_base64")]
+    pub init_image: Option<Image>,
+    /// How far to move away from `init_image`: 0 keeps it, 1 ignores it. Default 0.75.
+    pub strength: Option<f32>,
 }
 
 impl Default for ImageRequest {
@@ -89,6 +95,8 @@ impl Default for ImageRequest {
             seed: None,
             sampler: None,
             scheduler: None,
+            init_image: None,
+            strength: None,
         }
     }
 }
@@ -112,6 +120,25 @@ pub struct Image {
 }
 
 impl Image {
+    /// Decode a PNG (8-bit RGB, RGBA, grey or palette).
+    pub fn from_png(bytes: &[u8]) -> Result<Image> {
+        let bad = |e: png::DecodingError| Error::InvalidArgument(format!("invalid PNG: {e}"));
+        let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+        decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+        let mut reader = decoder.read_info().map_err(bad)?;
+        let mut buf = vec![0; reader.output_buffer_size().unwrap_or(0)];
+        let info = reader.next_frame(&mut buf).map_err(bad)?;
+        let px = &buf[..info.buffer_size()];
+        let rgb = match info.color_type {
+            png::ColorType::Rgb => px.to_vec(),
+            png::ColorType::Rgba => px.as_chunks::<4>().0.iter().flat_map(|p| [p[0], p[1], p[2]]).collect(),
+            png::ColorType::Grayscale => px.iter().flat_map(|&g| [g, g, g]).collect(),
+            png::ColorType::GrayscaleAlpha => px.as_chunks::<2>().0.iter().flat_map(|p| [p[0], p[0], p[0]]).collect(),
+            other => return Err(Error::InvalidArgument(format!("unsupported PNG colour type {other:?}"))),
+        };
+        Ok(Image { width: info.width, height: info.height, rgb })
+    }
+
     /// Encode as PNG.
     pub fn to_png(&self) -> Vec<u8> {
         let mut out = Vec::new();
@@ -204,8 +231,14 @@ impl ImageModel {
     /// Generate an image. `progress` reports loading, sampling and decoding; return `false` to
     /// cancel, which ends with [`Error::Cancelled`].
     pub fn generate(&mut self, req: &ImageRequest, mut progress: impl FnMut(ImageProgress) -> bool) -> Result<Image> {
-        if req.width == 0 || req.height == 0 || !req.width.is_multiple_of(16) || !req.height.is_multiple_of(16) {
+        let (width, height) = req.init_image.as_ref().map_or((req.width, req.height), |i| (i.width, i.height));
+        if width == 0 || height == 0 || !width.is_multiple_of(16) || !height.is_multiple_of(16) {
             return Err(Error::InvalidArgument("width and height must be positive multiples of 16".into()));
+        }
+        if let Some(init) = &req.init_image
+            && init.rgb.len() != init.width as usize * init.height as usize * 3
+        {
+            return Err(Error::InvalidArgument("init_image size doesn't match its RGB data".into()));
         }
         let prompt = c_string(&req.prompt)?;
         let negative = c_string(&req.negative_prompt)?;
@@ -213,8 +246,13 @@ impl ImageModel {
         unsafe { sd::sd_img_gen_params_init(&mut g) };
         g.prompt = prompt.as_ptr();
         g.negative_prompt = negative.as_ptr();
-        g.width = req.width as i32;
-        g.height = req.height as i32;
+        g.width = width as i32;
+        g.height = height as i32;
+        if let Some(init) = &req.init_image {
+            // sd.cpp only reads the pixels.
+            g.init_image = sd::sd_image_t { width, height, channel: 3, data: init.rgb.as_ptr() as *mut u8 };
+            g.strength = req.strength.unwrap_or(0.75).clamp(0.0, 1.0);
+        }
         g.batch_count = 1;
         g.seed = req.seed.map_or(-1, |s| (s & i64::MAX as u64) as i64);
         if let Some(steps) = req.steps {
@@ -327,4 +365,26 @@ unsafe extern "C" fn on_log(level: sd::sd_log_level_t, text: *const c_char, _: *
 
 fn c_string(s: &str) -> Result<CString> {
     CString::new(s).map_err(|_| Error::InvalidArgument("string contains NUL".into()))
+}
+
+/// `Option<Image>` as a base64 PNG in JSON.
+mod png_base64 {
+    use serde::{Deserialize, Deserializer, Serializer, de::Error as _};
+
+    use super::Image;
+    use crate::media::{base64_decode, base64_encode};
+
+    pub fn serialize<S: Serializer>(image: &Option<Image>, s: S) -> Result<S::Ok, S::Error> {
+        match image {
+            Some(img) => s.serialize_some(&base64_encode(&img.to_png())),
+            None => s.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Image>, D::Error> {
+        let Some(text) = Option::<String>::deserialize(d)? else { return Ok(None) };
+        let text = text.split_once("base64,").map_or(text.as_str(), |(_, b)| b);
+        let bytes = base64_decode(text.trim()).ok_or_else(|| D::Error::custom("init_image: invalid base64"))?;
+        Image::from_png(&bytes).map(Some).map_err(D::Error::custom)
+    }
 }

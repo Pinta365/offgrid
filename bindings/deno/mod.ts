@@ -8,6 +8,9 @@ import type {
   DeviceInfo,
   EmbedParams,
   GenerateRequest,
+  ImageModelParams,
+  ImageProgress,
+  ImageRequest,
   ModelInfo,
   ModelParams,
   SessionParams,
@@ -67,6 +70,14 @@ const symbols = {
     nonblocking: true,
   },
   offgrid_embedder_free: { parameters: ["pointer"], result: "void" },
+  offgrid_image_model_load: { parameters: ["buffer", "buffer"], result: "pointer", nonblocking: true },
+  offgrid_image_generate: {
+    parameters: ["pointer", "buffer", "function", "pointer", "buffer", "buffer"],
+    result: "pointer",
+    nonblocking: true,
+  },
+  offgrid_bytes_free: { parameters: ["pointer", "usize"], result: "void" },
+  offgrid_image_model_free: { parameters: ["pointer"], result: "void" },
 } as const satisfies Deno.ForeignLibraryInterface;
 
 /** @internal */
@@ -81,6 +92,13 @@ const EVENT_CALLBACK = {
   parameters: ["i32", "pointer", "usize", "pointer"],
   result: "bool",
 } as const satisfies Deno.UnsafeCallbackDefinition;
+
+const IMAGE_PROGRESS_CALLBACK = {
+  parameters: ["i32", "u32", "u32", "pointer"],
+  result: "bool",
+} as const satisfies Deno.UnsafeCallbackDefinition;
+
+const IMAGE_PHASES = ["loading", "sampling", "decoding"] as const;
 
 /** Event kinds of offgrid_chat_complete_events. */
 const EVENT_CONTENT = 0;
@@ -179,6 +197,17 @@ export class Offgrid implements Disposable {
   }
 
   /** Load a GGUF model (and its `mmproj` projector, if given). */
+  /**
+   * Load an image generation model (Z-Image, FLUX, SD 1.x/2.x/XL, ...). Needs a native library
+   * built with image generation (the release packages are).
+   */
+  async loadImageModel(params: ImageModelParams): Promise<ImageModel> {
+    const err = new ErrorSlot();
+    const ptr = await this.lib.offgrid_image_model_load(jsonArg(params), err.buf);
+    if (ptr === null) return err.fail(this.lib, "load image model");
+    return new ImageModel(this, ptr);
+  }
+
   async loadModel(path: string, params?: ModelParams): Promise<Model> {
     const err = new ErrorSlot();
     const ptr = await this.lib.offgrid_model_load(cstr(path), jsonArg(params), err.buf);
@@ -480,6 +509,66 @@ export class Embedder extends Handle {
   /** @internal */
   protected release(ptr: Deno.PointerObject): void {
     this.lib.offgrid_embedder_free(ptr);
+  }
+}
+
+/** Options for `ImageModel.generate`. */
+export interface GenerateImageOptions {
+  /** Called with loading, sampling and decoding progress. Return `false` to cancel. */
+  onProgress?: (progress: ImageProgress) => boolean | void;
+  /** Aborting cancels at the next progress event; the promise rejects with "cancelled". */
+  signal?: AbortSignal;
+}
+
+/** A generated image. */
+export interface GeneratedImage {
+  /** PNG file bytes. */
+  png: Uint8Array;
+  width: number;
+  height: number;
+}
+
+/** An image generation model. Free it (or `using`) to release its memory. */
+export class ImageModel extends Handle {
+  /** Generate an image. One generation runs at a time per process. */
+  async generate(request: ImageRequest, { onProgress, signal }: GenerateImageOptions = {}): Promise<GeneratedImage> {
+    signal?.throwIfAborted();
+    return await this.exclusive(async (ptr) => {
+      // Native code calls back from a worker thread; threadSafe marshals it to the JS thread.
+      const callback = onProgress || signal
+        ? Deno.UnsafeCallback.threadSafe(IMAGE_PROGRESS_CALLBACK, (phase, done, total) => {
+          if (signal?.aborted) return false;
+          return onProgress?.({ phase: IMAGE_PHASES[phase] ?? "loading", done, total }) !== false;
+        })
+        : null;
+      const len = new BigUint64Array(1);
+      const err = new ErrorSlot();
+      try {
+        const init = request.init_image;
+        const body = init instanceof Uint8Array ? { ...request, init_image: toBase64(init) } : request;
+        const res = await this.lib.offgrid_image_generate(
+          ptr,
+          jsonArg(body),
+          callback?.pointer ?? null,
+          null,
+          len,
+          err.buf,
+        );
+        if (res === null) return err.fail(this.lib, "generate image");
+        const png = new Uint8Array(Deno.UnsafePointerView.getArrayBuffer(res, Number(len[0]))).slice();
+        this.lib.offgrid_bytes_free(res, len[0]);
+        // IHDR: width and height are the big-endian u32s at bytes 16 and 20.
+        const view = new DataView(png.buffer);
+        return { png, width: view.getUint32(16), height: view.getUint32(20) };
+      } finally {
+        callback?.close();
+      }
+    });
+  }
+
+  /** @internal */
+  protected release(ptr: Deno.PointerObject): void {
+    this.lib.offgrid_image_model_free(ptr);
   }
 }
 

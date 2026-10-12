@@ -36,6 +36,21 @@
 #define OFFGRID_EVENT_TOOL_CALL 2
 
 /**
+ * Image generation phase passed to the progress callback: weights loading.
+ */
+#define OFFGRID_IMAGE_LOADING 0
+
+/**
+ * Image generation phase: a sampling step (`done` of `total` steps).
+ */
+#define OFFGRID_IMAGE_SAMPLING 1
+
+/**
+ * Image generation phase: VAE decoding.
+ */
+#define OFFGRID_IMAGE_DECODING 2
+
+/**
  * Opaque chat session handle.
  */
 typedef struct offgrid_chat offgrid_chat;
@@ -44,6 +59,11 @@ typedef struct offgrid_chat offgrid_chat;
  * Opaque embedder handle.
  */
 typedef struct offgrid_embedder offgrid_embedder;
+
+/**
+ * Opaque image model handle.
+ */
+typedef struct offgrid_image_model offgrid_image_model;
 
 /**
  * Opaque model handle.
@@ -66,6 +86,11 @@ typedef bool (*offgrid_token_callback)(const char *piece, size_t len, void *user
  * bytes of UTF-8 (also NUL-terminated). Return `false` to cancel generation.
  */
 typedef bool (*offgrid_event_callback)(int32_t kind, const char *text, size_t len, void *user_data);
+
+/**
+ * Image progress callback: `phase` is an `OFFGRID_IMAGE_*` value. Return `false` to cancel.
+ */
+typedef bool (*offgrid_image_progress_callback)(int32_t phase, uint32_t done, uint32_t total, void *user_data);
 
 #ifdef __cplusplus
 extern "C" {
@@ -171,6 +196,32 @@ int32_t offgrid_embed(const offgrid_embedder *emb, const char *const *inputs, si
 char *offgrid_embed_json(const offgrid_embedder *emb, const char *inputs_json, char **error_out);
 
 void offgrid_embedder_free(offgrid_embedder *emb);
+
+/**
+ * Load an image model (needs a build with image generation). `params_json`:
+ * `{"diffusion_model","text_encoder","vae"}` or `{"model"}` for single-file checkpoints, plus
+ * optional `"gpu"`, `"max_vram_gib"`, `"flash_attn"`, `"n_threads"`.
+ */
+offgrid_image_model *offgrid_image_model_load(const char *params_json, char **error_out);
+
+/**
+ * Generate an image; returns PNG bytes (free with [`offgrid_bytes_free`]) and their length in
+ * `*len_out`, or NULL on error. `request_json`: `{"prompt","negative_prompt","width","height",
+ * "steps","cfg_scale","seed","sampler","scheduler"}`, plus `"init_image"` (base64 PNG) and
+ * `"strength"` for image-to-image. A callback returning `false` cancels; the error is then
+ * "cancelled". One generation runs at a time per process.
+ */
+uint8_t *offgrid_image_generate(const offgrid_image_model *model, const char *request_json, offgrid_image_progress_callback callback, void *user_data, size_t *len_out, char **error_out);
+
+/**
+ * Free bytes returned by offgrid (e.g. [`offgrid_image_generate`]); `len` is the returned length.
+ */
+void offgrid_bytes_free(uint8_t *bytes, size_t len);
+
+/**
+ * Free an image model and its memory (NULL is ignored).
+ */
+void offgrid_image_model_free(offgrid_image_model *model);
 
 #ifdef __cplusplus
 }  // extern "C"

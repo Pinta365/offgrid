@@ -18,6 +18,8 @@ default = ["vulkan"]
 vulkan = ["offgrid/vulkan"]
 cuda = ["offgrid/cuda"]
 dynamic-backends = ["offgrid/dynamic-backends"]
+# Image generation (stable-diffusion.cpp); without it the image functions return an error.
+image = ["offgrid/image"]
 
 [dependencies]
 offgrid = { workspace = true }
