@@ -77,6 +77,14 @@ struct Args {
     #[cfg(feature = "image")]
     #[arg(long)]
     image_cpu: bool,
+    /// Run the image model's text encoder on the CPU (keeps its weights off the GPU).
+    #[cfg(feature = "image")]
+    #[arg(long)]
+    image_text_encoder_cpu: bool,
+    /// Decode images in tiles: a smaller GPU memory peak, so weights stay resident next to a chat model.
+    #[cfg(feature = "image")]
+    #[arg(long)]
+    image_vae_tiling: bool,
     /// Image model id reported to clients (default: file name).
     #[cfg(feature = "image")]
     #[arg(long)]
@@ -111,6 +119,8 @@ fn main() {
                 vae: args.image_vae,
                 max_vram_gib: args.image_max_vram,
                 gpu: !args.image_cpu,
+                text_encoder_on_cpu: args.image_text_encoder_cpu,
+                vae_tiling: args.image_vae_tiling,
                 ..Default::default()
             }
         }),

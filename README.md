@@ -177,7 +177,7 @@ Every model below was exercised end to end by the test suites on an RX 9070 XT (
 | Gemma 3 4B + mmproj | Vision, tools without template support | Template ignores tools; uses the system-message fallback |
 | Qwen2.5-Omni-3B + mmproj | Audio and vision | Word-perfect transcription from WAV, MP3 and FLAC |
 | Ultravox 0.5 (Llama 3.2 1B) + mmproj | Audio | Understands speech; unreliable at verbatim transcription |
-| Z-Image-Turbo Q4_K + Qwen3-4B text encoder + VAE | Image generation | 8 steps, `cfg_scale` 1.0: 768×512 in ~5 s on the RX 9070 XT, 512×512 in ~2m45s on the CPU. Uses ~6.2 GB of GPU memory; set `max_vram_gib` on smaller GPUs so part of the weights stays in RAM |
+| Z-Image-Turbo Q4_K + Qwen3-4B text encoder + VAE | Image generation | 8 steps, `cfg_scale` 1.0: 768×512 in ~5 s on the RX 9070 XT, 512×512 in ~2m45s on the CPU. Uses ~6.2 GB of GPU memory. Next to a chat model, `vae_tiling` keeps the weights resident between images; on small GPUs add `text_encoder_on_cpu` (saves 2.4 GB) or `max_vram_gib` |
 
 Performance with Qwen3-4B Q4_K_M:
 

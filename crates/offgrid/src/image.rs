@@ -29,6 +29,13 @@ pub struct ImageModelParams {
     pub vae: Option<PathBuf>,
     /// Use the GPU when one is available; false runs on the CPU.
     pub gpu: bool,
+    /// Run the text encoder on the CPU: it runs once per image on a short prompt (~0.4 s for
+    /// Z-Image), and its weights (2.4 GB) stay off the GPU. For small GPUs.
+    pub text_encoder_on_cpu: bool,
+    /// Decode in tiles: a much smaller GPU memory peak at the end of each image (about 0.4 s
+    /// slower at 1024×576). When GPU memory is tight, e.g. next to a chat model, this keeps the
+    /// weights resident instead of reloading them for every image.
+    pub vae_tiling: bool,
     /// GiB of GPU memory the model may use; weights beyond it stay in RAM. `None` = free memory.
     pub max_vram_gib: Option<f32>,
     /// Flash attention in the diffusion model.
@@ -48,6 +55,8 @@ impl Default for ImageModelParams {
             t5xxl: None,
             vae: None,
             gpu: true,
+            text_encoder_on_cpu: false,
+            vae_tiling: false,
             max_vram_gib: None,
             flash_attn: true,
             n_threads: None,
@@ -156,6 +165,7 @@ impl Image {
 /// on another thread while chat sessions are in use.
 pub struct ImageModel {
     ctx: NonNull<sd::sd_ctx_t>,
+    vae_tiling: bool,
 }
 
 // The context is used from one thread at a time (&mut self), but may move between threads.
@@ -209,9 +219,24 @@ impl ImageModel {
         p.vae_path = vae?;
         p.n_threads = params.n_threads.unwrap_or_else(default_threads);
         p.diffusion_flash_attn = params.flash_attn;
-        let cpu = c_string("cpu")?;
-        if !params.gpu {
-            p.backend = cpu.as_ptr();
+        let backend = if !params.gpu {
+            Some(c_string("cpu")?)
+        } else if params.text_encoder_on_cpu {
+            // A backend list puts every component it doesn't name on the CPU, so name them all.
+            let devices = crate::devices();
+            let gpu = [crate::DeviceKind::Gpu, crate::DeviceKind::Igpu]
+                .iter()
+                .find_map(|kind| devices.iter().find(|d| d.kind == *kind))
+                .map(|d| d.name.clone());
+            match gpu {
+                Some(gpu) => Some(c_string(&format!("te=cpu,diffusion={gpu},vae={gpu}"))?),
+                None => Some(c_string("cpu")?),
+            }
+        } else {
+            None
+        };
+        if let Some(b) = &backend {
+            p.backend = b.as_ptr();
         }
         let max_vram = params.max_vram_gib.map(|g| c_string(&g.to_string())).transpose()?;
         if let Some(v) = &max_vram {
@@ -225,7 +250,7 @@ impl ImageModel {
         let ctx = NonNull::new(ctx).ok_or_else(|| {
             Error::ModelLoad(params.diffusion_model.clone().or_else(|| params.model.clone()).unwrap_or_default())
         })?;
-        Ok(Self { ctx })
+        Ok(Self { ctx, vae_tiling: params.vae_tiling })
     }
 
     /// Generate an image. `progress` reports loading, sampling and decoding; return `false` to
@@ -254,6 +279,7 @@ impl ImageModel {
             g.strength = req.strength.unwrap_or(0.75).clamp(0.0, 1.0);
         }
         g.batch_count = 1;
+        g.vae_tiling_params.enabled = self.vae_tiling;
         g.seed = req.seed.map_or(-1, |s| (s & i64::MAX as u64) as i64);
         if let Some(steps) = req.steps {
             g.sample_params.sample_steps = steps as i32;

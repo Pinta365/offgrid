@@ -224,6 +224,10 @@ export interface ImageModelParams {
   gpu?: boolean;
   /** GiB of GPU memory the model may use; weights beyond it stay in RAM. */
   max_vram_gib?: number;
+  /** Run the text encoder on the CPU (~0.4 s per image); keeps its weights off the GPU. */
+  text_encoder_on_cpu?: boolean;
+  /** Decode in tiles: a smaller GPU memory peak, so weights stay resident when memory is tight. */
+  vae_tiling?: boolean;
   /** Flash attention in the diffusion model (default true). */
   flash_attn?: boolean;
   /** CPU threads; default half the hardware threads. */

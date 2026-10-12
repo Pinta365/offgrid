@@ -200,7 +200,8 @@ void offgrid_embedder_free(offgrid_embedder *emb);
 /**
  * Load an image model (needs a build with image generation). `params_json`:
  * `{"diffusion_model","text_encoder","vae"}` or `{"model"}` for single-file checkpoints, plus
- * optional `"gpu"`, `"max_vram_gib"`, `"flash_attn"`, `"n_threads"`.
+ * optional `"gpu"`, `"max_vram_gib"`, `"text_encoder_on_cpu"`, `"vae_tiling"`, `"flash_attn"`,
+ * `"n_threads"`.
  */
 offgrid_image_model *offgrid_image_model_load(const char *params_json, char **error_out);
 

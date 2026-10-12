@@ -122,3 +122,19 @@ fn refines_an_init_image() {
     println!("mean abs diff to the start image: refined {kept:.1}, fresh {new:.1}");
     assert!(kept < new * 0.7, "refined {kept:.1} vs fresh {new:.1}");
 }
+
+/// Options for tight GPU memory: text encoder on the CPU, tiled decoding. Same picture as the
+/// default setup, apart from small differences from CPU encoding and tile seams.
+#[test]
+fn text_encoder_on_cpu_and_vae_tiling() {
+    let Some(params) = params() else { return };
+    let base = ImageModel::load(&params).unwrap().generate(&request("A red apple on a white table"), |_| true).unwrap();
+    let tight = ImageModelParams { text_encoder_on_cpu: true, vae_tiling: true, ..params };
+    let img = ImageModel::load(&tight).unwrap().generate(&request("A red apple on a white table"), |_| true).unwrap();
+    assert_eq!((img.width, img.height), (512, 512));
+    let diff = img.rgb.iter().zip(&base.rgb).map(|(&a, &b)| (a as i32 - b as i32).unsigned_abs() as u64).sum::<u64>()
+        as f64
+        / img.rgb.len() as f64;
+    println!("mean abs diff to the default setup: {diff:.2}");
+    assert!(diff < 8.0, "{diff}");
+}
