@@ -53,6 +53,34 @@ struct Args {
     /// Require `Authorization: Bearer <key>`.
     #[arg(long, env = "OFFGRID_API_KEY", hide_env_values = true)]
     api_key: Option<String>,
+    /// Image diffusion model (Z-Image, FLUX, ...) for /v1/images/generations.
+    #[cfg(feature = "image")]
+    #[arg(long)]
+    image_diffusion_model: Option<PathBuf>,
+    /// Single-file image checkpoint (SD 1.x/2.x/XL), instead of --image-diffusion-model.
+    #[cfg(feature = "image")]
+    #[arg(long)]
+    image_model: Option<PathBuf>,
+    /// Text encoder for the image model (Z-Image: a Qwen3-4B GGUF).
+    #[cfg(feature = "image")]
+    #[arg(long)]
+    image_text_encoder: Option<PathBuf>,
+    /// VAE for the image model.
+    #[cfg(feature = "image")]
+    #[arg(long)]
+    image_vae: Option<PathBuf>,
+    /// GiB of GPU memory the image model may use; the rest of its weights stay in RAM.
+    #[cfg(feature = "image")]
+    #[arg(long)]
+    image_max_vram: Option<f32>,
+    /// Run the image model on the CPU.
+    #[cfg(feature = "image")]
+    #[arg(long)]
+    image_cpu: bool,
+    /// Image model id reported to clients (default: file name).
+    #[cfg(feature = "image")]
+    #[arg(long)]
+    image_alias: Option<String>,
 }
 
 fn main() {
@@ -74,6 +102,20 @@ fn main() {
         parallel: args.parallel,
         api_key: args.api_key,
         max_body_bytes: args.max_body_mb << 20,
+        #[cfg(feature = "image")]
+        image: (args.image_diffusion_model.is_some() || args.image_model.is_some()).then(|| {
+            offgrid::ImageModelParams {
+                diffusion_model: args.image_diffusion_model,
+                model: args.image_model,
+                text_encoder: args.image_text_encoder,
+                vae: args.image_vae,
+                max_vram_gib: args.image_max_vram,
+                gpu: !args.image_cpu,
+                ..Default::default()
+            }
+        }),
+        #[cfg(feature = "image")]
+        image_alias: args.image_alias,
     };
     // IPv4/IPv6 literals ("::1" or "[::1]") and hostnames ("localhost").
     let host = args.host.trim_start_matches('[').trim_end_matches(']').to_string();

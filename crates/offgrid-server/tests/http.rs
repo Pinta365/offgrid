@@ -460,3 +460,45 @@ async fn disconnect_cancels_hidden_tool_call_output() {
     println!("follow-up after hidden-output disconnect: {:?}", t.elapsed());
     assert!(t.elapsed() < Duration::from_secs(5), "session stayed busy after disconnect");
 }
+
+#[cfg(feature = "image")]
+#[tokio::test]
+async fn image_generations() {
+    let var = |k: &str| std::env::var(k).ok().map(std::path::PathBuf::from);
+    let (Some(diffusion), Some(vae), Some(encoder)) =
+        (var("OFFGRID_TEST_IMAGE_MODEL"), var("OFFGRID_TEST_IMAGE_VAE"), var("OFFGRID_TEST_IMAGE_TEXT_ENCODER"))
+    else {
+        return;
+    };
+    let url = spawn(ServerConfig {
+        image: Some(offgrid::ImageModelParams {
+            diffusion_model: Some(diffusion),
+            vae: Some(vae),
+            text_encoder: Some(encoder),
+            ..Default::default()
+        }),
+        image_alias: Some("test-image".into()),
+        ..Default::default()
+    });
+    let c = reqwest::Client::new();
+    let models: Value = c.get(format!("{url}/v1/models")).send().await.unwrap().json().await.unwrap();
+    assert_eq!(models["data"][0]["id"], "test-image");
+
+    let body = json!({"prompt": "A red apple", "size": "512x384", "steps": 8, "cfg_scale": 1.0, "seed": 1});
+    let r: Value =
+        c.post(format!("{url}/v1/images/generations")).json(&body).send().await.unwrap().json().await.unwrap();
+    let png = base64::engine::general_purpose::STANDARD.decode(r["data"][0]["b64_json"].as_str().unwrap()).unwrap();
+    assert_eq!(&png[1..4], b"PNG");
+    let size = |i: usize| u32::from_be_bytes(png[i..i + 4].try_into().unwrap());
+    assert_eq!((size(16), size(20)), (512, 384));
+
+    for bad in [
+        json!({"prompt": "x", "n": 2}),
+        json!({"prompt": "x", "response_format": "url"}),
+        json!({"prompt": "x", "size": "big"}),
+        json!({"size": "512x512"}),
+    ] {
+        let r = c.post(format!("{url}/v1/images/generations")).json(&bad).send().await.unwrap();
+        assert_eq!(r.status(), 400, "{bad}");
+    }
+}

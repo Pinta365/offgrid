@@ -3,6 +3,8 @@
 //! Endpoints: `POST /v1/chat/completions` (incl. SSE streaming with `reasoning_content`
 //! and `tool_calls` deltas), `POST /v1/embeddings`, `GET /v1/models`, `GET /health`.
 
+#[cfg(feature = "image")]
+mod images;
 mod openai;
 mod pool;
 
@@ -44,6 +46,11 @@ pub struct ServerConfig {
     pub api_key: Option<String>,
     /// Max request body in bytes (base64 images/audio are large). 0 = default (64 MiB).
     pub max_body_bytes: usize,
+    /// Image generation model for /v1/images/generations.
+    #[cfg(feature = "image")]
+    pub image: Option<offgrid::ImageModelParams>,
+    #[cfg(feature = "image")]
+    pub image_alias: Option<String>,
 }
 
 /// Default request size limit: room for base64-encoded photos and minutes of audio.
@@ -55,6 +62,8 @@ pub struct AppState {
     shutting_down: std::sync::atomic::AtomicBool,
     chat: Option<(String, Arc<ChatPool>)>,
     embed: Option<(String, Arc<Mutex<Embedder>>)>,
+    #[cfg(feature = "image")]
+    image: Option<images::ImageSlot>,
     api_key: Option<String>,
     created: u64,
 }
@@ -90,7 +99,23 @@ impl AppState {
             }
             None => None,
         };
-        if chat.is_none() && embed.is_none() {
+        #[cfg(feature = "image")]
+        let image = match &config.image {
+            Some(params) => {
+                let path = params.diffusion_model.clone().or_else(|| params.model.clone()).unwrap_or_default();
+                log::info!("loading image model {}", path.display());
+                let start = std::time::Instant::now();
+                let model = offgrid::ImageModel::load(params)?;
+                log::info!("loaded image model in {:.1}s", start.elapsed().as_secs_f64());
+                Some((model_id(&path, &config.image_alias), Arc::new(Mutex::new(model))))
+            }
+            None => None,
+        };
+        #[cfg(feature = "image")]
+        let has_image = image.is_some();
+        #[cfg(not(feature = "image"))]
+        let has_image = false;
+        if chat.is_none() && embed.is_none() && !has_image {
             return Err(offgrid::Error::InvalidArgument("no model configured (--model / --embedding-model)".into()));
         }
         Ok(Arc::new(Self {
@@ -98,6 +123,8 @@ impl AppState {
             max_body_bytes: if config.max_body_bytes == 0 { DEFAULT_MAX_BODY_BYTES } else { config.max_body_bytes },
             chat,
             embed,
+            #[cfg(feature = "image")]
+            image,
             api_key: config.api_key.clone().filter(|k| !k.is_empty()),
             created: now(),
         }))
@@ -121,7 +148,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/chat/completions", post(chat_completions))
         .route("/embeddings", post(embeddings))
         .route("/models", get(list_models))
-        .route("/models/{id}", get(get_model))
+        .route("/models/{id}", get(get_model));
+    #[cfg(feature = "image")]
+    let v1 = v1.route("/images/generations", post(images::generations));
+    let v1 = v1
         .layer(middleware::from_fn_with_state(state.clone(), auth))
         // axum's default is 2 MB, too small for base64 media.
         .layer(axum::extract::DefaultBodyLimit::max(state.max_body_bytes));
@@ -161,20 +191,21 @@ fn model_entry(state: &AppState, id: &str) -> Value {
     json!({"id": id, "object": "model", "created": state.created, "owned_by": "offgrid"})
 }
 
+/// Ids of the loaded models: chat, embedding, image.
+fn model_ids(state: &AppState) -> Vec<&str> {
+    let ids = state.chat.iter().map(|(id, _)| id.as_str()).chain(state.embed.iter().map(|(id, _)| id.as_str()));
+    #[cfg(feature = "image")]
+    let ids = ids.chain(state.image.iter().map(|(id, _)| id.as_str()));
+    ids.collect()
+}
+
 async fn list_models(State(state): State<Arc<AppState>>) -> Json<Value> {
-    let data: Vec<Value> = state
-        .chat
-        .iter()
-        .map(|(id, _)| id)
-        .chain(state.embed.iter().map(|(id, _)| id))
-        .map(|id| model_entry(&state, id))
-        .collect();
+    let data: Vec<Value> = model_ids(&state).into_iter().map(|id| model_entry(&state, id)).collect();
     Json(json!({"object": "list", "data": data}))
 }
 
 async fn get_model(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
-    let known = state.chat.iter().map(|(i, _)| i).chain(state.embed.iter().map(|(i, _)| i)).any(|i| *i == id);
-    if known {
+    if model_ids(&state).contains(&id.as_str()) {
         Json(model_entry(&state, &id)).into_response()
     } else {
         ApiError::not_found("model not found").into_response()
