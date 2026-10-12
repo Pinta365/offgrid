@@ -51,7 +51,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          submodules: recursive
+          submodules: true
       - name: Dependencies
         run: |
           sudo apt-get update
@@ -70,7 +70,9 @@ jobs:
       - name: Committed bindings match llama.cpp
         run: scripts/gen-bindings.sh --check linux
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: |
+          cargo clippy --workspace --all-targets -- -D warnings
+          cargo clippy -p offgrid -p offgrid-sys --features offgrid/image --all-targets -- -D warnings
       - name: Tests (model tests skip without models)
         run: cargo test --workspace
       - name: Deno binding tests

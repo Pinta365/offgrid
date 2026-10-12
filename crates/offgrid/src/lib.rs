@@ -19,6 +19,8 @@ mod batch;
 mod chat;
 mod embed;
 mod error;
+#[cfg(feature = "image")]
+mod image;
 mod json_schema;
 #[cfg(feature = "dynamic-backends")]
 mod loader;
@@ -37,6 +39,8 @@ pub use chat::{
 };
 pub use embed::{EmbedParams, Embedder};
 pub use error::{Error, Result};
+#[cfg(feature = "image")]
+pub use image::{Image, ImageModel, ImageModelParams, ImageProgress, ImageRequest};
 pub use media::{Media, MediaKind, media_marker};
 pub use model::{GpuLayers, Model, ModelInfo, ModelParams};
 pub use sampling::SamplingParams;

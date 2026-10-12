@@ -221,7 +221,8 @@ Cross-compiling for Windows needs [llvm-mingw](https://github.com/mstorsjo/llvm-
 
 Building natively on Windows (MSVC) needs Visual Studio Build Tools with the
 C++ workload, CMake and the [Vulkan SDK](https://vulkan.lunarg.com/) (`VULKAN_SDK` set by its
-installer). Clone with `--recursive`, then `cargo build --release`.
+installer). Clone, run `git submodule update --init` (not `--recursive`: stable-diffusion.cpp has nested
+submodules offgrid doesn't use), then `cargo build --release`.
 
 The bindings to llama.cpp are committed (`crates/offgrid-sys/src/bindings`), so building doesn't
 need libclang. After bumping llama.cpp, regenerate them with `scripts/gen-bindings.sh`.

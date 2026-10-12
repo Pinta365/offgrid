@@ -5,6 +5,11 @@
 pub struct FILE {
     _private: [u8; 0],
 }
+/// ggml tensor, opaque.
+#[repr(C)]
+pub struct ggml_tensor {
+    _private: [u8; 0],
+}
 
 pub const LLAMA_DEFAULT_SEED: u32 = 4294967295;
 pub const LLAMA_TOKEN_NULL: i32 = -1;
@@ -313,71 +318,6 @@ const _: () = {
     [
         "Offset of field: ggml_init_params::no_alloc",
     ][::std::mem::offset_of!(ggml_init_params, no_alloc) - 16usize];
-};
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
-pub struct ggml_tensor {
-    pub type_: ggml_type,
-    pub buffer: *mut ggml_backend_buffer,
-    pub ne: [i64; 4usize],
-    pub nb: [usize; 4usize],
-    pub op: ggml_op,
-    pub op_params: [i32; 16usize],
-    pub flags: i32,
-    pub src: [*mut ggml_tensor; 10usize],
-    pub view_src: *mut ggml_tensor,
-    pub view_offs: usize,
-    pub data: *mut ::std::os::raw::c_void,
-    pub name: [::std::os::raw::c_char; 64usize],
-    pub extra: *mut ::std::os::raw::c_void,
-    pub padding: [::std::os::raw::c_char; 8usize],
-}
-#[allow(clippy::unnecessary_operation, clippy::identity_op)]
-const _: () = {
-    ["Size of ggml_tensor"][::std::mem::size_of::<ggml_tensor>() - 336usize];
-    ["Alignment of ggml_tensor"][::std::mem::align_of::<ggml_tensor>() - 8usize];
-    [
-        "Offset of field: ggml_tensor::type_",
-    ][::std::mem::offset_of!(ggml_tensor, type_) - 0usize];
-    [
-        "Offset of field: ggml_tensor::buffer",
-    ][::std::mem::offset_of!(ggml_tensor, buffer) - 8usize];
-    [
-        "Offset of field: ggml_tensor::ne",
-    ][::std::mem::offset_of!(ggml_tensor, ne) - 16usize];
-    [
-        "Offset of field: ggml_tensor::nb",
-    ][::std::mem::offset_of!(ggml_tensor, nb) - 48usize];
-    [
-        "Offset of field: ggml_tensor::op",
-    ][::std::mem::offset_of!(ggml_tensor, op) - 80usize];
-    [
-        "Offset of field: ggml_tensor::op_params",
-    ][::std::mem::offset_of!(ggml_tensor, op_params) - 84usize];
-    [
-        "Offset of field: ggml_tensor::flags",
-    ][::std::mem::offset_of!(ggml_tensor, flags) - 148usize];
-    [
-        "Offset of field: ggml_tensor::src",
-    ][::std::mem::offset_of!(ggml_tensor, src) - 152usize];
-    [
-        "Offset of field: ggml_tensor::view_src",
-    ][::std::mem::offset_of!(ggml_tensor, view_src) - 232usize];
-    [
-        "Offset of field: ggml_tensor::view_offs",
-    ][::std::mem::offset_of!(ggml_tensor, view_offs) - 240usize];
-    [
-        "Offset of field: ggml_tensor::data",
-    ][::std::mem::offset_of!(ggml_tensor, data) - 248usize];
-    [
-        "Offset of field: ggml_tensor::name",
-    ][::std::mem::offset_of!(ggml_tensor, name) - 256usize];
-    [
-        "Offset of field: ggml_tensor::extra",
-    ][::std::mem::offset_of!(ggml_tensor, extra) - 320usize];
-    [
-        "Offset of field: ggml_tensor::padding",
-    ][::std::mem::offset_of!(ggml_tensor, padding) - 328usize];
 };
 pub type ggml_abort_callback = ::std::option::Option<
     unsafe extern "C" fn(data: *mut ::std::os::raw::c_void) -> bool,

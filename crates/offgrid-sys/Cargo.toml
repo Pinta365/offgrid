@@ -47,6 +47,8 @@ vulkan = []
 cuda = []
 # Shared libs + runtime-loaded backends + all CPU variants (for distributable builds).
 dynamic-backends = []
+# Image generation through stable-diffusion.cpp (needs the git checkout; not in the crates.io package).
+image = []
 # Regenerate the bindings with bindgen (needs libclang) instead of using the committed ones.
 bindgen = ["dep:bindgen"]
 

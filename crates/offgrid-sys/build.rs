@@ -7,15 +7,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=OFFGRID_NATIVE");
 
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
-    let llama_dir = {
-        let p = manifest_dir.join("llama.cpp");
-        let p = p.canonicalize().unwrap_or(p);
-        // Windows canonicalize() yields a `\\?\` verbatim path, which CMake's ExternalProject rejects.
-        match p.to_str().and_then(|s| s.strip_prefix(r"\\?\")) {
-            Some(s) => PathBuf::from(s),
-            None => p,
-        }
-    };
+    let llama_dir = strip_verbatim(manifest_dir.join("llama.cpp"));
 
     println!("cargo:rerun-if-changed={}", llama_dir.join("include/llama.h").display());
     println!("cargo:rerun-if-changed={}", llama_dir.join("ggml/include/ggml-backend.h").display());
@@ -34,7 +26,9 @@ fn main() {
 
     let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
-    write_bindings(&manifest_dir, &llama_dir, &target_os, &out_dir.join("bindings.rs"));
+    let image = env::var_os("CARGO_FEATURE_IMAGE").is_some();
+    let sd_dir = strip_verbatim(manifest_dir.join("stable-diffusion.cpp"));
+    write_bindings(&manifest_dir, &llama_dir, &sd_dir, image, &target_os, &out_dir);
     if env::var_os("OFFGRID_SYS_WRITE_BINDINGS").is_some() {
         // Regenerating the committed bindings only (scripts/gen-bindings.sh): skip the llama.cpp build.
         println!("cargo:rustc-env=OFFGRID_SYS_BACKEND_DIR=");
@@ -49,7 +43,25 @@ fn main() {
     let msvc = env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc");
     let unix_like = matches!(target_os.as_str(), "linux" | "freebsd" | "netbsd" | "openbsd" | "dragonfly");
 
-    let mut cfg = cmake::Config::new(&llama_dir);
+    let mut cfg = if image {
+        assert!(
+            sd_dir.join("include/stable-diffusion.h").exists(),
+            "offgrid-sys: the `image` feature needs the stable-diffusion.cpp submodule, which the crates.io \
+             package doesn't include; depend on offgrid from git"
+        );
+        let mut cfg = cmake::Config::new(manifest_dir.join("native"));
+        cfg.define("OFFGRID_LLAMA_DIR", &llama_dir);
+        cfg.define("OFFGRID_SD_DIR", &sd_dir);
+        // Build against llama.cpp's ggml rather than sd.cpp's patched fork.
+        cfg.define("SD_USE_UPSTREAM_GGML", "ON");
+        cfg.define("SD_BUILD_EXAMPLES", "OFF");
+        cfg.define("SD_WEBP", "OFF");
+        cfg.define("SD_WEBM", "OFF");
+        cfg.define("SD_BUILD_SHARED_LIBS", if dynamic { "ON" } else { "OFF" });
+        cfg
+    } else {
+        cmake::Config::new(&llama_dir)
+    };
 
     // Release even for debug cargo builds; a debug llama.cpp is far too slow.
     cfg.profile("Release");
@@ -111,6 +123,9 @@ fn main() {
             .and_then(|p| p.parent().map(Path::to_path_buf))
             .expect("offgrid-sys: libllama shared library not found");
         println!("cargo:rustc-link-search=native={}", lib_dir.display());
+        if image {
+            println!("cargo:rustc-link-lib=dylib=stable-diffusion");
+        }
         for name in ["mtmd", "llama", "ggml", "ggml-base"] {
             println!("cargo:rustc-link-lib=dylib={name}");
         }
@@ -126,44 +141,70 @@ fn main() {
         println!("cargo:backend_dir={}", backend_dir.display());
     } else {
         println!("cargo:rustc-env=OFFGRID_SYS_BACKEND_DIR=");
-        link_static(&dst, vulkan, cuda, &target_os);
+        link_static(&dst, image, vulkan, cuda, &target_os);
     }
 }
 
-/// Bindings for `target_os`: the committed `src/bindings/<os>.rs`, or freshly generated with the
-/// `bindgen` feature (which also writes them to `$OFFGRID_SYS_WRITE_BINDINGS` when set).
+/// Bindings for `target_os`, written to `out_dir`: `bindings.rs` (llama.cpp, mtmd) and, with
+/// `image`, `sd_bindings.rs` (stable-diffusion.cpp). They are the committed
+/// `src/bindings/[sd_]<os>.rs`, or freshly generated with the `bindgen` feature, which also writes
+/// them to the directory `$OFFGRID_SYS_WRITE_BINDINGS` when set.
 #[cfg(not(feature = "bindgen"))]
-fn write_bindings(manifest_dir: &Path, _llama_dir: &Path, target_os: &str, out: &Path) {
+fn write_bindings(
+    manifest_dir: &Path,
+    _llama_dir: &Path,
+    _sd_dir: &Path,
+    image: bool,
+    target_os: &str,
+    out_dir: &Path,
+) {
     let os = match target_os {
         "windows" => "windows",
         "linux" => "linux",
         other => panic!("offgrid-sys: no pregenerated bindings for {other}; enable the `bindgen` feature"),
     };
-    let src = manifest_dir.join("src/bindings").join(format!("{os}.rs"));
-    println!("cargo:rerun-if-changed={}", src.display());
-    std::fs::copy(&src, out).expect("offgrid-sys: failed to copy pregenerated bindings");
+    for (prefix, out) in [("", "bindings.rs"), ("sd_", "sd_bindings.rs")].into_iter().take(if image { 2 } else { 1 }) {
+        let src = manifest_dir.join("src/bindings").join(format!("{prefix}{os}.rs"));
+        println!("cargo:rerun-if-changed={}", src.display());
+        std::fs::copy(&src, out_dir.join(out)).expect("offgrid-sys: failed to copy pregenerated bindings");
+    }
 }
 
 #[cfg(feature = "bindgen")]
-fn write_bindings(_manifest_dir: &Path, llama_dir: &Path, _target_os: &str, out: &Path) {
+fn write_bindings(_manifest_dir: &Path, llama_dir: &Path, sd_dir: &Path, image: bool, target_os: &str, out_dir: &Path) {
     println!("cargo:rerun-if-env-changed=OFFGRID_SYS_WRITE_BINDINGS");
-    let bindings = bindgen::Builder::default()
+    let os = if target_os == "windows" { "windows" } else { "linux" };
+    let llama = bindgen::Builder::default()
         .header_contents("offgrid_sys.h", "#include \"llama.h\"\n#include \"mtmd.h\"\n#include \"mtmd-helper.h\"\n")
         .clang_arg(format!("-I{}", llama_dir.join("include").display()))
         .clang_arg(format!("-I{}", llama_dir.join("ggml/include").display()))
         .clang_arg(format!("-I{}", llama_dir.join("tools/mtmd").display()))
         .allowlist_function("llama_.*|ggml_backend_.*|ggml_log_.*|mtmd_.*")
         .allowlist_type("llama_.*|ggml_.*|mtmd_.*")
-        .allowlist_var("LLAMA_.*")
-        // libc's FILE layout differs between C libraries; only pointers to it cross the API.
-        .blocklist_type("FILE|_IO_.*|_iobuf|__off(64)?_t|__uint64_t")
-        .raw_line("/// C `FILE`, opaque.\n#[repr(C)]\npub struct FILE {\n    _private: [u8; 0],\n}")
-        .formatter(bindgen::Formatter::Prettyplease)
-        .generate()
-        .expect("offgrid-sys: bindgen failed to generate bindings");
-    bindings.write_to_file(out).expect("offgrid-sys: failed to write bindings.rs");
-    if let Some(dest) = env::var_os("OFFGRID_SYS_WRITE_BINDINGS") {
-        std::fs::copy(out, dest).expect("offgrid-sys: failed to write OFFGRID_SYS_WRITE_BINDINGS");
+        .allowlist_var("LLAMA_.*");
+    let mut sets = vec![(llama, "bindings.rs", os.to_string())];
+    if image {
+        let sd = bindgen::Builder::default()
+            .header(sd_dir.join("include/stable-diffusion.h").to_string_lossy())
+            .allowlist_function("sd_.*|new_sd_ctx|free_sd_ctx|generate_image|free_sd_images|str_to_.*")
+            .allowlist_type("sd_.*|sample_method_t|scheduler_t|rng_type_t|prediction_t");
+        sets.push((sd, "sd_bindings.rs", format!("sd_{os}")));
+    }
+    for (builder, out, name) in sets {
+        let bindings = builder
+            // libc's FILE and ggml_tensor (whose size depends on GGML_MAX_NAME, set by the `image`
+            // build) differ between builds; only pointers to them cross the API.
+            .blocklist_type("FILE|_IO_.*|_iobuf|__off(64)?_t|__uint64_t|ggml_tensor")
+            .raw_line("/// C `FILE`, opaque.\n#[repr(C)]\npub struct FILE {\n    _private: [u8; 0],\n}")
+            .raw_line("/// ggml tensor, opaque.\n#[repr(C)]\npub struct ggml_tensor {\n    _private: [u8; 0],\n}")
+            .formatter(bindgen::Formatter::Prettyplease)
+            .generate()
+            .expect("offgrid-sys: bindgen failed to generate bindings");
+        bindings.write_to_file(out_dir.join(out)).expect("offgrid-sys: failed to write bindings");
+        if let Some(dir) = env::var_os("OFFGRID_SYS_WRITE_BINDINGS") {
+            std::fs::copy(out_dir.join(out), Path::new(&dir).join(format!("{name}.rs")))
+                .expect("offgrid-sys: failed to write to OFFGRID_SYS_WRITE_BINDINGS");
+        }
     }
 }
 
@@ -221,6 +262,15 @@ fn copy_dir(src: &Path, dst: &Path) {
 
 fn which(prog: &str) -> Option<PathBuf> {
     env::var_os("PATH").and_then(|paths| env::split_paths(&paths).map(|d| d.join(prog)).find(|p| p.is_file()))
+}
+
+/// Canonical path without Windows' `\\?\` verbatim prefix, which CMake's ExternalProject rejects.
+fn strip_verbatim(p: PathBuf) -> PathBuf {
+    let p = p.canonicalize().unwrap_or(p);
+    match p.to_str().and_then(|s| s.strip_prefix(r"\\?\")) {
+        Some(s) => PathBuf::from(s),
+        None => p,
+    }
 }
 
 /// True when the C/C++ compiler is zig's (e.g. under `cargo zigbuild`).
@@ -284,9 +334,10 @@ fn find_vendor_archives(root: &Path) -> Vec<PathBuf> {
     found
 }
 
-fn link_static(dst: &Path, vulkan: bool, cuda: bool, target_os: &str) {
+fn link_static(dst: &Path, image: bool, vulkan: bool, cuda: bool, target_os: &str) {
     // Dependency order (left-to-right): consumers before providers.
-    let mut static_libs: Vec<&str> = vec!["mtmd", "llama", "ggml"];
+    let mut static_libs: Vec<&str> = if image { vec!["stable-diffusion"] } else { Vec::new() };
+    static_libs.extend(["mtmd", "llama", "ggml"]);
     if vulkan {
         static_libs.push("ggml-vulkan");
     }

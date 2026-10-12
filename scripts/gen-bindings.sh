@@ -2,7 +2,8 @@
 #
 # gen-bindings.sh [--check] [linux|windows]...
 #
-# Regenerate the committed bindings in crates/offgrid-sys/src/bindings (default: both).
+# Regenerate the committed bindings in crates/offgrid-sys/src/bindings (default: both targets):
+# <os>.rs for llama.cpp and mtmd, sd_<os>.rs for stable-diffusion.cpp.
 # --check compares instead of writing and fails if they are out of date.
 # Run after bumping llama.cpp. Windows needs llvm-mingw (scripts/env-llvm-mingw.sh).
 #
@@ -28,22 +29,25 @@ for os in "$@"; do
         windows) args=(--target x86_64-pc-windows-gnullvm) ;;
         *) echo "unknown target: $os" >&2; exit 2 ;;
     esac
-    out="$tmp/$os.rs"
+    out="$tmp/$os"
+    mkdir -p "$out"
     (
         [ "$os" = windows ] && source "$ROOT/scripts/env-llvm-mingw.sh"
-        OFFGRID_SYS_WRITE_BINDINGS="$out" cargo check -q -p offgrid-sys --features bindgen "${args[@]}"
+        OFFGRID_SYS_WRITE_BINDINGS="$out" cargo check -q -p offgrid-sys --features bindgen,image "${args[@]}"
     )
-    if [ "$check" = 1 ]; then
-        if diff -u "$DIR/$os.rs" "$out" >"$tmp/$os.diff"; then
-            echo "$os: up to date"
+    for file in "$os.rs" "sd_$os.rs"; do
+        if [ "$check" = 1 ]; then
+            if diff -u "$DIR/$file" "$out/$file" >"$tmp/diff"; then
+                echo "$file: up to date"
+            else
+                echo "$file: out of date, run scripts/gen-bindings.sh" >&2
+                head -40 "$tmp/diff" >&2
+                fail=1
+            fi
         else
-            echo "$os: out of date, run scripts/gen-bindings.sh" >&2
-            head -40 "$tmp/$os.diff" >&2
-            fail=1
+            cp "$out/$file" "$DIR/$file"
+            echo "wrote $DIR/$file"
         fi
-    else
-        cp "$out" "$DIR/$os.rs"
-        echo "$os: wrote $DIR/$os.rs"
-    fi
+    done
 done
 exit "$fail"

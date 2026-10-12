@@ -16,6 +16,8 @@ vulkan = ["offgrid-sys/vulkan"]
 cuda = ["offgrid-sys/cuda"]
 # Load CPU/GPU backends at runtime from the library's directory (portable builds).
 dynamic-backends = ["offgrid-sys/dynamic-backends", "dep:libc", "dep:windows-sys"]
+# Image generation through stable-diffusion.cpp (needs offgrid from git; see the README).
+image = ["offgrid-sys/image", "dep:png"]
 
 [dependencies]
 offgrid-sys = { workspace = true }
@@ -25,6 +27,7 @@ serde_json = { version = "1", features = ["preserve_order"] }
 minijinja = { version = "2", features = ["loop_controls", "preserve_order", "json", "fuel"] }
 minijinja-contrib = { version = "2", features = ["pycompat"] }
 thiserror = "2"
+png = { version = "0.18", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = { version = "0.2", optional = true }

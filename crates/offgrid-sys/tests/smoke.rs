@@ -76,3 +76,11 @@ fn tokenize_with_model() {
         offgrid_sys::llama_model_free(model);
     }
 }
+
+#[cfg(feature = "image")]
+#[test]
+fn stable_diffusion_links() {
+    let info = unsafe { std::ffi::CStr::from_ptr(offgrid_sys::sd::sd_get_system_info()) };
+    println!("{}", info.to_string_lossy());
+    assert!(!info.to_bytes().is_empty());
+}

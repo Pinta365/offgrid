@@ -37,7 +37,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          submodules: recursive
+          submodules: true
       - name: Dependencies
         run: |
           sudo apt-get update
@@ -76,7 +76,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          submodules: recursive
+          submodules: true
       - name: Dependencies
         run: |
           sudo apt-get update

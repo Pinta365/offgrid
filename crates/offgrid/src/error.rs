@@ -29,4 +29,8 @@ pub enum Error {
     NoEmbeddings,
     #[error("media input: {0}")]
     Media(String),
+    #[error("cancelled")]
+    Cancelled,
+    #[error("image generation: {0}")]
+    ImageGeneration(String),
 }
