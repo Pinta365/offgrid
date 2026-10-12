@@ -146,9 +146,22 @@ impl StreamFilter {
                             self.state = FilterState::Reasoning;
                             continue;
                         }
-                        if self.json_start && trimmed.starts_with('{') {
-                            self.state = FilterState::Suppressed;
-                            continue;
+                        if self.json_start {
+                            if trimmed.starts_with('{') {
+                                self.state = FilterState::Suppressed;
+                                continue;
+                            }
+                            // A code fence that may hold calls: wait for its info string.
+                            if "```".starts_with(trimmed) || trimmed.starts_with("```") {
+                                match trimmed.find('\n') {
+                                    None => return out,
+                                    Some(i) if crate::tool_parse::is_call_fence(&trimmed[..i]) => {
+                                        self.state = FilterState::Suppressed;
+                                        continue;
+                                    }
+                                    Some(_) => {}
+                                }
+                            }
                         }
                         self.held = trimmed.to_string();
                         self.started = true;
@@ -305,6 +318,15 @@ mod tests {
         assert_eq!(filter(None, false, false, &["\n<thi", "nk>hmm</th", "ink>\n\nAnswer"]), "Answer");
         assert_eq!(filter(None, false, true, &["still thinking</think>Done"]), "Done");
         assert_eq!(filter(None, false, false, &["<b>bold</b>"]), "<b>bold</b>");
+    }
+
+    #[test]
+    fn filter_holds_back_call_fences_only() {
+        let mut f = StreamFilter::new(Some("<tool_call>"), true, false);
+        assert!(f.push("```").is_empty() && f.push("tool_call\n{\"name\"").is_empty());
+        let mut f = StreamFilter::new(Some("<tool_call>"), true, false);
+        let shown: String = [f.push("```py"), f.push("thon\nx = 1\n")].concat().into_iter().map(|(_, t)| t).collect();
+        assert_eq!(shown, "```python\nx = 1\n");
     }
 
     #[test]

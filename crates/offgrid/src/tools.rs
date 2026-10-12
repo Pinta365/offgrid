@@ -344,11 +344,15 @@ pub(crate) fn tool_grammar(
             // Llama 3.1+ may open its calls with the `<|python_tag|>` token.
             lazy_patterns.push(r"^\s*<\|python_tag\|>\s*(\{)[\s\S]*$".into());
         } else {
-            // Models in any format sometimes drop their markup and reply with bare call
-            // objects; constrain those too when the reply starts with one naming an offered tool.
+            // Models in any format sometimes drop their markup and reply with bare call objects,
+            // possibly in a code fence; constrain those too when the reply starts with one
+            // naming an offered tool (the fence opener stays unconstrained).
             let names: Vec<String> = selected.iter().map(|t| regex_escape(&t.function.name)).collect();
-            text.push_str(&format!(" | {}", many("root")));
-            lazy_patterns.push(format!(r#"^\s*(\{{\s*"name"\s*:\s*"(?:{})")[\s\S]*$"#, names.join("|")));
+            text.push_str(&format!(r#" | {} ([ \n]{{0,2}} ("```" | "</tool_call>"))?"#, many("root")));
+            lazy_patterns.push(format!(
+                r#"^\s*(?:```(?:tool_call>?|tool_code|json)?[ \t]*\n\s*)?(\{{\s*"name"\s*:\s*"(?:{})")[\s\S]*$"#,
+                names.join("|")
+            ));
         }
     }
     text.push('\n');
@@ -414,7 +418,10 @@ mod tests {
         let g = tool_grammar(ToolFormat::Hermes, &tools, &ToolChoice::Auto, true).unwrap().unwrap();
         assert_eq!(g.root, "tool-calls");
         assert_eq!(g.lazy_patterns[0], "(<tool_call>)");
-        assert_eq!(g.lazy_patterns[1], r#"^\s*(\{\s*"name"\s*:\s*"(?:get_weather)")[\s\S]*$"#);
+        assert_eq!(
+            g.lazy_patterns[1],
+            r#"^\s*(?:```(?:tool_call>?|tool_code|json)?[ \t]*\n\s*)?(\{\s*"name"\s*:\s*"(?:get_weather)")[\s\S]*$"#
+        );
         assert!(g.text.contains("tool-call ::= \"<tool_call>\""));
         assert!(g.text.contains("get_weather"));
         let g = tool_grammar(ToolFormat::Hermes, &tools, &ToolChoice::Required, false).unwrap().unwrap();
@@ -440,7 +447,8 @@ mod tests {
             let g = tool_grammar(format, &tools, &ToolChoice::Auto, false).unwrap().unwrap();
             assert_eq!(g.lazy_patterns.len(), 2, "{format:?}");
             assert!(g.lazy_patterns[1].starts_with('^'), "bare form only at the start of the reply");
-            assert!(g.text.lines().any(|l| l.starts_with("tool-calls ::=") && l.ends_with(" | root")), "{format:?}");
+            let rule = g.text.lines().find(|l| l.starts_with("tool-calls ::=")).unwrap();
+            assert!(rule.contains(" | root ") && rule.ends_with(r#"("```" | "</tool_call>"))?"#), "{format:?}: {rule}");
             let g = tool_grammar(format, &tools, &ToolChoice::Required, false).unwrap().unwrap();
             assert!(g.lazy_patterns.is_empty());
             assert!(!g.text.contains(" | root"));

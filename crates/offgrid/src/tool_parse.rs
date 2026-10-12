@@ -94,8 +94,51 @@ fn parse_calls(format: ToolFormat, text: &str) -> (String, Vec<ParsedCall>) {
         ToolFormat::Qwen3CoderXml => parse_qwen3_xml(text),
         ToolFormat::Generic => parse_generic(text),
     };
-    // Models in any format sometimes drop their markup and reply with bare call objects.
-    if calls.is_empty() { parse_json_calls(text) } else { (content, calls) }
+    if !calls.is_empty() {
+        return (strip_empty_fence(&content), calls);
+    }
+    // Models in any format sometimes drop their markup and reply with bare call objects, or
+    // wrap calls in a Markdown code fence.
+    let (content, calls) = parse_json_calls(text);
+    if !calls.is_empty() {
+        return (content, calls);
+    }
+    parse_fenced(text).unwrap_or((content, calls))
+}
+
+/// Info strings of code fences that may hold tool calls: ```tool_call, ```tool_code, ```json,
+/// a bare ```, and the malformed ```tool_call> some models write.
+pub(crate) fn is_call_fence(line: &str) -> bool {
+    line.trim()
+        .strip_prefix("```")
+        .is_some_and(|info| matches!(info.trim(), "" | "tool_call" | "tool_call>" | "tool_code" | "json"))
+}
+
+/// Content left after taking tagged calls out of a call fence: drop the empty fence.
+fn strip_empty_fence(content: &str) -> String {
+    match content.find("```") {
+        Some(start)
+            if content[start..].lines().all(|l| l.trim().is_empty() || l.trim() == "```" || is_call_fence(l)) =>
+        {
+            content[..start].trim().to_string()
+        }
+        _ => content.to_string(),
+    }
+}
+
+/// Calls inside a code fence (closed by ```, by `</tool_call>`, or cut off); text before the
+/// fence is content.
+fn parse_fenced(text: &str) -> Option<(String, Vec<ParsedCall>)> {
+    let start = text.find("```")?;
+    let newline = start + text[start..].find('\n')?;
+    if !is_call_fence(&text[start..newline]) {
+        return None;
+    }
+    let body = &text[newline + 1..];
+    let end = ["```", "</tool_call>"].iter().filter_map(|close| body.find(close)).min().unwrap_or(body.len());
+    let inner = &body[..end];
+    let (_, calls) = if inner.contains("<tool_call>") { parse_hermes(inner) } else { parse_json_calls(inner) };
+    (!calls.is_empty()).then(|| (text[..start].trim().to_string(), calls))
 }
 
 /// Normalize an arguments value into compact JSON object text.
@@ -571,6 +614,26 @@ mod tests {
         let p = parse_output(ToolFormat::Hermes, "Just text {not a call}", false);
         assert!(p.calls.is_empty());
         assert_eq!(p.content, "Just text {not a call}");
+    }
+
+    #[test]
+    fn calls_in_code_fences() {
+        let call = r#"{"name": "f", "arguments": {"a": 1}}"#;
+        let cases = [
+            format!("```tool_call\n{call}\n```"),
+            format!("```tool_call>\n{call}\n</tool_call>"),
+            format!("Sure.\n```json\n{call}\n{call}\n```"),
+            format!("```\n<tool_call>{call}</tool_call>\n```"),
+            format!("```tool_code\n{call}"),
+        ];
+        for (i, text) in cases.iter().enumerate() {
+            let p = parse_output(ToolFormat::Polyfill, text, false);
+            assert_eq!(p.calls.len(), if i == 2 { 2 } else { 1 }, "{text}");
+            assert_eq!(args(&p.calls[0]), json!({"a": 1}));
+            assert_eq!(p.content, if i == 2 { "Sure." } else { "" });
+        }
+        let code = "```python\nprint({\"name\": \"f\"})\n```";
+        assert!(parse_output(ToolFormat::Hermes, code, false).calls.is_empty());
     }
 
     #[test]
