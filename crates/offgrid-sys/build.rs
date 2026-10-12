@@ -49,6 +49,9 @@ fn main() {
             "offgrid-sys: the `image` feature needs the stable-diffusion.cpp submodule, which the crates.io \
              package doesn't include; depend on offgrid from git"
         );
+        for file in ["CMakeLists.txt", "stable-diffusion.map"] {
+            println!("cargo:rerun-if-changed={}", manifest_dir.join("native").join(file).display());
+        }
         let mut cfg = cmake::Config::new(manifest_dir.join("native"));
         cfg.define("OFFGRID_LLAMA_DIR", &llama_dir);
         cfg.define("OFFGRID_SD_DIR", &sd_dir);

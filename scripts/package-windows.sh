@@ -24,10 +24,10 @@ ZIPFILE="$ROOT/dist/$PKG_NAME.zip"
 # Remove previous output first so a failed build can't leave a stale package behind.
 rm -rf "$PKG" "$ZIPFILE" "${ZIPFILE%.zip}.tar.gz"
 
-echo ">> building offgrid-ffi ${VERSION} for ${TARGET} with --features dynamic-backends"
+echo ">> building offgrid-ffi ${VERSION} for ${TARGET} with --features dynamic-backends,image"
 # Ask cargo which offgrid-sys build-script output this build actually used; several
 # stale offgrid-sys-* dirs (other feature sets) can exist side by side.
-SYS_OUT="$(cargo build --release -p offgrid-ffi --features dynamic-backends --target "$TARGET" \
+SYS_OUT="$(cargo build --release -p offgrid-ffi --features dynamic-backends,image --target "$TARGET" \
     --message-format=json-render-diagnostics \
     | python3 -c '
 import sys, json
@@ -45,7 +45,7 @@ fi
 echo ">> using offgrid-sys output: $OUT_DIR"
 
 echo ">> building offgrid-server.exe"
-cargo build --release -p offgrid-server --features dynamic-backends --target "$TARGET"
+cargo build --release -p offgrid-server --features dynamic-backends,image --target "$TARGET"
 
 if [ ! -f "$TARGET_DIR/offgrid.dll" ]; then
     echo "ERROR: $TARGET_DIR/offgrid.dll not found" >&2

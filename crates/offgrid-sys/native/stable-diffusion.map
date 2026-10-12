@@ -1,0 +1,9 @@
+/* Export only stable-diffusion.cpp's C API. Everything else, including a statically linked C++
+   runtime, stays private so it can't interpose libllama's copy in the same process. */
+{
+  global:
+    sd_*; str_to_*; new_*; free_*; generate_*; upscale; convert; convert_with_components;
+    preprocess_canny; get_upscale*; load_imatrix; save_imatrix; enable_imatrix_collection;
+    disable_imatrix_collection; adetail_image;
+  local: *;
+};

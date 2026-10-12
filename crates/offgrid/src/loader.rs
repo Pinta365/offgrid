@@ -40,7 +40,10 @@ pub(crate) fn preload_core_libs() {
             log::warn!(target: "offgrid", "llama/ggml DLLs not found next to offgrid; relying on the default search path");
             return;
         };
-        for lib in LIBS {
+        // stable-diffusion.cpp (feature `image`) depends on ggml, so it comes last.
+        let sd = if cfg!(target_env = "msvc") { "stable-diffusion.dll" } else { "libstable-diffusion.dll" };
+        let extra = cfg!(feature = "image").then_some(sd);
+        for lib in LIBS.into_iter().chain(extra) {
             let wide: Vec<u16> = dir.join(lib).as_os_str().encode_wide().chain([0]).collect();
             let h = unsafe { LoadLibraryExW(wide.as_ptr(), std::ptr::null_mut(), LOAD_WITH_ALTERED_SEARCH_PATH) };
             if h.is_null() {

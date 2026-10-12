@@ -9,3 +9,8 @@ add_compile_definitions(GGML_MAX_NAME=160)
 
 add_subdirectory(${OFFGRID_LLAMA_DIR} llama.cpp)
 add_subdirectory(${OFFGRID_SD_DIR} stable-diffusion.cpp)
+
+if(SD_BUILD_SHARED_LIBS AND UNIX AND NOT APPLE)
+    target_link_options(stable-diffusion PRIVATE
+        "LINKER:--version-script=${CMAKE_CURRENT_SOURCE_DIR}/stable-diffusion.map")
+endif()

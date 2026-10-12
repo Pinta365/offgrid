@@ -76,7 +76,9 @@ imports_class="$(llvm-readobj --coff-imports "$BIN/offgrid.dll" 2>/dev/null | aw
     /^  Name: /        { name = $0; sub(/^  Name: /, "", name); print t, tolower(name) }
 ')"
 delay_bad=0
-for want in libllama.dll libmtmd.dll ggml.dll ggml-base.dll; do
+wanted=(libllama.dll libmtmd.dll ggml.dll ggml-base.dll)
+[ -f "$BIN/libstable-diffusion.dll" ] && wanted+=(libstable-diffusion.dll)
+for want in "${wanted[@]}"; do
     kind="$(echo "$imports_class" | awk -v n="$want" '$2 == n { print $1 }' | head -1)"
     if [ "$kind" = "delay" ]; then
         info "offgrid.dll delay-loads $want"
@@ -86,7 +88,7 @@ for want in libllama.dll libmtmd.dll ggml.dll ggml-base.dll; do
     fi
 done
 if [ "$delay_bad" -eq 0 ]; then
-    pass "offgrid.dll delay-loads libllama.dll, libmtmd.dll, ggml.dll, ggml-base.dll"
+    pass "offgrid.dll delay-loads ${wanted[*]}"
 fi
 
 declared="$(python3 - "$HEADER" <<'PY'

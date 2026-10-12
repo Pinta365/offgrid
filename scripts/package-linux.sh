@@ -48,10 +48,10 @@ case "$TOOLCHAIN" in
     *) echo "ERROR: OFFGRID_TOOLCHAIN must be zig or host" >&2; exit 1 ;;
 esac
 
-echo ">> building offgrid-ffi ${VERSION} with --features dynamic-backends (toolchain: ${TOOLCHAIN})"
+echo ">> building offgrid-ffi ${VERSION} with --features dynamic-backends,image (toolchain: ${TOOLCHAIN})"
 # Ask cargo which offgrid-sys build-script output this build actually used; several
 # stale offgrid-sys-* dirs (other feature sets) can exist side by side.
-SYS_OUT="$("${BUILD[@]}" --release -p offgrid-ffi --features dynamic-backends --message-format=json-render-diagnostics \
+SYS_OUT="$("${BUILD[@]}" --release -p offgrid-ffi --features dynamic-backends,image --message-format=json-render-diagnostics \
     | python3 -c '
 import sys, json
 for line in sys.stdin:
@@ -67,7 +67,7 @@ fi
 echo ">> using offgrid-sys output: $OUT_DIR"
 
 echo ">> building offgrid-server"
-"${BUILD[@]}" --release -p offgrid-server --features dynamic-backends
+"${BUILD[@]}" --release -p offgrid-server --features dynamic-backends,image
 
 PKG_NAME="offgrid-${VERSION}-linux-x86_64"
 PKG="$ROOT/dist/$PKG_NAME"
@@ -83,6 +83,7 @@ cp -L "$OUT_DIR/out/lib/libllama.so.0"         "$PKG/lib/libllama.so.0"
 cp -L "$OUT_DIR/out/lib/libmtmd.so.0"          "$PKG/lib/libmtmd.so.0"
 cp -L "$OUT_DIR/out/lib/libggml.so.0"          "$PKG/lib/libggml.so.0"
 cp -L "$OUT_DIR/out/lib/libggml-base.so.0"     "$PKG/lib/libggml-base.so.0"
+cp -L "$OUT_DIR/out/lib/libstable-diffusion.so" "$PKG/lib/libstable-diffusion.so"
 
 # Backend modules (CPU variants + Vulkan).
 shopt -s nullglob

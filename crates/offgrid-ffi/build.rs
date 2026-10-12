@@ -12,17 +12,20 @@ fn main() {
         && std::env::var_os("CARGO_FEATURE_DYNAMIC_BACKENDS").is_some()
     {
         // MSVC names the DLLs without the `lib` prefix MinGW adds.
-        if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
-            for dll in ["mtmd.dll", "llama.dll", "ggml.dll", "ggml-base.dll"] {
+        let msvc = std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc");
+        let image = std::env::var_os("CARGO_FEATURE_IMAGE").is_some();
+        let names = ["stable-diffusion", "mtmd", "llama"].into_iter().filter(|n| image || *n != "stable-diffusion");
+        let dlls = names
+            .map(|n| if msvc { format!("{n}.dll") } else { format!("lib{n}.dll") })
+            .chain(["ggml.dll".to_string(), "ggml-base.dll".to_string()]);
+        for dll in dlls {
+            if msvc {
                 println!("cargo:rustc-cdylib-link-arg=/DELAYLOAD:{dll}");
-            }
-            println!("cargo:rustc-cdylib-link-arg=delayimp.lib");
-        } else {
-            for dll in ["libmtmd.dll", "libllama.dll", "ggml.dll", "ggml-base.dll"] {
+            } else {
                 println!("cargo:rustc-cdylib-link-arg=-Wl,--delayload={dll}");
             }
-            println!("cargo:rustc-cdylib-link-arg=-ldelayimp");
         }
+        println!("cargo:rustc-cdylib-link-arg={}", if msvc { "delayimp.lib" } else { "-ldelayimp" });
     }
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
         // Find libllama/libggml next to liboffgrid in a packaged folder.
