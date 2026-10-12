@@ -3,7 +3,7 @@
 [![CI](https://github.com/Pinta365/offgrid/actions/workflows/ci.yml/badge.svg)](https://github.com/Pinta365/offgrid/actions/workflows/ci.yml)
 
 offgrid is a small native library that adds local, offline AI to an application: chat, tool
-calling, structured JSON output, embeddings, and image and audio input. You link a library,
+calling, structured JSON output, embeddings, image and audio input, and image generation. You link a library,
 ship a GGUF model next to your app, and that's it. No daemon, no Docker, no cloud, and no
 network access at runtime.
 
@@ -45,6 +45,7 @@ flowchart TD
 | **Reasoning** | Thinking models' `<think>` blocks are separated into `reasoning_content` and streamed as their own events. |
 | **Vision and audio** | Images (PNG, JPEG, …) and audio (WAV, MP3, FLAC) are sent as OpenAI content parts. Several items per message and mixed image and audio both work. Encoded media is reused across turns from the KV cache and is not decoded again. |
 | **Embeddings** | Batched and L2-normalized, with float or base64 output. |
+| **Image generation** | Text-to-image and image-to-image through [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp) (Z-Image, FLUX, SD 1.x/2.x/XL, ...), built on the same ggml as llama.cpp. Progress (loading, sampling, decoding) and cancellation; PNG or RGB output. Runs alongside chat in the same process. Feature `image`; included in the release packages. |
 | **Cancellation** | Requests can be cancelled from any thread. Cancellation is scoped to one request and never affects a later one. |
 | **Server** | `offgrid-server`: OpenAI-compatible HTTP with SSE streaming, a session pool, cancellation when the client disconnects, an optional API key, and graceful shutdown. |
 
@@ -73,13 +74,28 @@ let model = Model::load("qwen2.5-vl-3b.gguf", &ModelParams { mmproj: Some("mmpro
 let msg = ChatMessage::user_with_media("What's in this picture?", vec![Media::from_path("photo.jpg")?]);
 ```
 
+Image generation (feature `image`, which needs offgrid from git: stable-diffusion.cpp's sources
+are too large for crates.io):
+
+```rust
+let mut images = ImageModel::load(&ImageModelParams {
+    diffusion_model: Some("z_image_turbo-Q4_K.gguf".into()),
+    text_encoder: Some("qwen3-4b.gguf".into()),
+    vae: Some("ae-f16.gguf".into()),
+    ..Default::default()
+})?;
+let req = ImageRequest { prompt: "A lighthouse at dusk".into(), width: 768, height: 512, steps: Some(8), cfg_scale: Some(1.0), ..Default::default() };
+let png = images.generate(&req, |progress| { println!("{progress:?}"); true })?.to_png();
+```
+
 The main entry points are `ChatSession::complete_stream` (content, reasoning and tool-call
-events), `run_tools` (the tool loop) and `Embedder::embed`. See `crates/offgrid/examples/`, and
+events), `run_tools` (the tool loop), `Embedder::embed` and `ImageModel::generate`. See `crates/offgrid/examples/`, and
 `examples/tauri/` for a desktop chat app that embeds the crate.
 
 ### C / C++ (and anything with a C FFI)
 
-`include/offgrid.h` exposes 22 functions. Requests and results are JSON in the OpenAI format,
+`include/offgrid.h` exposes 26 functions (including image generation: `offgrid_image_model_load`,
+`offgrid_image_generate` returning PNG bytes). Requests and results are JSON in the OpenAI format,
 so new features don't change the ABI.
 
 ```c
@@ -120,6 +136,8 @@ Calls are nonblocking, so the event loop keeps running. The binding also offers:
 - streaming through `onToken` and `onReasoning`, or as an async iterator with `chat.stream()`
 - the tool loop `chat.runTools(request, handlers)`
 - `imagePart()` and `audioPart()` helpers
+- image generation: `core.loadImageModel(...)`, then `model.generate(request, { onProgress, signal })`
+  returns PNG bytes
 - `Disposable` handles that guard against freeing while a call is in flight
 
 `Offgrid.load()` downloads this version's prebuilt package from the GitHub release on first use, checks its
@@ -130,6 +148,7 @@ SHA-256 and caches it; `Offgrid.open()` and `OFFGRID_LIB` never touch the networ
 
 ```sh
 bin/offgrid-server --model qwen3-4b.gguf [--embedding-model embed.gguf] [--mmproj mmproj.gguf] \
+                  [--image-diffusion-model z_image_turbo.gguf --image-text-encoder qwen3-4b.gguf --image-vae ae.gguf] \
                   [--port 8080] [--parallel 2] [--ctx 8192] [--api-key KEY]
 ```
 
@@ -137,6 +156,8 @@ Point any OpenAI client at `http://127.0.0.1:8080/v1`. The server provides:
 - `POST /v1/chat/completions`, with or without SSE streaming, including
   `delta.reasoning_content` and `delta.tool_calls`
 - `POST /v1/embeddings`
+- `POST /v1/images/generations` (`b64_json`, plus `steps`, `cfg_scale`, `seed`, `negative_prompt`
+  and `init_image`/`strength` for image-to-image)
 - `GET /v1/models` and `GET /health`
 
 Compatibility has been checked with the official `openai` npm SDK (`scripts/openai-compat.ts`).
@@ -156,6 +177,7 @@ Every model below was exercised end to end by the test suites on an RX 9070 XT (
 | Gemma 3 4B + mmproj | Vision, tools without template support | Template ignores tools; uses the system-message fallback |
 | Qwen2.5-Omni-3B + mmproj | Audio and vision | Word-perfect transcription from WAV, MP3 and FLAC |
 | Ultravox 0.5 (Llama 3.2 1B) + mmproj | Audio | Understands speech; unreliable at verbatim transcription |
+| Z-Image-Turbo Q4_K + Qwen3-4B text encoder + VAE | Image generation | 8 steps, `cfg_scale` 1.0: 768×512 in ~5 s on the RX 9070 XT, 512×512 in ~2m45s on the CPU. Uses ~6.2 GB of GPU memory; set `max_vram_gib` on smaller GPUs so part of the weights stays in RAM |
 
 Performance with Qwen3-4B Q4_K_M:
 
@@ -249,6 +271,7 @@ Model-backed tests are enabled through environment variables pointing at GGUF fi
 | `OFFGRID_TEST_AUDIO_MODEL` / `OFFGRID_TEST_AUDIO_MMPROJ` | audio |
 | `OFFGRID_TEST_OMNI_MODEL` / `OFFGRID_TEST_OMNI_MMPROJ` | combined image and audio |
 | `OFFGRID_TEST_IMAGES`, `OFFGRID_TEST_AUDIO` | sample inputs (`spike/images`, `spike/audio`) |
+| `OFFGRID_TEST_IMAGE_MODEL` / `_VAE` / `_TEXT_ENCODER` | image generation (`--features image`) |
 
 ## Design notes
 
@@ -282,12 +305,16 @@ Model-backed tests are enabled through environment variables pointing at GGUF fi
 - The server serves one chat model and one embedding model; there's no per-request model
   switching. Only `n=1` is supported, and there is no legacy `/v1/completions`.
 - Embeddings are text-only. Rerankers are rejected.
+- Image generation isn't in the crates.io packages (stable-diffusion.cpp's sources are ~140 MB,
+  mostly tokenizer vocabularies); use offgrid from git or the release packages. One image
+  generates at a time per process. sd.cpp is built against llama.cpp's ggml, which lacks a few of
+  its custom kernels (about 5% slower than sd.cpp's own build).
 
 ## Project layout
 
 | Path | Contents |
 |---|---|
-| `crates/offgrid-sys` | bindgen bindings to llama.cpp and mtmd; builds the pinned `llama.cpp` submodule with CMake |
+| `crates/offgrid-sys` | Bindings to llama.cpp, mtmd and stable-diffusion.cpp; builds the pinned submodules with CMake |
 | `crates/offgrid` | Safe Rust core: models, sessions, templates, grammars, tools, media, embeddings |
 | `crates/offgrid-ffi` | C ABI (`liboffgrid`) and the generated `include/offgrid.h` |
 | `crates/offgrid-server` | OpenAI-compatible HTTP server |

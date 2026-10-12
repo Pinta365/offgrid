@@ -10,6 +10,7 @@ the CPU.
 - **Reasoning models**: `<think>` text streamed separately
 - **Images and audio** as input, with multimodal models
 - **Embeddings** for search and similarity
+- **Image generation**: text-to-image and image-to-image (Z-Image, FLUX, Stable Diffusion)
 - OpenAI-compatible request and response shapes throughout
 
 This is the Deno binding of [offgrid](https://github.com/Pinta365/offgrid), which is also available for Rust, C and over
@@ -168,6 +169,27 @@ using emb = await embedModel.createEmbedder();
 const [a, b] = await emb.embed(["The cat sits on the mat.", "A kitten rests on a rug."]); // normalized
 console.log(dot(a, b)); // cosine similarity
 ```
+
+**Image generation** (Z-Image, FLUX, SD 1.x/2.x/XL, ...; the downloaded library includes it):
+
+```ts
+using painter = await core.loadImageModel({
+  diffusion_model: "z_image_turbo-Q4_K.gguf",
+  text_encoder: "Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+  vae: "ae-f16.gguf",
+});
+const { png } = await painter.generate(
+  { prompt: "A lighthouse at dusk", width: 768, height: 512, steps: 8, cfg_scale: 1 },
+  { onProgress: (p) => console.log(p.phase, p.done, p.total) },
+);
+Deno.writeFileSync("lighthouse.png", png);
+
+// Image-to-image: start from an existing PNG; `strength` 0 keeps it, 1 ignores it.
+const refined = await painter.generate({ prompt: "...", steps: 8, cfg_scale: 1, init_image: png, strength: 0.85 });
+```
+
+One image generates at a time; `signal` or `onProgress` returning `false` cancels. Z-Image-Turbo needs about 6 GB of GPU
+memory; on smaller GPUs pass `max_vram_gib` so part of it stays in RAM, or free the chat model first.
 
 **GPU**: Vulkan is used automatically when available, with a fallback to the CPU. `core.devices()` lists the devices;
 `loadModel(path, { gpu_layers: "none" })` forces the CPU and `{ devices: ["Vulkan0"] }` picks a GPU. Logging:

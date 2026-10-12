@@ -105,9 +105,11 @@ Contents
   bin/offgrid-server  OpenAI-compatible HTTP server (sidecar). Example:
                        bin/offgrid-server --model model.gguf --port 8080
                      then point any OpenAI client at http://127.0.0.1:8080/v1
-                     (see --help: --embedding-model, --parallel, --api-key, --ctx).
+                     (see --help: --embedding-model, --parallel, --api-key, --ctx, and
+                     --image-diffusion-model/--image-text-encoder/--image-vae for
+                     /v1/images/generations).
   include/offgrid.h   C API header (JSON in/out, streaming callbacks).
-  lib/               liboffgrid.so plus its llama.cpp/ggml dependencies and all
+  lib/               liboffgrid.so plus its llama.cpp/ggml/stable-diffusion.cpp dependencies and all
                      backend modules. Keep this directory together.
 
 Linking

@@ -105,7 +105,9 @@ offgrid ${VERSION} — Windows x86_64 (llvm-mingw, UCRT)
 Contents
   include/offgrid.h     C API header (JSON in/out, streaming callbacks).
   bin/offgrid.dll       The library.
-  bin/*.dll            llama.cpp/ggml DLLs and backend modules.
+  bin/*.dll            llama.cpp/ggml/stable-diffusion.cpp DLLs and backend modules.
+  bin/offgrid-server.exe  OpenAI-compatible HTTP server; see --help (chat, embeddings, and
+                       /v1/images/generations with --image-diffusion-model etc.).
   lib/liboffgrid.dll.a  MinGW import library (link with -loffgrid).
   lib/offgrid.lib       MSVC import library (link offgrid.lib).
   lib/offgrid.def       Export definition file.

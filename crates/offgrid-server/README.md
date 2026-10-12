@@ -10,6 +10,8 @@ offgrid-server --model qwen3-4b.gguf [--embedding-model embed.gguf] [--mmproj mm
 
 Point any OpenAI client at `http://127.0.0.1:8080/v1`. Endpoints: `POST /v1/chat/completions` (with SSE
 streaming, `reasoning_content` and `tool_calls` deltas), `POST /v1/embeddings`, `GET /v1/models`, `GET /health`.
+The prebuilt packages also serve `POST /v1/images/generations` (`--image-diffusion-model` /
+`--image-text-encoder` / `--image-vae`); from source that needs the `image` feature and offgrid from git.
 
 Building compiles llama.cpp from source, which needs CMake, a C/C++ compiler and, with the default `vulkan`
 feature, the Vulkan headers and `glslc`. Use `--no-default-features` for a CPU-only build. Prebuilt binaries
