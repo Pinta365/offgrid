@@ -387,6 +387,13 @@ unsafe extern "C" fn on_log(level: sd::sd_log_level_t, text: *const c_char, _: *
         _ => log::Level::Debug,
     };
     log::log!(target: "stable-diffusion", level, "{text}");
+    // sd.cpp then retries the decode in tiles without saying so; the image differs slightly.
+    if text.contains("vae decode compute failed") && !text.contains("tile") {
+        log::warn!(
+            target: "offgrid",
+            "VAE decode ran out of GPU memory; retrying in tiles (set vae_tiling to decode in tiles from the start)"
+        );
+    }
 }
 
 fn c_string(s: &str) -> Result<CString> {
