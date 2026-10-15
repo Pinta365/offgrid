@@ -1,5 +1,5 @@
 //! HTTP API tests against real models (skipped unless env vars are set):
-//!   OFFGRID_TEST_MODEL, OFFGRID_TEST_EMBED_MODEL, OFFGRID_TEST_THINKING_MODEL
+//!   OFFGRID_TEST_MODEL, OFFGRID_TEST_EMBED_MODEL, OFFGRID_TEST_THINKING_MODEL, OFFGRID_TEST_FIM_MODEL
 //! Each test runs its own server, freed when the test ends; on small GPUs use --test-threads=1.
 
 use std::sync::Arc;
@@ -501,4 +501,125 @@ async fn image_generations() {
         let r = c.post(format!("{url}/v1/images/generations")).json(&bad).send().await.unwrap();
         assert_eq!(r.status(), 400, "{bad}");
     }
+}
+
+/// SSE data lines as JSON, without the `[DONE]` marker.
+async fn sse_events(r: reqwest::Response) -> (Vec<Value>, bool) {
+    assert_eq!(r.status(), 200);
+    let text = r.text().await.unwrap();
+    let data: Vec<&str> = text.lines().filter_map(|l| l.strip_prefix("data: ")).collect();
+    let done = data.last() == Some(&"[DONE]");
+    (data.iter().filter(|d| **d != "[DONE]").map(|d| serde_json::from_str(d).unwrap()).collect(), done)
+}
+
+#[tokio::test]
+async fn infill_and_completions() {
+    let Ok(fim) = std::env::var("OFFGRID_TEST_FIM_MODEL") else {
+        eprintln!("skip: OFFGRID_TEST_FIM_MODEL not set");
+        return;
+    };
+    let url = &spawn(ServerConfig {
+        fim_model: Some(fim.into()),
+        fim_alias: Some("test-fim".into()),
+        api_key: Some("sekret".into()),
+        ..Default::default()
+    })
+    .url;
+
+    // llama.cpp /infill (outside /v1, still behind the API key).
+    let r = reqwest::Client::new().post(format!("{url}/infill")).json(&json!({})).send().await.unwrap();
+    assert_eq!(r.status(), 401);
+    let req = json!({
+        "input_prefix": "def add(a, b):\n    ", "input_suffix": "\n\nprint(add(2, 3))\n",
+        "input_extra": [{"filename": "util.py", "text": "def sub(a, b):\n    return a - b\n"}],
+        "n_predict": 32, "temperature": 0
+    });
+    let (status, r) = post(url, "/infill", req.clone()).await;
+    assert_eq!(status, 200, "{r}");
+    assert!(r["content"].as_str().unwrap().contains("a + b"), "{r}");
+    assert_eq!(r["model"], "test-fim");
+    assert_eq!(r["stop"], true);
+    // The same request again reuses the whole prompt from the KV cache.
+    let (_, again) = post(url, "/infill", req.clone()).await;
+    assert_eq!(again["content"], r["content"]);
+    assert_eq!(again["timings"]["cache_n"], json!(r["tokens_evaluated"].as_u64().unwrap() - 1), "{again}");
+
+    // Streaming: content pieces, then the final result (no [DONE]).
+    let mut stream_req = req.clone();
+    stream_req["stream"] = json!(true);
+    let resp = client().post(format!("{url}/infill")).json(&stream_req).send().await.unwrap();
+    let (events, done) = sse_events(resp).await;
+    assert!(!done);
+    let (last, pieces) = events.split_last().unwrap();
+    let streamed: String = pieces.iter().map(|e| e["content"].as_str().unwrap()).collect();
+    assert_eq!(streamed, r["content"].as_str().unwrap());
+    assert_eq!((last["stop"].clone(), last["content"].clone()), (json!(true), json!("")));
+
+    // n_indent: stop before a line indented less than the method body.
+    let (_, r) = post(
+        url,
+        "/infill",
+        json!({"input_prefix": "class A:\n    def f(self):\n        ", "input_suffix": "",
+               "n_predict": 128, "temperature": 0, "n_indent": 8}),
+    )
+    .await;
+    let content = r["content"].as_str().unwrap();
+    assert!(content.lines().skip(1).all(|l| l.trim().is_empty() || l.starts_with("        ")), "{r}");
+
+    // OpenAI /v1/completions: `suffix` makes it fill-in-the-middle.
+    let (status, r) = post(
+        url,
+        "/v1/completions",
+        json!({"model": "gpt-3.5-turbo-instruct", "prompt": "def add(a, b):\n    ", "suffix": "\n",
+               "max_tokens": 32, "temperature": 0}),
+    )
+    .await;
+    assert_eq!(status, 200, "{r}");
+    assert_eq!((r["object"].clone(), r["model"].clone()), (json!("text_completion"), json!("test-fim")));
+    assert!(r["choices"][0]["text"].as_str().unwrap().contains("a + b"), "{r}");
+    assert!(r["usage"]["completion_tokens"].as_u64().unwrap() > 0);
+
+    // Raw completion with special tokens in the prompt, streamed with usage.
+    let resp = client()
+        .post(format!("{url}/v1/completions"))
+        .json(&json!({"prompt": "# Python\nimport", "max_tokens": 8, "temperature": 0, "stream": true,
+                      "stream_options": {"include_usage": true}}))
+        .send()
+        .await
+        .unwrap();
+    let (events, done) = sse_events(resp).await;
+    assert!(done);
+    let usage = events.last().unwrap();
+    assert_eq!(usage["usage"]["completion_tokens"], 8, "{usage}");
+    let finish = &events[events.len() - 2]["choices"][0];
+    assert_eq!(finish["finish_reason"], "length");
+
+    for (body, err) in [
+        (json!({"prompt": ["a", "b"]}), "one prompt"),
+        (json!({"prompt": "a", "echo": true}), "echo"),
+        (json!({"prompt": ""}), "empty"),
+        (json!({}), "missing prompt"),
+    ] {
+        let (status, r) = post(url, "/v1/completions", body).await;
+        assert_eq!(status, 400);
+        assert!(r["error"]["message"].as_str().unwrap().contains(err), "{r}");
+    }
+    let (status, _) = post(url, "/v1/chat/completions", greedy("Hi")).await;
+    assert_eq!(status, 400, "no chat model loaded");
+}
+
+#[tokio::test]
+async fn infill_needs_fim_tokens() {
+    let Ok(model) = std::env::var("OFFGRID_TEST_LLAMA_MODEL") else { return };
+    let url = &spawn(ServerConfig { model: Some(model.clone().into()), ..Default::default() }).url;
+    let r = reqwest::Client::new()
+        .post(format!("{url}/v1/completions"))
+        .json(&json!({"prompt": "a", "suffix": "b"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 400);
+    assert!(r.text().await.unwrap().contains("fill-in-the-middle"));
+    let config = ServerConfig { fim_model: Some(model.into()), ..Default::default() };
+    assert!(AppState::load(&config).is_err(), "--fim-model must have FIM tokens");
 }

@@ -44,6 +44,7 @@ flowchart TD
 | **Tool calling** | OpenAI `tools`, `tool_choice` and `parallel_tool_calls`. Tool calls are parsed from the model's native format: Hermes/Qwen, Llama 3.x, Mistral, Qwen3-Coder XML, or generic JSON. If a model's template ignores tools (Gemma 3, for example), the tools and the call format are described in the system message instead, and earlier calls and results are written into the conversation as text. A grammar keeps the arguments valid against each tool's schema. Loop helpers (`run_tools`, `runTools`) handle the call, execute and feed-back cycle. |
 | **Reasoning** | Thinking models' `<think>` blocks are separated into `reasoning_content` and streamed as their own events. |
 | **Vision and audio** | Images (PNG, JPEG, …) and audio (WAV, MP3, FLAC) are sent as OpenAI content parts. Several items per message and mixed image and audio both work. Encoded media is reused across turns from the KV cache and is not decoded again. |
+| **Code completion** | Fill-in-the-middle for code models with FIM tokens (Qwen2.5-Coder, ...), laid out like llama.cpp's `/infill`: extra context from other files, the code before and after the cursor, and stops at a time limit or at a less-indented line. Completions that share a prefix reuse the KV cache. |
 | **Embeddings** | Batched and L2-normalized, with float or base64 output. |
 | **Image generation** | Text-to-image and image-to-image through [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp) (Z-Image, FLUX, SD 1.x/2.x/XL, ...), built on the same ggml as llama.cpp. Progress (loading, sampling, decoding) and cancellation; PNG or RGB output. Runs alongside chat in the same process. Feature `image`; included in the release packages. |
 | **Cancellation** | Requests can be cancelled from any thread. Cancellation is scoped to one request and never affects a later one. |
@@ -89,7 +90,8 @@ let png = images.generate(&req, |progress| { println!("{progress:?}"); true })?.
 ```
 
 The main entry points are `ChatSession::complete_stream` (content, reasoning and tool-call
-events), `run_tools` (the tool loop), `Embedder::embed` and `ImageModel::generate`. See `crates/offgrid/examples/`, and
+events), `run_tools` (the tool loop), `ChatSession::infill` (code completion), `Embedder::embed`
+and `ImageModel::generate`. See `crates/offgrid/examples/`, and
 `examples/tauri/` for a desktop chat app that embeds the crate.
 
 ### C / C++ (and anything with a C FFI)
@@ -148,6 +150,7 @@ SHA-256 and caches it; `Offgrid.open()` and `OFFGRID_LIB` never touch the networ
 
 ```sh
 bin/offgrid-server --model qwen3-4b.gguf [--embedding-model embed.gguf] [--mmproj mmproj.gguf] \
+                  [--fim-model qwen2.5-coder-1.5b.gguf] \
                   [--image-diffusion-model z_image_turbo.gguf --image-text-encoder qwen3-4b.gguf --image-vae ae.gguf] \
                   [--port 8080] [--parallel 2] [--ctx 8192] [--api-key KEY]
 ```
@@ -155,10 +158,16 @@ bin/offgrid-server --model qwen3-4b.gguf [--embedding-model embed.gguf] [--mmpro
 Point any OpenAI client at `http://127.0.0.1:8080/v1`. The server provides:
 - `POST /v1/chat/completions`, with or without SSE streaming, including
   `delta.reasoning_content` and `delta.tool_calls`
+- `POST /v1/completions`: a raw text prompt, or fill-in-the-middle when `suffix` is set
+- `POST /infill`: llama.cpp's code-completion endpoint (`input_prefix`, `input_suffix`,
+  `input_extra`, `n_indent`, `t_max_predict_ms`), so editor plugins such as llama.vscode work
 - `POST /v1/embeddings`
 - `POST /v1/images/generations` (`b64_json`, plus `steps`, `cfg_scale`, `seed`, `negative_prompt`
   and `init_image`/`strength` for image-to-image)
 - `GET /v1/models` and `GET /health`
+
+Code completion uses `--fim-model` if given, else the chat model (which then needs FIM tokens).
+A request can pick either model by its `model` id.
 
 Compatibility has been checked with the official `openai` npm SDK (`scripts/openai-compat.ts`).
 The server binds to localhost by default; use `--api-key` before exposing it.
@@ -173,6 +182,7 @@ Every model below was exercised end to end by the test suites on an RX 9070 XT (
 | Llama-3.2-3B-Instruct Q4_K_M | Llama 3 tool format | Formats calls correctly but judges poorly when to call tools (llama-server behaves the same) |
 | Qwen3-0.6B Q8_0 | Reasoning streaming | Use temperature 0.6 in thinking mode; greedy decoding loops |
 | Qwen3-Embedding-0.6B Q8_0 | Embeddings | |
+| Qwen2.5-Coder-1.5B Q8_0 | Code completion (FIM) | Repo-level format with extra files; ~200 tokens/s on the RX 9070 XT |
 | Qwen2.5-VL-3B + mmproj | Vision (M-RoPE) | Colors, counting, OCR, JPEG, multiple images |
 | Gemma 3 4B + mmproj | Vision, tools without template support | Template ignores tools; uses the system-message fallback |
 | Qwen2.5-Omni-3B + mmproj | Audio and vision | Word-perfect transcription from WAV, MP3 and FLAC |
@@ -268,6 +278,7 @@ Model-backed tests are enabled through environment variables pointing at GGUF fi
 | `OFFGRID_TEST_GEMMA_MODEL` | tools on a template without tool support (Gemma 3) |
 | `OFFGRID_TEST_THINKING_MODEL` | reasoning |
 | `OFFGRID_TEST_EMBED_MODEL` | embeddings |
+| `OFFGRID_TEST_FIM_MODEL` | code completion (`/infill`, `/v1/completions`) |
 | `OFFGRID_TEST_VL_MODEL` / `OFFGRID_TEST_VL_MMPROJ` | vision |
 | `OFFGRID_TEST_VL2_MODEL` / `OFFGRID_TEST_VL2_MMPROJ` | vision, second model |
 | `OFFGRID_TEST_AUDIO_MODEL` / `OFFGRID_TEST_AUDIO_MMPROJ` | audio |

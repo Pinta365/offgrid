@@ -196,6 +196,8 @@ export interface ModelInfo {
   vision: boolean;
   /** Audio input available. */
   audio: boolean;
+  /** Fill-in-the-middle tokens present (code infill). */
+  infill: boolean;
 }
 
 /** Versions of the native library. */

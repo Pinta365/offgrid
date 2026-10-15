@@ -12,11 +12,24 @@ pub struct Meta {
     id: String,
     created: u64,
     model: String,
+    /// `object` of streamed chunks.
+    chunk_object: &'static str,
 }
 
 impl Meta {
+    /// A chat completion.
     pub fn new(model: String) -> Self {
-        Self { id: format!("chatcmpl-{}", random_id()), created: super::now(), model }
+        Self {
+            id: format!("chatcmpl-{}", random_id()),
+            created: super::now(),
+            model,
+            chunk_object: "chat.completion.chunk",
+        }
+    }
+
+    /// A (legacy) text completion.
+    pub fn text(model: String) -> Self {
+        Self { id: format!("cmpl-{}", random_id()), created: super::now(), model, chunk_object: "text_completion" }
     }
 
     fn base(&self, object: &str) -> serde_json::Map<String, Value> {
@@ -48,18 +61,35 @@ impl Meta {
         Value::Object(m)
     }
 
+    pub fn text_completion(&self, resp: &ChatResponse) -> Value {
+        let mut m = self.base("text_completion");
+        m.insert("choices".into(), json!([text_choice(&resp.content, Some(finish_reason(resp.finish_reason)))]));
+        m.insert("usage".into(), usage(&resp.usage));
+        Value::Object(m)
+    }
+
+    pub fn text_chunk(&self, text: &str, finish: Option<&str>) -> Value {
+        let mut m = self.base(self.chunk_object);
+        m.insert("choices".into(), json!([text_choice(text, finish)]));
+        Value::Object(m)
+    }
+
     pub fn chunk(&self, delta: Value, finish: Option<&str>) -> Value {
-        let mut m = self.base("chat.completion.chunk");
+        let mut m = self.base(self.chunk_object);
         m.insert("choices".into(), json!([{"index": 0, "delta": delta, "finish_reason": finish, "logprobs": null}]));
         Value::Object(m)
     }
 
     pub fn usage_chunk(&self, u: &Usage) -> Value {
-        let mut m = self.base("chat.completion.chunk");
+        let mut m = self.base(self.chunk_object);
         m.insert("choices".into(), json!([]));
         m.insert("usage".into(), usage(u));
         Value::Object(m)
     }
+}
+
+fn text_choice(text: &str, finish: Option<&str>) -> Value {
+    json!({"text": text, "index": 0, "logprobs": null, "finish_reason": finish})
 }
 
 pub fn finish_reason(r: FinishReason) -> &'static str {

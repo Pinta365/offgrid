@@ -51,6 +51,18 @@ pub struct ModelInfo {
     pub vision: bool,
     /// Audio input available (projector loaded and supports audio).
     pub audio: bool,
+    /// Fill-in-the-middle tokens present: the model can do code infill.
+    pub infill: bool,
+}
+
+/// Special tokens for fill-in-the-middle. `rep`/`sep` enable the repo-level format.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct FimTokens {
+    pub pre: sys::llama_token,
+    pub suf: sys::llama_token,
+    pub mid: sys::llama_token,
+    pub rep: Option<sys::llama_token>,
+    pub sep: Option<sys::llama_token>,
 }
 
 /// A loaded GGUF model. Cheap to share: sessions and embedders hold an `Arc<Model>`.
@@ -147,6 +159,7 @@ impl Model {
                 chat_template: self.chat_template(),
                 vision: self.projector.as_ref().is_some_and(|p| p.vision),
                 audio: self.projector.as_ref().is_some_and(|p| p.audio),
+                infill: self.fim_tokens().is_some(),
             }
         }
     }
@@ -247,6 +260,29 @@ impl Model {
             return String::new();
         }
         unsafe { crate::backend::cstr_to_string(sys::llama_vocab_get_text(self.vocab(), token)) }
+    }
+
+    /// The model's fill-in-the-middle tokens, if it has prefix, suffix and middle tokens.
+    pub(crate) fn fim_tokens(&self) -> Option<FimTokens> {
+        let v = self.vocab();
+        let some = |t: sys::llama_token| (t >= 0).then_some(t);
+        unsafe {
+            Some(FimTokens {
+                pre: some(sys::llama_vocab_fim_pre(v))?,
+                suf: some(sys::llama_vocab_fim_suf(v))?,
+                mid: some(sys::llama_vocab_fim_mid(v))?,
+                rep: some(sys::llama_vocab_fim_rep(v)),
+                sep: some(sys::llama_vocab_fim_sep(v)),
+            })
+        }
+    }
+
+    pub(crate) fn add_bos(&self) -> bool {
+        unsafe { sys::llama_vocab_get_add_bos(self.vocab()) }
+    }
+
+    pub(crate) fn bos(&self) -> sys::llama_token {
+        unsafe { sys::llama_vocab_bos(self.vocab()) }
     }
 
     pub(crate) fn is_eog(&self, token: sys::llama_token) -> bool {

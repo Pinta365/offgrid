@@ -1,7 +1,7 @@
 //! Embeddable offline AI core.
 //!
 //! Safe Rust API over llama.cpp: load a GGUF model, run chat completions with
-//! streaming and cancellation, and compute embeddings.
+//! streaming and cancellation, fill in code (FIM), and compute embeddings.
 //!
 //! ```no_run
 //! use offgrid::{ChatMessage, ChatRequest, ChatSession, Model, ModelParams, SessionParams};
@@ -21,6 +21,7 @@ mod embed;
 mod error;
 #[cfg(feature = "image")]
 mod image;
+mod infill;
 mod json_schema;
 #[cfg(feature = "dynamic-backends")]
 mod loader;
@@ -41,6 +42,7 @@ pub use embed::{EmbedParams, Embedder};
 pub use error::{Error, Result};
 #[cfg(feature = "image")]
 pub use image::{Image, ImageModel, ImageModelParams, ImageProgress, ImageRequest};
+pub use infill::{InfillChunk, InfillRequest};
 pub use media::{Media, MediaKind, media_marker};
 pub use model::{GpuLayers, Model, ModelInfo, ModelParams};
 pub use sampling::SamplingParams;

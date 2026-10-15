@@ -165,7 +165,7 @@ impl From<ChatMessage> for WireMessage {
     }
 }
 
-fn string_or_seq<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Vec<String>, D::Error> {
+pub(crate) fn string_or_seq<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Vec<String>, D::Error> {
     #[derive(Deserialize)]
     #[serde(untagged)]
     enum Stop {
@@ -392,7 +392,7 @@ impl CancelToken {
     }
 
     /// Start a new request (called at the top of every public generation entry point).
-    fn begin(&self) {
+    pub(crate) fn begin(&self) {
         self.0.epoch.fetch_add(1, Ordering::SeqCst);
     }
 }
@@ -507,7 +507,7 @@ impl CacheItem {
 }
 
 /// What to evaluate before generating.
-enum Prompt<'a> {
+pub(crate) enum Prompt<'a> {
     Tokens(&'a [sys::llama_token]),
     /// Text + image chunks (mtmd), evaluated from position 0.
     Media(&'a Chunks),
@@ -929,7 +929,7 @@ impl ChatSession {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn run(
+    pub(crate) fn run(
         &mut self,
         prompt: Prompt<'_>,
         max_tokens: Option<u32>,

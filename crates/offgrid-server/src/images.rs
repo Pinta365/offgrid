@@ -33,7 +33,7 @@ pub(crate) async fn generations(
 ) -> Response {
     let mut body = match body {
         Ok(Json(b)) => b,
-        Err(e) => return body_error(e.status(), e.body_text()),
+        Err(e) => return body_error(e.status(), e.body_text()).into_response(),
     };
     let Some((model_id, model)) = state.image.clone() else {
         return ApiError::bad_request("no image model loaded (--image-diffusion-model or --image-model)")

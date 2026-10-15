@@ -1,8 +1,11 @@
 //! OpenAI-compatible HTTP server for offgrid.
 //!
 //! Endpoints: `POST /v1/chat/completions` (incl. SSE streaming with `reasoning_content`
-//! and `tool_calls` deltas), `POST /v1/embeddings`, `GET /v1/models`, `GET /health`.
+//! and `tool_calls` deltas), `POST /v1/completions` (raw text, or fill-in-the-middle with
+//! `suffix`), `POST /infill` (llama.cpp-compatible), `POST /v1/embeddings`,
+//! `GET /v1/models`, `GET /health`.
 
+mod completions;
 #[cfg(feature = "image")]
 mod images;
 mod openai;
@@ -35,9 +38,12 @@ pub struct ServerConfig {
     /// Multimodal projector (image/audio) for `model`.
     pub mmproj: Option<PathBuf>,
     pub embedding_model: Option<PathBuf>,
+    /// Code model for fill-in-the-middle (/infill, /v1/completions); default: `model`.
+    pub fim_model: Option<PathBuf>,
     /// Model id reported to clients (default: file stem).
     pub alias: Option<String>,
     pub embedding_alias: Option<String>,
+    pub fim_alias: Option<String>,
     pub model_params: ModelParams,
     pub session: SessionParams,
     /// Concurrent chat sessions (each holds its own KV cache).
@@ -61,6 +67,7 @@ pub struct AppState {
     /// Set on shutdown: queued requests are refused instead of starting generation.
     shutting_down: std::sync::atomic::AtomicBool,
     chat: Option<(String, Arc<ChatPool>)>,
+    fim: Option<(String, Arc<ChatPool>)>,
     embed: Option<(String, Arc<Mutex<Embedder>>)>,
     #[cfg(feature = "image")]
     image: Option<images::ImageSlot>,
@@ -90,6 +97,21 @@ impl AppState {
             }
             None => None,
         };
+        let fim = match &config.fim_model {
+            Some(path) => {
+                let params = ModelParams { mmproj: None, ..config.model_params.clone() };
+                let model = load_model(path, &params)?;
+                if !model.info().infill {
+                    return Err(offgrid::Error::InvalidArgument(format!(
+                        "{} has no fill-in-the-middle tokens (--fim-model needs a code model)",
+                        path.display()
+                    )));
+                }
+                let pool = ChatPool::new(model, &config.session, config.parallel)?;
+                Some((model_id(path, &config.fim_alias), pool))
+            }
+            None => None,
+        };
         let embed = match &config.embedding_model {
             Some(path) => {
                 let params = ModelParams { mmproj: None, ..config.model_params.clone() };
@@ -115,13 +137,16 @@ impl AppState {
         let has_image = image.is_some();
         #[cfg(not(feature = "image"))]
         let has_image = false;
-        if chat.is_none() && embed.is_none() && !has_image {
-            return Err(offgrid::Error::InvalidArgument("no model configured (--model / --embedding-model)".into()));
+        if chat.is_none() && fim.is_none() && embed.is_none() && !has_image {
+            return Err(offgrid::Error::InvalidArgument(
+                "no model configured (--model / --fim-model / --embedding-model)".into(),
+            ));
         }
         Ok(Arc::new(Self {
             shutting_down: std::sync::atomic::AtomicBool::new(false),
             max_body_bytes: if config.max_body_bytes == 0 { DEFAULT_MAX_BODY_BYTES } else { config.max_body_bytes },
             chat,
+            fim,
             embed,
             #[cfg(feature = "image")]
             image,
@@ -133,7 +158,7 @@ impl AppState {
     /// Begin shutdown: cancel running generations and refuse queued/new requests.
     pub fn shutdown(&self) {
         self.shutting_down.store(true, std::sync::atomic::Ordering::SeqCst);
-        if let Some((_, pool)) = &self.chat {
+        for (_, pool) in self.chat.iter().chain(&self.fim) {
             pool.cancel_all();
         }
     }
@@ -141,11 +166,20 @@ impl AppState {
     fn is_shutting_down(&self) -> bool {
         self.shutting_down.load(std::sync::atomic::Ordering::SeqCst)
     }
+
+    /// The pool for text completion and infill: the model named in the request, else the
+    /// FIM model, else the chat model.
+    fn completion_pool(&self, requested: Option<&str>) -> Option<(String, Arc<ChatPool>)> {
+        let named =
+            |slot: &Option<(String, Arc<ChatPool>)>| slot.clone().filter(|(id, _)| Some(id.as_str()) == requested);
+        named(&self.fim).or_else(|| named(&self.chat)).or_else(|| self.fim.clone()).or_else(|| self.chat.clone())
+    }
 }
 
 pub fn router(state: Arc<AppState>) -> Router {
     let v1 = Router::new()
         .route("/chat/completions", post(chat_completions))
+        .route("/completions", post(completions::completions))
         .route("/embeddings", post(embeddings))
         .route("/models", get(list_models))
         .route("/models/{id}", get(get_model));
@@ -155,8 +189,14 @@ pub fn router(state: Arc<AppState>) -> Router {
         .layer(middleware::from_fn_with_state(state.clone(), auth))
         // axum's default is 2 MB, too small for base64 media.
         .layer(axum::extract::DefaultBodyLimit::max(state.max_body_bytes));
+    // llama.cpp serves /infill outside /v1; clients such as llama.vscode expect it there.
+    let infill = Router::new()
+        .route("/infill", post(completions::infill))
+        .layer(middleware::from_fn_with_state(state.clone(), auth))
+        .layer(axum::extract::DefaultBodyLimit::max(state.max_body_bytes));
     Router::new()
         .route("/health", get(|| async { Json(json!({"status": "ok"})) }))
+        .merge(infill)
         .nest("/v1", v1)
         .fallback(|| async { ApiError::not_found("unknown endpoint") })
         .layer(middleware::map_response(json_charset))
@@ -191,9 +231,14 @@ fn model_entry(state: &AppState, id: &str) -> Value {
     json!({"id": id, "object": "model", "created": state.created, "owned_by": "offgrid"})
 }
 
-/// Ids of the loaded models: chat, embedding, image.
+/// Ids of the loaded models: chat, FIM, embedding, image.
 fn model_ids(state: &AppState) -> Vec<&str> {
-    let ids = state.chat.iter().map(|(id, _)| id.as_str()).chain(state.embed.iter().map(|(id, _)| id.as_str()));
+    let ids = state
+        .chat
+        .iter()
+        .chain(&state.fim)
+        .map(|(id, _)| id.as_str())
+        .chain(state.embed.iter().map(|(id, _)| id.as_str()));
     #[cfg(feature = "image")]
     let ids = ids.chain(state.image.iter().map(|(id, _)| id.as_str()));
     ids.collect()
@@ -238,9 +283,9 @@ impl<S: futures_util::Stream + Unpin> futures_util::Stream for CancellingStream<
 }
 
 /// Body rejections (too large, unreadable) as OpenAI-style errors instead of plain text.
-fn body_error(status: StatusCode, detail: String) -> Response {
+fn body_error(status: StatusCode, detail: String) -> ApiError {
     let kind = if status == StatusCode::PAYLOAD_TOO_LARGE { "request_too_large" } else { "invalid_request_error" };
-    ApiError::new(status, kind, detail).into_response()
+    ApiError::new(status, kind, detail)
 }
 
 async fn chat_completions(
@@ -249,7 +294,7 @@ async fn chat_completions(
 ) -> Response {
     let body = match body {
         Ok(b) => b,
-        Err(e) => return body_error(e.status(), e.body_text()),
+        Err(e) => return body_error(e.status(), e.body_text()).into_response(),
     };
     let Some((model_id, pool)) = state.chat.clone() else {
         return ApiError::bad_request("no chat model loaded").into_response();
@@ -332,7 +377,7 @@ async fn embeddings(
 ) -> Response {
     let body = match body {
         Ok(Json(b)) => b,
-        Err(e) => return body_error(e.status(), e.body_text()),
+        Err(e) => return body_error(e.status(), e.body_text()).into_response(),
     };
     let Some((model_id, embedder)) = state.embed.clone() else {
         return ApiError::bad_request("no embedding model loaded (--embedding-model)").into_response();

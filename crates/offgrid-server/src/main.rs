@@ -1,6 +1,7 @@
 //! offgrid-server: OpenAI-compatible local inference sidecar.
 //!
 //!   offgrid-server --model qwen3-4b.gguf --embedding-model embed.gguf --port 8080
+//!   offgrid-server --fim-model qwen2.5-coder-1.5b.gguf   # code completion only
 
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::path::PathBuf;
@@ -21,12 +22,18 @@ struct Args {
     /// Embedding model (GGUF).
     #[arg(long, env = "OFFGRID_EMBEDDING_MODEL")]
     embedding_model: Option<PathBuf>,
+    /// Code model (GGUF with FIM tokens, e.g. Qwen2.5-Coder) for /infill and /v1/completions.
+    #[arg(long, env = "OFFGRID_FIM_MODEL")]
+    fim_model: Option<PathBuf>,
     /// Model id reported to clients (default: file name).
     #[arg(long)]
     alias: Option<String>,
     /// Embedding model id reported to clients (default: file name).
     #[arg(long)]
     embedding_alias: Option<String>,
+    /// FIM model id reported to clients (default: file name).
+    #[arg(long)]
+    fim_alias: Option<String>,
     /// Address to bind. Keep the default (localhost) unless you set --api-key.
     #[arg(long, default_value = "127.0.0.1", env = "OFFGRID_HOST")]
     host: String,
@@ -98,8 +105,10 @@ fn main() {
     let config = ServerConfig {
         model: args.model,
         embedding_model: args.embedding_model,
+        fim_model: args.fim_model,
         alias: args.alias,
         embedding_alias: args.embedding_alias,
+        fim_alias: args.fim_alias,
         mmproj: args.mmproj,
         model_params: ModelParams {
             gpu_layers: args.gpu_layers,

@@ -12,6 +12,8 @@ pub struct ChatPool {
     /// single client's conversation on the same session (KV-cache prefix reuse).
     free: Mutex<Vec<usize>>,
     permits: Arc<Semaphore>,
+    /// The model has fill-in-the-middle tokens.
+    infill: bool,
 }
 
 /// Exclusive use of one session; returned to the pool on drop.
@@ -24,6 +26,7 @@ pub struct Lease {
 impl ChatPool {
     pub fn new(model: Arc<Model>, params: &SessionParams, size: usize) -> offgrid::Result<Arc<Self>> {
         let size = size.max(1);
+        let infill = model.info().infill;
         let mut sessions = Vec::with_capacity(size);
         let mut cancels = Vec::with_capacity(size);
         for _ in 0..size {
@@ -36,6 +39,7 @@ impl ChatPool {
             cancels,
             free: Mutex::new((0..size).rev().collect()),
             permits: Arc::new(Semaphore::new(size)),
+            infill,
         }))
     }
 
@@ -44,6 +48,10 @@ impl ChatPool {
         let permit = self.permits.clone().acquire_owned().await.expect("semaphore never closed");
         let index = self.free.lock().unwrap_or_else(|e| e.into_inner()).pop().expect("permit implies a free session");
         Lease { pool: self.clone(), index, _permit: permit }
+    }
+
+    pub fn supports_infill(&self) -> bool {
+        self.infill
     }
 
     /// Cancel every running generation (shutdown).
