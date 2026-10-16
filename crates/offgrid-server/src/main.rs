@@ -43,8 +43,9 @@ struct Args {
     #[arg(short = 'c', long, default_value_t = 0)]
     ctx: u32,
     /// Reuse cached chunks of at least this many tokens that moved to an earlier position
-    /// (shift their KV entries instead of evaluating them again); 0 = off.
-    #[arg(long, default_value_t = 256)]
+    /// (shift their KV entries instead of evaluating them again); 0 = off, as in llama-server.
+    /// Editor plugins such as llama.vscode recommend 256.
+    #[arg(long, default_value_t = 0)]
     cache_reuse: u32,
     /// Concurrent chat sessions; each holds its own KV cache (VRAM).
     #[arg(long, default_value_t = 1)]

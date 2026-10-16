@@ -33,7 +33,7 @@ impl Drop for TestServer {
 }
 
 fn spawn(config: ServerConfig) -> TestServer {
-    // Unless a test sets it, the server's default cache reuse, so every test runs with it.
+    // Unless a test sets it, cache reuse on (the server default is off), to exercise it everywhere.
     let cache_reuse = if config.session.cache_reuse == 0 { 256 } else { config.session.cache_reuse };
     let session = SessionParams { n_ctx: 2048, cache_reuse, ..config.session };
     let config = ServerConfig { session, ..config };

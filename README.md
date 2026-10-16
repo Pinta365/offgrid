@@ -169,8 +169,9 @@ Point any OpenAI client at `http://127.0.0.1:8080/v1`. The server provides:
 Code completion uses `--fim-model` if given, else the chat model (which then needs FIM tokens).
 A request can pick either model by its `model` id. `/infill` requests with the same `id_slot` (one
 editor) replace each other: a newer one cancels the running one and skips queued ones.
-`--cache-reuse 256` (the default; 0 turns it off) shifts cached chunks of at least that many tokens
-into place when text before them was removed.
+`--cache-reuse 256` shifts cached chunks of at least that many tokens into place when text before
+them was removed. It is off by default, as in llama-server; editor plugins such as llama.vscode
+recommend 256.
 
 Compatibility has been checked with the official `openai` npm SDK (`scripts/openai-compat.ts`).
 The server binds to localhost by default; use `--api-key` before exposing it.
