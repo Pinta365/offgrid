@@ -49,14 +49,15 @@ pub(crate) fn detect_format(chat_template: &str) -> ToolFormat {
     }
 }
 
-/// Text that begins a tool call, used to stop streaming content.
-pub(crate) fn tool_call_start_marker(format: ToolFormat) -> Option<&'static str> {
+/// Texts that begin a tool call, used to stop streaming content.
+pub(crate) fn tool_call_start_markers(format: ToolFormat) -> &'static [&'static str] {
     match format {
-        ToolFormat::Hermes => Some("<tool_call>"),
-        ToolFormat::Qwen3CoderXml => Some("<tool_call>"),
-        ToolFormat::MistralList | ToolFormat::MistralArgs => Some("[TOOL_CALLS]"),
-        ToolFormat::Llama3Json => Some("<|python_tag|>"),
-        ToolFormat::Generic | ToolFormat::Polyfill => Some("<tool_call>"),
+        ToolFormat::Hermes => &["<tool_call>"],
+        // Qwen3-Coder sometimes leaves out `<tool_call>` and starts with the function block.
+        ToolFormat::Qwen3CoderXml => &["<tool_call>", "<function="],
+        ToolFormat::MistralList | ToolFormat::MistralArgs => &["[TOOL_CALLS]"],
+        ToolFormat::Llama3Json => &["<|python_tag|>"],
+        ToolFormat::Generic | ToolFormat::Polyfill => &["<tool_call>"],
     }
 }
 
@@ -191,7 +192,36 @@ fn parse_hermes(text: &str) -> (String, Vec<ParsedCall>) {
 }
 
 fn parse_qwen3_xml(text: &str) -> (String, Vec<ParsedCall>) {
-    parse_tagged(text, "<tool_call>", "</tool_call>", parse_xml_function)
+    let (content, calls) = parse_tagged(text, "<tool_call>", "</tool_call>", parse_xml_function);
+    if !calls.is_empty() {
+        return (content, calls);
+    }
+    // Function blocks without the `<tool_call>` wrapper, sometimes with a stray `</tool_call>`.
+    // Only complete blocks count, so text that mentions `<function=` stays text.
+    const OPEN: &str = "<function=";
+    const CLOSE: &str = "</function>";
+    let mut content = String::new();
+    let mut calls = Vec::new();
+    let mut rest = text;
+    while let Some(pos) = rest.find(OPEN) {
+        let Some(len) = rest[pos..].find(CLOSE) else { break };
+        match parse_xml_function(&rest[pos..pos + len]) {
+            Some(call) => {
+                content.push_str(&rest[..pos]);
+                calls.push(call);
+                rest = &rest[pos + len + CLOSE.len()..];
+            }
+            None => {
+                content.push_str(&rest[..pos + OPEN.len()]);
+                rest = &rest[pos + OPEN.len()..];
+            }
+        }
+    }
+    content.push_str(rest);
+    if calls.is_empty() {
+        return (text.to_string(), calls);
+    }
+    (content.replace("</tool_call>", ""), calls)
 }
 
 /// Generic scanner for `<open> ... <close>` blocks; invalid blocks stay in content.
@@ -567,6 +597,21 @@ mod tests {
     }
 
     #[test]
+    fn qwen3_xml_without_tool_call_wrapper() {
+        // Seen from Qwen3-Coder-30B-A3B: no opening <tool_call>, a stray closing one.
+        let text = "I need to find the default.\n\n<function=grep_search>\n<parameter=query>\nchatter.*threshold\n</parameter>\n</function>\n</tool_call>";
+        let p = parse_output(ToolFormat::Qwen3CoderXml, text, false);
+        assert_eq!(p.content, "I need to find the default.");
+        assert_eq!(p.calls.len(), 1);
+        assert_eq!(p.calls[0].name, "grep_search");
+        assert_eq!(args(&p.calls[0]), json!({"query": "chatter.*threshold"}));
+        // Plain text that mentions <function= is not a call.
+        let p = parse_output(ToolFormat::Qwen3CoderXml, "Write <function=name> blocks.", false);
+        assert!(p.calls.is_empty());
+        assert_eq!(p.content, "Write <function=name> blocks.");
+    }
+
+    #[test]
     fn qwen3_xml_value_types() {
         let text = "<tool_call><function=f><parameter=obj>\n{\"a\":1}\n</parameter><parameter=flag>\ntrue\n</parameter></function></tool_call>";
         let p = parse_output(ToolFormat::Qwen3CoderXml, text, false);
@@ -751,13 +796,13 @@ mod tests {
     }
 
     #[test]
-    fn tool_call_start_markers() {
-        assert_eq!(tool_call_start_marker(ToolFormat::Hermes), Some("<tool_call>"));
-        assert_eq!(tool_call_start_marker(ToolFormat::Qwen3CoderXml), Some("<tool_call>"));
-        assert_eq!(tool_call_start_marker(ToolFormat::MistralList), Some("[TOOL_CALLS]"));
-        assert_eq!(tool_call_start_marker(ToolFormat::MistralArgs), Some("[TOOL_CALLS]"));
-        assert_eq!(tool_call_start_marker(ToolFormat::Llama3Json), Some("<|python_tag|>"));
-        assert_eq!(tool_call_start_marker(ToolFormat::Generic), Some("<tool_call>"));
+    fn start_markers_per_format() {
+        assert_eq!(tool_call_start_markers(ToolFormat::Hermes), ["<tool_call>"]);
+        assert_eq!(tool_call_start_markers(ToolFormat::Qwen3CoderXml), ["<tool_call>", "<function="]);
+        assert_eq!(tool_call_start_markers(ToolFormat::MistralList), ["[TOOL_CALLS]"]);
+        assert_eq!(tool_call_start_markers(ToolFormat::MistralArgs), ["[TOOL_CALLS]"]);
+        assert_eq!(tool_call_start_markers(ToolFormat::Llama3Json), ["<|python_tag|>"]);
+        assert_eq!(tool_call_start_markers(ToolFormat::Generic), ["<tool_call>"]);
     }
 
     #[test]

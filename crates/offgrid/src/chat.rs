@@ -843,9 +843,9 @@ impl ChatSession {
         // A strict grammar forces JSON / a tool call from the first token, so a reasoning
         // block opened by the prompt can never close: don't treat the output as reasoning.
         let think_open = think_open && !grammars.first().is_some_and(|g| g.lazy_patterns.is_empty());
-        let marker = if use_tools { tool_parse::tool_call_start_marker(format) } else { None };
+        let markers = if use_tools { tool_parse::tool_call_start_markers(format) } else { &[] };
         // Hold back a reply starting with `{`: it may be a bare call object (any format).
-        let mut filter = StreamFilter::new(marker, use_tools, think_open);
+        let mut filter = StreamFilter::new(markers, use_tools, think_open);
         let mut cancelled_by_callback = false;
         let mut streamed = String::new(); // content delivered so far
         let mut deliver = |pieces: Vec<(PieceKind, String)>, on_event: &mut dyn FnMut(StreamEvent<'_>) -> bool| {

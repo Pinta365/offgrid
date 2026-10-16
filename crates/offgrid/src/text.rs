@@ -79,7 +79,8 @@ pub(crate) enum PieceKind {
 /// Splits streamed text into reply content and `<think>` reasoning, and hides
 /// everything from a tool-call marker on (calls are returned parsed at the end).
 pub(crate) struct StreamFilter {
-    marker: Option<&'static str>,
+    /// Texts that start a tool call (any of them).
+    markers: &'static [&'static str],
     /// Llama 3 style: a reply starting with `{` is a tool call.
     json_start: bool,
     state: FilterState,
@@ -99,9 +100,9 @@ const THINK_OPEN: &str = "<think>";
 const THINK_CLOSE: &str = "</think>";
 
 impl StreamFilter {
-    pub fn new(marker: Option<&'static str>, json_start: bool, think_open_in_prompt: bool) -> Self {
+    pub fn new(markers: &'static [&'static str], json_start: bool, think_open_in_prompt: bool) -> Self {
         let state = if think_open_in_prompt { FilterState::Reasoning } else { FilterState::Content };
-        Self { marker, json_start, state, held: String::new(), started: false, reasoning_started: false }
+        Self { markers, json_start, state, held: String::new(), started: false, reasoning_started: false }
     }
 
     /// Feed generated text; returns the pieces that are safe to show, in order.
@@ -166,20 +167,19 @@ impl StreamFilter {
                         self.held = trimmed.to_string();
                         self.started = true;
                     }
-                    let visible = match self.marker {
-                        Some(marker) => match self.held.find(marker) {
-                            Some(i) => {
-                                let v = self.held[..i].to_string();
-                                self.state = FilterState::Suppressed;
-                                v
-                            }
-                            None => {
-                                let keep = partial_suffix(&self.held, marker);
-                                let rest = self.held.split_off(self.held.len() - keep);
-                                std::mem::replace(&mut self.held, rest)
-                            }
-                        },
-                        None => std::mem::take(&mut self.held),
+                    let first = self.markers.iter().filter_map(|m| self.held.find(m)).min();
+                    let visible = match first {
+                        Some(i) => {
+                            let v = self.held[..i].to_string();
+                            self.state = FilterState::Suppressed;
+                            v
+                        }
+                        None => {
+                            // Keep a tail that might be the start of a marker.
+                            let keep = self.markers.iter().map(|m| partial_suffix(&self.held, m)).max().unwrap_or(0);
+                            let rest = self.held.split_off(self.held.len() - keep);
+                            std::mem::replace(&mut self.held, rest)
+                        }
                     };
                     if !visible.is_empty() {
                         out.push((PieceKind::Content, visible));
@@ -273,7 +273,7 @@ mod tests {
     }
 
     /// (content, reasoning) as streamed.
-    fn filter2(marker: Option<&'static str>, json: bool, think: bool, chunks: &[&str]) -> (String, String) {
+    fn filter2(marker: &'static [&'static str], json: bool, think: bool, chunks: &[&str]) -> (String, String) {
         let mut f = StreamFilter::new(marker, json, think);
         let (mut content, mut reasoning) = (String::new(), String::new());
         let mut pieces: Vec<(PieceKind, String)> = chunks.iter().flat_map(|c| f.push(c)).collect();
@@ -287,51 +287,60 @@ mod tests {
         (content, reasoning)
     }
 
-    fn filter(marker: Option<&'static str>, json: bool, think: bool, chunks: &[&str]) -> String {
+    fn filter(marker: &'static [&'static str], json: bool, think: bool, chunks: &[&str]) -> String {
         filter2(marker, json, think, chunks).0
     }
 
     #[test]
     fn filter_streams_reasoning() {
-        let (c, r) = filter2(None, false, false, &["<think>\nStep", " one.\n", "Step two.\n</th", "ink>\n\nDone."]);
+        let (c, r) = filter2(&[], false, false, &["<think>\nStep", " one.\n", "Step two.\n</th", "ink>\n\nDone."]);
         assert_eq!((c.as_str(), r.as_str()), ("Done.", "Step one.\nStep two."));
         // Reasoning opened by the prompt, cut off by max_tokens.
-        let (c, r) = filter2(None, false, true, &["thinking about", " it\n\n"]);
+        let (c, r) = filter2(&[], false, true, &["thinking about", " it\n\n"]);
         assert_eq!((c.as_str(), r.as_str()), ("", "thinking about it"));
         // Reasoning followed by a tool call.
-        let (c, r) =
-            filter2(Some("<tool_call>"), false, false, &["<think>plan</think>Calling.<tool_call>{}</tool_call>"]);
+        let (c, r) = filter2(&["<tool_call>"], false, false, &["<think>plan</think>Calling.<tool_call>{}</tool_call>"]);
         assert_eq!((c.as_str(), r.as_str()), ("Calling.", "plan"));
     }
 
     #[test]
     fn filter_hides_tool_markup() {
         assert_eq!(
-            filter(Some("<tool_call>"), false, false, &["Let me check.", " <tool", "_call>{\"a\":1}", "</tool_call>"]),
+            filter(&["<tool_call>"], false, false, &["Let me check.", " <tool", "_call>{\"a\":1}", "</tool_call>"]),
             "Let me check. "
         );
-        assert_eq!(filter(Some("<tool_call>"), false, false, &["a <to", "y"]), "a <toy");
+        assert_eq!(filter(&["<tool_call>"], false, false, &["a <to", "y"]), "a <toy");
     }
 
     #[test]
     fn filter_hides_reasoning() {
-        assert_eq!(filter(None, false, false, &["\n<thi", "nk>hmm</th", "ink>\n\nAnswer"]), "Answer");
-        assert_eq!(filter(None, false, true, &["still thinking</think>Done"]), "Done");
-        assert_eq!(filter(None, false, false, &["<b>bold</b>"]), "<b>bold</b>");
+        assert_eq!(filter(&[], false, false, &["\n<thi", "nk>hmm</th", "ink>\n\nAnswer"]), "Answer");
+        assert_eq!(filter(&[], false, true, &["still thinking</think>Done"]), "Done");
+        assert_eq!(filter(&[], false, false, &["<b>bold</b>"]), "<b>bold</b>");
     }
 
     #[test]
     fn filter_holds_back_call_fences_only() {
-        let mut f = StreamFilter::new(Some("<tool_call>"), true, false);
+        let mut f = StreamFilter::new(&["<tool_call>"], true, false);
         assert!(f.push("```").is_empty() && f.push("tool_call\n{\"name\"").is_empty());
-        let mut f = StreamFilter::new(Some("<tool_call>"), true, false);
+        let mut f = StreamFilter::new(&["<tool_call>"], true, false);
         let shown: String = [f.push("```py"), f.push("thon\nx = 1\n")].concat().into_iter().map(|(_, t)| t).collect();
         assert_eq!(shown, "```python\nx = 1\n");
     }
 
     #[test]
+    fn filter_stops_at_any_marker() {
+        let markers: &'static [&'static str] = &["<tool_call>", "<function="];
+        assert_eq!(
+            filter(markers, false, false, &["Looking.\n<func", "tion=read_file>\n<parameter=x>1"]),
+            "Looking.\n"
+        );
+        assert_eq!(filter(markers, false, false, &["a <tool_call><function=f>"]), "a ");
+    }
+
+    #[test]
     fn filter_llama3_json_start() {
-        assert_eq!(filter(None, true, false, &["  {\"name\": \"f\"", "}"]), "");
-        assert_eq!(filter(None, true, false, &["Sure: {not a call}"]), "Sure: {not a call}");
+        assert_eq!(filter(&[], true, false, &["  {\"name\": \"f\"", "}"]), "");
+        assert_eq!(filter(&[], true, false, &["Sure: {not a call}"]), "Sure: {not a call}");
     }
 }
