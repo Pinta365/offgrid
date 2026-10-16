@@ -55,6 +55,10 @@ struct Args {
     /// Editor plugins such as llama.vscode recommend 256.
     #[arg(long, default_value_t = 0)]
     cache_reuse: u32,
+    /// KV cache type: f16, q8_0 (half the memory) or q4_0 (a quarter). Quantized types need a
+    /// device with flash attention (Vulkan, CUDA, CPU).
+    #[arg(long, default_value = "f16")]
+    cache_type: offgrid::CacheType,
     /// Concurrent chat sessions; each holds its own KV cache (VRAM).
     #[arg(long, default_value_t = 1)]
     parallel: usize,
@@ -133,6 +137,7 @@ fn main() {
             n_ctx: args.ctx,
             n_threads: args.threads,
             cache_reuse: args.cache_reuse,
+            cache_type: args.cache_type,
             ..Default::default()
         },
         parallel: args.parallel,

@@ -173,7 +173,10 @@ editor) replace each other: a newer one cancels the running one and skips queued
 them was removed. It is off by default, as in llama-server; editor plugins such as llama.vscode
 recommend 256. `--fim-ctx N` gives the FIM model its own, usually smaller, context, and
 `--exit-on-stdin-close` makes the server exit with the process that started it (it keeps a pipe
-to the server's stdin open), for editor extensions that run it in the background.
+to the server's stdin open), for editor extensions that run it in the background. `--cache-type q8_0` stores
+the KV cache at 8 bits: half the memory (a 32k context for Qwen3-4B: 4.6 GB -> 2.4 GB) for about
+10-17% slower prompt processing and generation, with the same output in our tests; `q4_0`
+quarters it but changes the output.
 
 Compatibility has been checked with the official `openai` npm SDK (`scripts/openai-compat.ts`).
 The server binds to localhost by default; use `--api-key` before exposing it.

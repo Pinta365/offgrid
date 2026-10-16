@@ -707,3 +707,27 @@ async fn reqwest_post(url: &str, body: Value) -> (u16, Value) {
     let r = reqwest::Client::new().post(format!("{url}/infill")).json(&body).send().await.unwrap();
     (r.status().as_u16(), r.json().await.unwrap())
 }
+
+#[tokio::test]
+async fn quantized_kv_cache() {
+    let Ok(model) = std::env::var("OFFGRID_TEST_MODEL") else { return };
+    let mut answers = Vec::new();
+    for cache_type in [offgrid::CacheType::F16, offgrid::CacheType::Q8_0] {
+        let server = spawn(ServerConfig {
+            model: Some(model.clone().into()),
+            session: SessionParams { cache_type, ..Default::default() },
+            ..Default::default()
+        });
+        let r = reqwest::Client::new()
+            .post(format!("{}/v1/chat/completions", server.url))
+            .json(&greedy("Name the three primary colors, comma-separated."))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+        let v: Value = r.json().await.unwrap();
+        answers.push(v["choices"][0]["message"]["content"].as_str().unwrap().to_string());
+    }
+    // q8_0 halves the cache; on a short greedy answer it shouldn't change the output.
+    assert_eq!(answers[0], answers[1], "{answers:?}");
+}

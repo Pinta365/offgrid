@@ -34,11 +34,46 @@ pub struct SessionParams {
     /// their KV entries are shifted instead of evaluated again. 0 = off. Text-only prompts on
     /// models whose cache can shift.
     pub cache_reuse: u32,
+    /// Storage type of the KV cache. `q8_0` halves its memory (a 32k context for a 4B model:
+    /// ~4.7 GB -> ~2.5 GB) with little effect on output; `q4_0` quarters it at some cost.
+    pub cache_type: CacheType,
 }
 
 impl Default for SessionParams {
     fn default() -> Self {
-        Self { n_ctx: 0, n_batch: 512, n_threads: None, cache_reuse: 0 }
+        Self { n_ctx: 0, n_batch: 512, n_threads: None, cache_reuse: 0, cache_type: CacheType::F16 }
+    }
+}
+
+/// KV cache storage type (llama.cpp's `--cache-type-k/-v`, applied to both).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CacheType {
+    #[default]
+    F16,
+    Q8_0,
+    Q4_0,
+}
+
+impl CacheType {
+    fn ggml(self) -> sys::ggml_type {
+        match self {
+            CacheType::F16 => sys::ggml_type_GGML_TYPE_F16,
+            CacheType::Q8_0 => sys::ggml_type_GGML_TYPE_Q8_0,
+            CacheType::Q4_0 => sys::ggml_type_GGML_TYPE_Q4_0,
+        }
+    }
+}
+
+impl std::str::FromStr for CacheType {
+    type Err = String;
+    fn from_str(s: &str) -> std::result::Result<Self, String> {
+        match s {
+            "f16" => Ok(CacheType::F16),
+            "q8_0" => Ok(CacheType::Q8_0),
+            "q4_0" => Ok(CacheType::Q4_0),
+            other => Err(format!("expected f16, q8_0 or q4_0, got '{other}'")),
+        }
     }
 }
 
@@ -558,6 +593,12 @@ impl ChatSession {
         cp.no_perf = true;
         cp.abort_callback = Some(abort_callback);
         cp.abort_callback_data = Arc::as_ptr(&cancel.0) as *mut c_void;
+        cp.type_k = params.cache_type.ggml();
+        cp.type_v = params.cache_type.ggml();
+        if params.cache_type != CacheType::F16 {
+            // A quantized V cache needs flash attention.
+            cp.flash_attn_type = sys::llama_flash_attn_type_LLAMA_FLASH_ATTN_TYPE_ENABLED;
+        }
 
         let ctx = {
             let _guard = crate::backend::setup_lock();

@@ -35,8 +35,8 @@ mod tools;
 
 pub use backend::{DeviceInfo, DeviceKind, devices, system_info, version};
 pub use chat::{
-    CancelToken, ChatMessage, ChatRequest, ChatResponse, ChatSession, FinishReason, JsonSchemaFormat, RequestCancel,
-    ResponseFormat, SessionParams, StreamEvent, Usage,
+    CacheType, CancelToken, ChatMessage, ChatRequest, ChatResponse, ChatSession, FinishReason, JsonSchemaFormat,
+    RequestCancel, ResponseFormat, SessionParams, StreamEvent, Usage,
 };
 pub use embed::{EmbedParams, Embedder};
 pub use error::{Error, Result};

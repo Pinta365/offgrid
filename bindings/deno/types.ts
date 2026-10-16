@@ -22,6 +22,8 @@ export interface SessionParams {
   n_threads?: number | null;
   /** Reuse cached chunks of at least this many tokens that moved to an earlier position; 0 = off. */
   cache_reuse?: number;
+  /** KV cache type: "f16" (default), "q8_0" (half the memory) or "q4_0" (a quarter). */
+  cache_type?: "f16" | "q8_0" | "q4_0";
 }
 
 /** Options for `Model.createEmbedder`. */
