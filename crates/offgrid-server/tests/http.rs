@@ -33,7 +33,10 @@ impl Drop for TestServer {
 }
 
 fn spawn(config: ServerConfig) -> TestServer {
-    let config = ServerConfig { session: SessionParams { n_ctx: 2048, ..config.session }, ..config };
+    // Unless a test sets it, the server's default cache reuse, so every test runs with it.
+    let cache_reuse = if config.session.cache_reuse == 0 { 256 } else { config.session.cache_reuse };
+    let session = SessionParams { n_ctx: 2048, cache_reuse, ..config.session };
+    let config = ServerConfig { session, ..config };
     let state = AppState::load(&config).expect("models load");
     let (tx, rx) = std::sync::mpsc::channel();
     let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
@@ -670,4 +673,37 @@ async fn infill_supersedes_by_id_slot() {
     assert_eq!(latest8["tokens_predicted"], 4, "{latest8}");
     // 1500 tokens would take several seconds.
     assert!(t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
+}
+
+#[tokio::test]
+async fn infill_reuses_shifted_chunks() {
+    let Ok(fim) = std::env::var("OFFGRID_TEST_FIM_MODEL") else { return };
+    let code: Vec<String> =
+        (0..120).map(|i| format!("    total += values[{i}] * {}  # step {i}", i * 7 % 13)).collect();
+    // The editor's window slides down 3 lines: the start of the prefix drops out.
+    let at = |top: usize| {
+        json!({"input_prefix": format!("def f(values):\n{}\n", code[top..top + 100].join("\n")),
+               "input_suffix": "\n    return total\n", "n_predict": 8, "temperature": 0})
+    };
+    let mut cached = Vec::new();
+    for reuse in [u32::MAX, 64] {
+        let server = spawn(ServerConfig {
+            fim_model: Some(fim.clone().into()),
+            session: SessionParams { cache_reuse: reuse, ..Default::default() },
+            ..Default::default()
+        });
+        let url = &server.url;
+        let (_, first) = reqwest_post(url, at(0)).await;
+        let (_, moved) = reqwest_post(url, at(3)).await;
+        assert!(!moved["content"].as_str().unwrap().is_empty(), "{moved}");
+        println!("cache_reuse {reuse}: {first}\n{moved}");
+        cached.push(moved["timings"]["cache_n"].as_u64().unwrap());
+    }
+    // Without reuse only the part before the prefix matches; with it, the 97 shared lines do.
+    assert!(cached[1] > cached[0] + 500, "cached tokens without / with reuse: {cached:?}");
+}
+
+async fn reqwest_post(url: &str, body: Value) -> (u16, Value) {
+    let r = reqwest::Client::new().post(format!("{url}/infill")).json(&body).send().await.unwrap();
+    (r.status().as_u16(), r.json().await.unwrap())
 }

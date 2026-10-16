@@ -44,7 +44,7 @@ flowchart TD
 | **Tool calling** | OpenAI `tools`, `tool_choice` and `parallel_tool_calls`. Tool calls are parsed from the model's native format: Hermes/Qwen, Llama 3.x, Mistral, Qwen3-Coder XML, or generic JSON. If a model's template ignores tools (Gemma 3, for example), the tools and the call format are described in the system message instead, and earlier calls and results are written into the conversation as text. A grammar keeps the arguments valid against each tool's schema. Loop helpers (`run_tools`, `runTools`) handle the call, execute and feed-back cycle. |
 | **Reasoning** | Thinking models' `<think>` blocks are separated into `reasoning_content` and streamed as their own events. |
 | **Vision and audio** | Images (PNG, JPEG, …) and audio (WAV, MP3, FLAC) are sent as OpenAI content parts. Several items per message and mixed image and audio both work. Encoded media is reused across turns from the KV cache and is not decoded again. |
-| **Code completion** | Fill-in-the-middle for code models with FIM tokens (Qwen2.5-Coder, ...), laid out like llama.cpp's `/infill`: extra context from other files, the code before and after the cursor, and stops at a time limit or at a less-indented line. llama.cpp's infill sampler (on by default) ends a completion once the model is unsure how to go on, which keeps suggestions short and fast. Completions that share a prefix reuse the KV cache. |
+| **Code completion** | Fill-in-the-middle for code models with FIM tokens (Qwen2.5-Coder, ...), laid out like llama.cpp's `/infill`: extra context from other files, the code before and after the cursor, and stops at a time limit or at a less-indented line. llama.cpp's infill sampler (on by default) ends a completion once the model is unsure how to go on, which keeps suggestions short and fast. Completions that share a prefix reuse the KV cache, and chunks that moved up (an editor's window sliding down a file) are shifted into place instead of evaluated again (`cache_reuse`, as llama.cpp's `--cache-reuse`). |
 | **Embeddings** | Batched and L2-normalized, with float or base64 output. |
 | **Image generation** | Text-to-image and image-to-image through [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp) (Z-Image, FLUX, SD 1.x/2.x/XL, ...), built on the same ggml as llama.cpp. Progress (loading, sampling, decoding) and cancellation; PNG or RGB output. Runs alongside chat in the same process. Feature `image`; included in the release packages. |
 | **Cancellation** | Requests can be cancelled from any thread. Cancellation is scoped to one request and never affects a later one. |
@@ -167,7 +167,10 @@ Point any OpenAI client at `http://127.0.0.1:8080/v1`. The server provides:
 - `GET /v1/models` and `GET /health`
 
 Code completion uses `--fim-model` if given, else the chat model (which then needs FIM tokens).
-A request can pick either model by its `model` id.
+A request can pick either model by its `model` id. `/infill` requests with the same `id_slot` (one
+editor) replace each other: a newer one cancels the running one and skips queued ones.
+`--cache-reuse 256` (the default; 0 turns it off) shifts cached chunks of at least that many tokens
+into place when text before them was removed.
 
 Compatibility has been checked with the official `openai` npm SDK (`scripts/openai-compat.ts`).
 The server binds to localhost by default; use `--api-key` before exposing it.

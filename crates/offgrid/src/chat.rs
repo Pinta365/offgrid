@@ -29,11 +29,16 @@ pub struct SessionParams {
     pub n_batch: u32,
     /// CPU threads. `None` = half the available hardware threads.
     pub n_threads: Option<i32>,
+    /// Reuse cached chunks of at least this many tokens that moved to an earlier position
+    /// (llama.cpp's `n_cache_reuse`), e.g. when an editor's code window slides down a file:
+    /// their KV entries are shifted instead of evaluated again. 0 = off. Text-only prompts on
+    /// models whose cache can shift.
+    pub cache_reuse: u32,
 }
 
 impl Default for SessionParams {
     fn default() -> Self {
-        Self { n_ctx: 0, n_batch: 512, n_threads: None }
+        Self { n_ctx: 0, n_batch: 512, n_threads: None, cache_reuse: 0 }
     }
 }
 
@@ -436,6 +441,8 @@ pub struct ChatSession {
     n_past: usize,
     /// Shapes of media seen before, so cached media can be re-tokenized without decoding.
     media_memo: MediaMemo,
+    /// Minimum chunk for KV-cache reuse by shifting (0 = off or unsupported).
+    cache_reuse: usize,
 }
 
 /// Error text used internally when a placeholder media chunk would have to be evaluated;
@@ -558,6 +565,10 @@ impl ChatSession {
         };
         let ctx = NonNull::new(ctx).ok_or(Error::ContextCreate)?;
         let n_batch = unsafe { sys::llama_n_batch(ctx.as_ptr()) } as usize;
+        let can_shift = unsafe { sys::llama_memory_can_shift(sys::llama_get_memory(ctx.as_ptr())) };
+        if params.cache_reuse > 0 && !can_shift {
+            log::debug!(target: "offgrid", "this model's KV cache can't shift: cache_reuse is off");
+        }
         Ok(Self {
             model,
             ctx,
@@ -568,6 +579,7 @@ impl ChatSession {
             model_template: None,
             n_past: 0,
             media_memo: MediaMemo::default(),
+            cache_reuse: if can_shift { params.cache_reuse as usize } else { 0 },
         })
     }
 
@@ -969,6 +981,48 @@ impl ChatSession {
         common.min(items.len().saturating_sub(1))
     }
 
+    /// After the common prefix (`keep` items), move later cached chunks that match the prompt
+    /// to their new positions (llama.cpp's cache reuse). Chunks can only move to earlier
+    /// positions: new tokens must follow the last cached position, so text inserted before a
+    /// chunk means evaluating it again. Returns the number of leading items now in place; the
+    /// caller drops the rest.
+    fn reuse_chunks(&mut self, items: &[CacheItem], keep: usize) -> usize {
+        // Positions equal item indices only for text.
+        let text = |c: &CacheItem| matches!(c, CacheItem::Token(_));
+        if !self.cached.iter().all(text) || !items.iter().all(text) {
+            return keep;
+        }
+        let mem = unsafe { sys::llama_get_memory(self.ctx.as_ptr()) };
+        let limit = items.len() - 1; // the last item is always evaluated (logits)
+        let (mut head_c, mut head_p) = (keep, keep); // in the cache, in the prompt
+        let mut reused = 0;
+        while head_c < self.cached.len() && head_p < limit {
+            let n = self.cached[head_c..].iter().zip(&items[head_p..limit]).take_while(|(a, b)| a == b).count();
+            if n < self.cache_reuse {
+                head_c += 1;
+                continue;
+            }
+            // Drop what lies between the prompt head and the chunk, then shift the chunk.
+            if !unsafe { sys::llama_memory_seq_rm(mem, 0, head_p as i32, head_c as i32) } {
+                self.reset();
+                return 0;
+            }
+            unsafe {
+                sys::llama_memory_seq_add(mem, 0, head_c as i32, (head_c + n) as i32, head_p as i32 - head_c as i32)
+            };
+            for i in 0..n {
+                self.cached[head_p + i] = self.cached[head_c + i].clone();
+            }
+            head_c += n;
+            head_p += n;
+            reused += n;
+        }
+        if reused > 0 {
+            log::debug!(target: "offgrid", "cache reuse: {reused} tokens shifted, prefix {keep} -> {head_p}");
+        }
+        head_p
+    }
+
     /// Content hashes (without `#k`) of media currently in the KV cache.
     fn cached_media_hashes(&self) -> std::collections::HashSet<String> {
         self.cached
@@ -1002,6 +1056,9 @@ impl ChatSession {
         usage.prompt_tokens = items.iter().map(CacheItem::n_tokens).sum::<usize>() as u32;
 
         let mut keep = self.reusable_prefix(&items);
+        if self.cache_reuse > 0 && keep < self.cached.len() {
+            keep = self.reuse_chunks(&items, keep);
+        }
         if keep < self.cached.len() {
             let pos: usize = self.cached[..keep].iter().map(CacheItem::n_pos).sum();
             let mem = unsafe { sys::llama_get_memory(self.ctx.as_ptr()) };

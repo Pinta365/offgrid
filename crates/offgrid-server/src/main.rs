@@ -42,6 +42,10 @@ struct Args {
     /// Context size per session (0 = model default, max 8192).
     #[arg(short = 'c', long, default_value_t = 0)]
     ctx: u32,
+    /// Reuse cached chunks of at least this many tokens that moved to an earlier position
+    /// (shift their KV entries instead of evaluating them again); 0 = off.
+    #[arg(long, default_value_t = 256)]
+    cache_reuse: u32,
     /// Concurrent chat sessions; each holds its own KV cache (VRAM).
     #[arg(long, default_value_t = 1)]
     parallel: usize,
@@ -115,7 +119,12 @@ fn main() {
             devices: (!args.devices.is_empty()).then_some(args.devices),
             mmproj: None,
         },
-        session: SessionParams { n_ctx: args.ctx, n_threads: args.threads, ..Default::default() },
+        session: SessionParams {
+            n_ctx: args.ctx,
+            n_threads: args.threads,
+            cache_reuse: args.cache_reuse,
+            ..Default::default()
+        },
         parallel: args.parallel,
         api_key: args.api_key,
         max_body_bytes: args.max_body_mb << 20,

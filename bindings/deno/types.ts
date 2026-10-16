@@ -20,6 +20,8 @@ export interface SessionParams {
   n_batch?: number;
   /** CPU threads; default half the hardware threads. */
   n_threads?: number | null;
+  /** Reuse cached chunks of at least this many tokens that moved to an earlier position; 0 = off. */
+  cache_reuse?: number;
 }
 
 /** Options for `Model.createEmbedder`. */
