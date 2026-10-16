@@ -555,6 +555,16 @@ async fn infill_and_completions() {
     assert_eq!(streamed, r["content"].as_str().unwrap());
     assert_eq!((last["stop"].clone(), last["content"].clone()), (json!(true), json!("")));
 
+    // The infill sampler (on unless `samplers` leaves it out) ends the completion sooner.
+    let open = json!({"input_prefix": "import os\n\npath = os.path.join(", "input_suffix": "\nprint(path)\n",
+                      "n_predict": 64, "temperature": 0});
+    let (_, on) = post(url, "/infill", open.clone()).await;
+    let mut off = open.clone();
+    off["samplers"] = json!(["top_k", "top_p"]);
+    let (_, off) = post(url, "/infill", off).await;
+    let n = |r: &Value| r["tokens_predicted"].as_u64().unwrap();
+    assert!(n(&on) < n(&off), "with infill sampler {on}\nwithout {off}");
+
     // n_indent: stop before a line indented less than the method body.
     let (_, r) = post(
         url,

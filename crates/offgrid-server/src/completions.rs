@@ -137,13 +137,19 @@ fn require_infill(id: &str, pool: &ChatPool) -> Result<(), ApiError> {
 pub async fn infill(State(state): State<Arc<AppState>>, body: Body) -> Response {
     let run = async {
         let body = parse_body(body)?;
+        log_request("/infill", &body);
         let stream = body.get("stream").and_then(Value::as_bool).unwrap_or(false);
         if body.get("input_extra").is_some_and(|v| !v.is_array() && !v.is_null()) {
             return Err(ApiError::bad_request("input_extra must be an array of {filename, text}"));
         }
         let (model, pool) = pool_for(&state, &body)?;
         require_infill(&model, &pool)?;
-        let req = parse_request(body)?;
+        // llama.cpp's sampler list: we only read whether it asks for the infill sampler.
+        let infill_sampler = body.get("samplers").and_then(Value::as_array).map(|a| a.iter().any(|s| s == "infill"));
+        let mut req = parse_request(body)?;
+        if let Some(on) = infill_sampler {
+            req.infill_sampler = on;
+        }
         Ok(serve(state.clone(), pool, Job::Infill(req), stream, Format::Llama { model }).await)
     };
     run.await.unwrap_or_else(IntoResponse::into_response)
@@ -152,6 +158,7 @@ pub async fn infill(State(state): State<Arc<AppState>>, body: Body) -> Response 
 pub async fn completions(State(state): State<Arc<AppState>>, body: Body) -> Response {
     let run = async {
         let mut body = parse_body(body)?;
+        log_request("/v1/completions", &body);
         let bad = |msg: &str| Err(ApiError::bad_request(msg));
         if body.get("n").and_then(Value::as_u64).is_some_and(|n| n != 1) {
             return bad("only n=1 is supported");
@@ -200,9 +207,45 @@ pub async fn completions(State(state): State<Arc<AppState>>, body: Body) -> Resp
     run.await.unwrap_or_else(IntoResponse::into_response)
 }
 
+/// Debug log of a request's fields (long text as its length), to see what editor clients send.
+fn log_request(path: &str, body: &serde_json::Map<String, Value>) {
+    if !log::log_enabled!(log::Level::Debug) {
+        return;
+    }
+    let fields: Vec<String> = body
+        .iter()
+        .map(|(k, v)| match v {
+            Value::String(s) if s.len() > 40 => format!("{k}=<{} chars>", s.len()),
+            Value::Array(a) if k == "input_extra" => {
+                let chars: usize = a.iter().filter_map(|c| c["text"].as_str()).map(str::len).sum();
+                format!("{k}=<{} chunks, {chars} chars>", a.len())
+            }
+            other => format!("{k}={other}"),
+        })
+        .collect();
+    log::debug!("{path} {}", fields.join(" "));
+}
+
+/// Debug log of a finished completion: why it stopped, cache use and timings.
+fn log_result(resp: &ChatResponse, elapsed: std::time::Duration) {
+    let u = &resp.usage;
+    let preview: String = resp.content.chars().take(60).collect();
+    log::debug!(
+        "  -> {:?} prompt {} (cached {}) in {:.0} ms, {} generated in {:.0} ms, total {:.0} ms: {preview:?}",
+        resp.finish_reason,
+        u.prompt_tokens,
+        u.cached_tokens,
+        u.prompt_ms,
+        u.completion_tokens,
+        u.generation_ms,
+        elapsed.as_secs_f64() * 1000.0
+    );
+}
+
 /// Run `job` on a session from `pool`: one JSON body, or SSE events (OpenAI streams end
 /// with `[DONE]`, llama.cpp's with the final result).
 async fn serve(state: Arc<AppState>, pool: Arc<ChatPool>, job: Job, stream: bool, format: Format) -> Response {
+    let t0 = std::time::Instant::now();
     let lease = pool.acquire().await;
     // Requests that waited in the queue during shutdown must not start a generation.
     if state.is_shutting_down() {
@@ -218,6 +261,7 @@ async fn serve(state: Arc<AppState>, pool: Arc<ChatPool>, job: Job, stream: bool
             // A failed send means the client disconnected: cancel generation.
             match job.run(&mut lease.session(), |piece| send(format.chunk(piece))) {
                 Ok(resp) => {
+                    log_result(&resp, t0.elapsed());
                     format.finish(&resp).into_iter().for_each(|v| {
                         send(v);
                     });
@@ -234,8 +278,13 @@ async fn serve(state: Arc<AppState>, pool: Arc<ChatPool>, job: Job, stream: bool
         Sse::new(body).keep_alive(KeepAlive::default()).into_response()
     } else {
         let _cancel = cancel; // dropped with this future if the client disconnects
-        let joined =
-            tokio::task::spawn_blocking(move || job.run(&mut lease.session(), |_| true).map(|r| format.body(&r))).await;
+        let joined = tokio::task::spawn_blocking(move || {
+            job.run(&mut lease.session(), |_| true).map(|r| {
+                log_result(&r, t0.elapsed());
+                format.body(&r)
+            })
+        })
+        .await;
         match joined {
             Ok(Ok(body)) => Json(body).into_response(),
             Ok(Err(e)) => ApiError::from_core(e).into_response(),

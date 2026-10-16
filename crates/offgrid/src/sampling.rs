@@ -43,6 +43,9 @@ impl Default for SamplingParams {
     }
 }
 
+/// Candidates for the infill sampler when `top_k` is off (llama.cpp's default top_k).
+const INFILL_TOP_K: i32 = 40;
+
 /// Owned llama sampler chain.
 pub(crate) struct Sampler {
     ptr: NonNull<sys::llama_sampler>,
@@ -50,7 +53,9 @@ pub(crate) struct Sampler {
 
 impl Sampler {
     /// `grammar` overrides `p.grammar` (callers resolve response_format / tools into it).
-    pub fn new(model: &Model, p: &SamplingParams, grammar: Option<&GrammarSpec>) -> Result<Self> {
+    /// `infill` adds llama.cpp's infill sampler, which ends a code completion once
+    /// end-of-generation is about as likely as the remaining text candidates.
+    pub fn new(model: &Model, p: &SamplingParams, grammar: Option<&GrammarSpec>, infill: bool) -> Result<Self> {
         unsafe {
             let chain = sys::llama_sampler_chain_init(sys::llama_sampler_chain_default_params());
             let chain = NonNull::new(chain).ok_or(Error::InvalidArgument("sampler chain".into()))?;
@@ -95,9 +100,7 @@ impl Sampler {
                     p.presence_penalty,
                 ));
             }
-            if p.temperature <= 0.0 {
-                add(sys::llama_sampler_init_greedy());
-            } else {
+            let truncate = || {
                 if p.top_k > 0 {
                     add(sys::llama_sampler_init_top_k(p.top_k));
                 }
@@ -107,6 +110,23 @@ impl Sampler {
                 if p.min_p > 0.0 {
                     add(sys::llama_sampler_init_min_p(p.min_p, 1));
                 }
+                // The infill test scales with the number of candidates: run it on the
+                // truncated set, as llama.cpp's default order does (top_k, top_p, infill).
+                if infill {
+                    if p.top_k <= 0 {
+                        add(sys::llama_sampler_init_top_k(INFILL_TOP_K));
+                    }
+                    add(sys::llama_sampler_init_infill(model.vocab()));
+                }
+            };
+            if p.temperature <= 0.0 {
+                // Truncation doesn't change the greedy pick; it only feeds the infill sampler.
+                if infill {
+                    truncate();
+                }
+                add(sys::llama_sampler_init_greedy());
+            } else {
+                truncate();
                 add(sys::llama_sampler_init_temp(p.temperature));
                 let seed = p.seed.unwrap_or(sys::LLAMA_DEFAULT_SEED);
                 add(sys::llama_sampler_init_dist(seed));

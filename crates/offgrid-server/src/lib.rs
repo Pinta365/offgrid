@@ -198,7 +198,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/health", get(|| async { Json(json!({"status": "ok"})) }))
         .merge(infill)
         .nest("/v1", v1)
-        .fallback(|| async { ApiError::not_found("unknown endpoint") })
+        .fallback(|req: Request| async move {
+            log::debug!("unknown endpoint: {} {}", req.method(), req.uri());
+            ApiError::not_found("unknown endpoint")
+        })
         .layer(middleware::map_response(json_charset))
         .with_state(state)
 }

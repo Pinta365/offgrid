@@ -7,6 +7,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::chat::{ChatSession, FinishReason, Prompt, string_or_seq};
 use crate::model::FimTokens;
+use crate::sampling::Sampler;
 use crate::{ChatResponse, Error, Result, SamplingParams};
 
 /// Prompt tokens for the prefix and suffix around the cursor (llama.cpp's default batch).
@@ -17,7 +18,7 @@ const DEFAULT_RESERVE: usize = 256;
 
 /// A code infill request: generate the text between `input_prefix` and `input_suffix`.
 /// Field names follow llama.cpp's `/infill`.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct InfillRequest {
     /// Text before the cursor.
@@ -39,8 +40,28 @@ pub struct InfillRequest {
     pub n_indent: u32,
     /// After this many milliseconds of generation, stop at the next newline.
     pub t_max_predict_ms: Option<u64>,
+    /// End the completion once end-of-generation is about as likely as the remaining text
+    /// (llama.cpp's infill sampler). Default true.
+    pub infill_sampler: bool,
     #[serde(flatten)]
     pub sampling: SamplingParams,
+}
+
+impl Default for InfillRequest {
+    fn default() -> Self {
+        Self {
+            input_prefix: String::new(),
+            input_suffix: String::new(),
+            input_extra: Vec::new(),
+            prompt: String::new(),
+            max_tokens: None,
+            stop: Vec::new(),
+            n_indent: 0,
+            t_max_predict_ms: None,
+            infill_sampler: true,
+            sampling: SamplingParams::default(),
+        }
+    }
 }
 
 /// A piece of extra context: a file name and some of its text.
@@ -99,17 +120,17 @@ impl ChatSession {
         let mut content = String::new();
         let mut limited = false;
         let mut cancelled = false;
-        let result =
-            self.run(Prompt::Tokens(&tokens), req.max_tokens, &req.stop, &req.sampling, None, false, |piece| {
-                let (text, stop) = limits.push(piece);
-                content.push_str(&text);
-                if !text.is_empty() && !on_piece(&text) {
-                    cancelled = true;
-                    return false;
-                }
-                limited = stop;
-                !stop
-            });
+        let sampler = Sampler::new(&model, &req.sampling, None, req.infill_sampler)?;
+        let result = self.run(Prompt::Tokens(&tokens), req.max_tokens, &req.stop, sampler, false, |piece| {
+            let (text, stop) = limits.push(piece);
+            content.push_str(&text);
+            if !text.is_empty() && !on_piece(&text) {
+                cancelled = true;
+                return false;
+            }
+            limited = stop;
+            !stop
+        });
         let mut resp = result?;
         if limited {
             resp.finish_reason = FinishReason::Length;
@@ -294,6 +315,7 @@ mod tests {
         assert_eq!(req.max_tokens, None);
         assert_eq!(req.input_extra[1], InfillChunk { filename: None, text: "y".into() });
         assert_eq!((req.n_indent, req.t_max_predict_ms, req.sampling.top_k), (4, Some(500), 40));
+        assert!(req.infill_sampler, "on by default");
         let req: InfillRequest = serde_json::from_value(serde_json::json!({"max_tokens": 16, "stop": "\n"})).unwrap();
         assert_eq!((req.max_tokens, req.stop), (Some(16), vec!["\n".to_string()]));
     }

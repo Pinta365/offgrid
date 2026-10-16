@@ -813,8 +813,9 @@ impl ChatSession {
         if format == ToolFormat::Polyfill {
             stop.to_mut().push(POLYFILL_STOP.into());
         }
-        let mut result =
-            self.run(prompt_input, req.max_tokens, &stop, &req.sampling, grammars.first(), use_tools, &mut on_piece);
+        let model = self.model.clone();
+        let sampler = || Sampler::new(&model, &req.sampling, grammars.first(), false);
+        let mut result = self.run(prompt_input, req.max_tokens, &stop, sampler()?, use_tools, &mut on_piece);
         if let (Err(Error::Media(msg)), Some(_)) = (&result, &chunks)
             && msg == PLACEHOLDER_EVAL
         {
@@ -825,15 +826,7 @@ impl ChatSession {
             let bos = model.token_text(unsafe { sys::llama_vocab_bos(model.vocab()) });
             let add_bos = bos.is_empty() || !prompt.starts_with(&bos);
             let real = projector.tokenize(&prompt, &media, add_bos, &mut self.media_memo, &|_| false)?;
-            result = self.run(
-                Prompt::Media(&real),
-                req.max_tokens,
-                &stop,
-                &req.sampling,
-                grammars.first(),
-                use_tools,
-                &mut on_piece,
-            );
+            result = self.run(Prompt::Media(&real), req.max_tokens, &stop, sampler()?, use_tools, &mut on_piece);
         }
         let mut resp = result?;
         // Forget shapes of media no longer cached.
@@ -925,21 +918,20 @@ impl ChatSession {
     ) -> Result<ChatResponse> {
         self.cancel.begin();
         let tokens = self.model.tokenize(prompt, true, true)?;
-        self.run(Prompt::Tokens(&tokens), max_tokens, stop, sampling, None, false, on_piece)
+        let sampler = Sampler::new(&self.model, sampling, None, false)?;
+        self.run(Prompt::Tokens(&tokens), max_tokens, stop, sampler, false, on_piece)
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn run(
         &mut self,
         prompt: Prompt<'_>,
         max_tokens: Option<u32>,
         stop: &[String],
-        sampling: &SamplingParams,
-        grammar: Option<&GrammarSpec>,
+        sampler: Sampler,
         special: bool,
         on_piece: impl FnMut(&str) -> bool,
     ) -> Result<ChatResponse> {
-        let result = self.run_inner(prompt, max_tokens, stop, sampling, grammar, special, on_piece);
+        let result = self.run_inner(prompt, max_tokens, stop, sampler, special, on_piece);
         if result.is_err() {
             // KV state may be partially written; start clean next time.
             self.reset();
@@ -947,18 +939,15 @@ impl ChatSession {
         result
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn run_inner(
         &mut self,
         prompt: Prompt<'_>,
         max_tokens: Option<u32>,
         stop: &[String],
-        sampling: &SamplingParams,
-        grammar: Option<&GrammarSpec>,
+        sampler: Sampler,
         special: bool,
         on_piece: impl FnMut(&str) -> bool,
     ) -> Result<ChatResponse> {
-        let sampler = Sampler::new(&self.model, sampling, grammar)?;
         let t_prompt = Instant::now();
         let segments = match prompt {
             Prompt::Tokens(t) => vec![Segment::Text(t.to_vec())],
