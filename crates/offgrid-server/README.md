@@ -1,15 +1,22 @@
 # offgrid-server
 
 OpenAI-compatible HTTP server for [offgrid](https://github.com/Pinta365/offgrid): local, offline chat,
-tool calling, structured output, embeddings, and image and audio input on top of llama.cpp (Vulkan or CPU).
+tool calling, structured output, code completion, embeddings, and image and audio input on top of
+llama.cpp (Vulkan or CPU).
 
 ```sh
 cargo install offgrid-server
-offgrid-server --model qwen3-4b.gguf [--embedding-model embed.gguf] [--mmproj mmproj.gguf] [--port 8080] [--api-key KEY]
+offgrid-server --model qwen3-4b.gguf [--fim-model qwen2.5-coder-1.5b.gguf] [--embedding-model embed.gguf] \
+               [--mmproj mmproj.gguf] [--port 8080] [--api-key KEY]
 ```
 
 Point any OpenAI client at `http://127.0.0.1:8080/v1`. Endpoints: `POST /v1/chat/completions` (with SSE
-streaming, `reasoning_content` and `tool_calls` deltas), `POST /v1/embeddings`, `GET /v1/models`, `GET /health`.
+streaming, `reasoning_content` and `tool_calls` deltas), `POST /v1/completions` (raw text, or
+fill-in-the-middle with `suffix`), `POST /infill` (llama.cpp's code completion, for editor plugins such as
+llama.vscode), `POST /v1/embeddings`, `GET /v1/models`, `GET /health`.
+
+For memory: `--cache-type q8_0` halves the KV cache, and `--n-cpu-moe N` runs a Mixture-of-Experts model
+larger than the GPU with its expert weights in RAM.
 The prebuilt packages also serve `POST /v1/images/generations` (`--image-diffusion-model` /
 `--image-text-encoder` / `--image-vae`); from source that needs the `image` feature and offgrid from git.
 

@@ -45,10 +45,11 @@ flowchart TD
 | **Reasoning** | Thinking models' `<think>` blocks are separated into `reasoning_content` and streamed as their own events. |
 | **Vision and audio** | Images (PNG, JPEG, …) and audio (WAV, MP3, FLAC) are sent as OpenAI content parts. Several items per message and mixed image and audio both work. Encoded media is reused across turns from the KV cache and is not decoded again. |
 | **Code completion** | Fill-in-the-middle for code models with FIM tokens (Qwen2.5-Coder, ...), laid out like llama.cpp's `/infill`: extra context from other files, the code before and after the cursor, and stops at a time limit or at a less-indented line. llama.cpp's infill sampler (on by default) ends a completion once the model is unsure how to go on, which keeps suggestions short and fast. Completions that share a prefix reuse the KV cache, and chunks that moved up (an editor's window sliding down a file) are shifted into place instead of evaluated again (`cache_reuse`, as llama.cpp's `--cache-reuse`). |
+| **Memory and large models** | KV cache in 8 or 4 bits (`cache_type`: a 32k context in half the memory), and Mixture-of-Experts models larger than the GPU with their expert weights in RAM (`n_cpu_moe`, as llama.cpp's `--n-cpu-moe`), which keeps them fast at long contexts. |
 | **Embeddings** | Batched and L2-normalized, with float or base64 output. |
 | **Image generation** | Text-to-image and image-to-image through [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp) (Z-Image, FLUX, SD 1.x/2.x/XL, ...), built on the same ggml as llama.cpp. Progress (loading, sampling, decoding) and cancellation; PNG or RGB output. Runs alongside chat in the same process. Feature `image`; included in the release packages. |
 | **Cancellation** | Requests can be cancelled from any thread. Cancellation is scoped to one request and never affects a later one. |
-| **Server** | `offgrid-server`: OpenAI-compatible HTTP with SSE streaming, a session pool, cancellation when the client disconnects, an optional API key, and graceful shutdown. |
+| **Server** | `offgrid-server`: OpenAI-compatible HTTP with SSE streaming, llama.cpp's `/infill` for editor plugins, a session pool, cancellation when the client disconnects, an optional API key, and graceful shutdown. |
 
 ## Using it
 
@@ -91,7 +92,10 @@ let png = images.generate(&req, |progress| { println!("{progress:?}"); true })?.
 
 The main entry points are `ChatSession::complete_stream` (content, reasoning and tool-call
 events), `run_tools` (the tool loop), `ChatSession::infill` (code completion), `Embedder::embed`
-and `ImageModel::generate`. See `crates/offgrid/examples/`, and
+and `ImageModel::generate`. Memory is set per model and session: `ModelParams::n_cpu_moe` (MoE
+experts in RAM), `SessionParams::cache_type` (`q8_0` halves the KV cache) and
+`SessionParams::cache_reuse` (reuse cached text that moved up); the C ABI and Deno take the same
+fields in their JSON params. See `crates/offgrid/examples/`, and
 `examples/tauri/` for a desktop chat app that embeds the crate.
 
 ### C / C++ (and anything with a C FFI)
@@ -155,6 +159,8 @@ bin/offgrid-server --model qwen3-4b.gguf [--embedding-model embed.gguf] [--mmpro
                   [--port 8080] [--parallel 2] [--ctx 8192] [--api-key KEY]
 ```
 
+`offgrid-server --help` lists every option.
+
 Point any OpenAI client at `http://127.0.0.1:8080/v1`. The server provides:
 - `POST /v1/chat/completions`, with or without SSE streaming, including
   `delta.reasoning_content` and `delta.tool_calls`
@@ -166,17 +172,20 @@ Point any OpenAI client at `http://127.0.0.1:8080/v1`. The server provides:
   and `init_image`/`strength` for image-to-image)
 - `GET /v1/models` and `GET /health`
 
-Code completion uses `--fim-model` if given, else the chat model (which then needs FIM tokens).
-A request can pick either model by its `model` id. `/infill` requests with the same `id_slot` (one
+Code completion uses `--fim-model` if given, else the chat model (which then needs FIM tokens);
+a request can pick either by its `model` id. `/infill` requests with the same `id_slot` (one
 editor) replace each other: a newer one cancels the running one and skips queued ones.
-`--cache-reuse 256` shifts cached chunks of at least that many tokens into place when text before
-them was removed. It is off by default, as in llama-server; editor plugins such as llama.vscode
-recommend 256. `--fim-ctx N` gives the FIM model its own, usually smaller, context, and
-`--exit-on-stdin-close` makes the server exit with the process that started it (it keeps a pipe
-to the server's stdin open), for editor extensions that run it in the background. `--cache-type q8_0` stores
-the KV cache at 8 bits: half the memory (a 32k context for Qwen3-4B: 4.6 GB -> 2.4 GB) for about
-10-17% slower prompt processing and generation, with the same output in our tests; `q4_0`
-quarters it but changes the output.
+
+Options for memory and speed:
+
+| Option | Default | |
+|---|---|---|
+| `--cache-type f16\|q8_0\|q4_0` | `f16` | KV cache storage. `q8_0` halves it (a 32k context for Qwen3-4B: 4.6 GB -> 2.4 GB) for 10-17% slower prompts and generation, with the same output in our tests; `q4_0` quarters it but changes the output |
+| `--cache-reuse N` | `0` | Shift cached chunks of at least N tokens into place when text before them was removed (an editor's window sliding down a file). Off as in llama-server; llama.vscode recommends 256 |
+| `--n-cpu-moe N` | `0` | Keep the expert weights of the first N layers of a MoE model in RAM, attention on the GPU (llama.cpp's `--n-cpu-moe`). Unlike `--gpu-layers`, it stays fast at long contexts |
+| `--batch N` | `512` | Prompt tokens per decode call. With `--n-cpu-moe`, 2048 more than doubles prompt speed |
+| `--fim-ctx N` | `--ctx` | A separate, usually smaller, context for the FIM model |
+| `--exit-on-stdin-close` | off | Exit when stdin closes: an extension that keeps a pipe open takes the server down with it, even if it crashes |
 
 Compatibility has been checked with the official `openai` npm SDK (`scripts/openai-compat.ts`).
 The server binds to localhost by default; use `--api-key` before exposing it.
@@ -192,6 +201,7 @@ Every model below was exercised end to end by the test suites on an RX 9070 XT (
 | Qwen3-0.6B Q8_0 | Reasoning streaming | Use temperature 0.6 in thinking mode; greedy decoding loops |
 | Qwen3-Embedding-0.6B Q8_0 | Embeddings | |
 | Qwen2.5-Coder-1.5B Q8_0 | Code completion (FIM) | Repo-level format with extra files; ~200 tokens/s on the RX 9070 XT |
+| Qwen3-Coder-30B-A3B-Instruct Q4_K_M | Tools (Qwen3-Coder XML), agent use | 18.6 GB: on a 16 GB GPU with `--n-cpu-moe 24 --batch 2048`, ~35 tokens/s at a 26k context. Sometimes leaves out `<tool_call>` around a call; that is parsed too |
 | Qwen2.5-VL-3B + mmproj | Vision (M-RoPE) | Colors, counting, OCR, JPEG, multiple images |
 | Gemma 3 4B + mmproj | Vision, tools without template support | Template ignores tools; uses the system-message fallback |
 | Qwen2.5-Omni-3B + mmproj | Audio and vision | Word-perfect transcription from WAV, MP3 and FLAC |
@@ -322,14 +332,18 @@ Model-backed tests are enabled through environment variables pointing at GGUF fi
 - macOS and ARM aren't built.
 - Tool calls stream as one complete fragment each, not argument by argument. That is valid
   OpenAI streaming.
-- Mistral and Qwen3-Coder tool formats are parsed but not grammar-constrained. They are
-  covered by unit tests only, not by end-to-end tests with those models.
+- Mistral and Qwen3-Coder tool formats are parsed but not grammar-constrained. Mistral's is
+  covered by unit tests only; Qwen3-Coder's was exercised with Qwen3-Coder-30B-A3B in an agent
+  benchmark, not by the test suite.
 - The JSON-schema converter doesn't support remote `$ref`, and it ignores numeric
   minimum/maximum.
 - Cached audio still pays mtmd's spectrogram computation on later turns (an upstream TODO).
   Decoding and resampling are skipped.
-- The server serves one chat model, one embedding model and one image model; there's no per-request model
-  switching. Only `n=1` is supported, and there is no legacy `/v1/completions`.
+- The server serves one chat model, one FIM model, one embedding model and one image model.
+  Completion requests can pick the chat or FIM model by id; otherwise there's no per-request model
+  switching. Only `n=1` is supported (llama.vscode's `n_cmpl` alternatives aren't).
+- Code completion (`ChatSession::infill`) is in the Rust API and the server, not yet in the C ABI or
+  the Deno binding.
 - Embeddings are text-only. Rerankers are rejected.
 - Image generation isn't in the crates.io packages (stable-diffusion.cpp's sources are ~140 MB,
   mostly tokenizer vocabularies); use offgrid from git or the release packages. One image

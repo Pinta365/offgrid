@@ -10,6 +10,8 @@ export interface ModelParams {
   devices?: string[] | null;
   /** Multimodal projector (`mmproj-*.gguf`); enables image and/or audio input. */
   mmproj?: string | null;
+  /** Keep the MoE expert weights of the first N layers in RAM (llama.cpp's `--n-cpu-moe`); 0 = off. */
+  n_cpu_moe?: number;
 }
 
 /** Options for `Model.createChat`. */
