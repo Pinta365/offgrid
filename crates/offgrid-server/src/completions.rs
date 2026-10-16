@@ -62,8 +62,7 @@ impl Supersede {
         (key, n)
     }
 
-    /// About to run: `false` if a newer request arrived meanwhile. Cancellation is scoped to
-    /// one request, so a canceller left here after the request ends is harmless.
+    /// About to run: `false` if a newer request arrived meanwhile.
     fn start(&self, (key, n): (i64, u64), cancel: &RequestCancel) -> bool {
         match self.latest.lock().unwrap_or_else(|e| e.into_inner()).get_mut(&key) {
             Some((latest, slot)) if *latest == n => {
@@ -71,6 +70,16 @@ impl Supersede {
                 true
             }
             _ => false,
+        }
+    }
+
+    /// The request ended: forget its canceller, so a later request doesn't report cancelling
+    /// it (cancelling a finished request would be a no-op anyway).
+    fn finish(&self, (key, n): (i64, u64)) {
+        if let Some((latest, slot)) = self.latest.lock().unwrap_or_else(|e| e.into_inner()).get_mut(&key)
+            && *latest == n
+        {
+            *slot = None;
         }
     }
 }
@@ -327,13 +336,20 @@ async fn serve(
         return superseded(stream, &format);
     }
     let cancel = CancelOnDrop(next);
+    let finish = move || {
+        if let Some(t) = ticket {
+            state.supersede.finish(t);
+        }
+    };
 
     if stream {
         let (tx, rx) = mpsc::channel::<Result<Event, Infallible>>(64);
         tokio::task::spawn_blocking(move || {
             let send = |v: Value| tx.blocking_send(Ok(Event::default().data(v.to_string()))).is_ok();
             // A failed send means the client disconnected: cancel generation.
-            match job.run(&mut lease.session(), |piece| send(format.chunk(piece))) {
+            let result = job.run(&mut lease.session(), |piece| send(format.chunk(piece)));
+            finish();
+            match result {
                 Ok(resp) => {
                     log_result(&resp, t0.elapsed());
                     format.finish(&resp).into_iter().for_each(|v| {
@@ -353,7 +369,9 @@ async fn serve(
     } else {
         let _cancel = cancel; // dropped with this future if the client disconnects
         let joined = tokio::task::spawn_blocking(move || {
-            job.run(&mut lease.session(), |_| true).map(|r| {
+            let result = job.run(&mut lease.session(), |_| true);
+            finish();
+            result.map(|r| {
                 log_result(&r, t0.elapsed());
                 format.body(&r)
             })
