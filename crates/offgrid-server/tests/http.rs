@@ -633,3 +633,41 @@ async fn infill_needs_fim_tokens() {
     let config = ServerConfig { fim_model: Some(model.into()), ..Default::default() };
     assert!(AppState::load(&config).is_err(), "--fim-model must have FIM tokens");
 }
+
+#[tokio::test]
+async fn infill_supersedes_by_id_slot() {
+    let Ok(fim) = std::env::var("OFFGRID_TEST_FIM_MODEL") else { return };
+    let server = spawn(ServerConfig { fim_model: Some(fim.into()), parallel: 1, ..Default::default() });
+    let url = server.url.clone();
+    let infill = |n_predict: u32, id_slot: i64| {
+        let url = url.clone();
+        // A list the model happily continues for thousands of tokens without the infill sampler.
+        let body = json!({"input_prefix": "numbers = [\n    1,\n    2,\n    3,\n", "input_suffix": "",
+                          "n_predict": n_predict, "temperature": 0, "samplers": [], "id_slot": id_slot});
+        async move {
+            let r = reqwest::Client::new().post(format!("{url}/infill")).json(&body).send().await.unwrap();
+            let v: Value = r.json().await.unwrap();
+            v
+        }
+    };
+    let t = Instant::now();
+    // Slot 8 holds the only session; two slot-7 requests queue behind it.
+    let running = tokio::spawn(infill(1500, 8));
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let queued = tokio::spawn(infill(4, 7));
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let latest7 = tokio::spawn(infill(4, 7)); // supersedes `queued` while it waits
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let latest8 = infill(4, 8).await; // cancels `running`
+    let (running, queued, latest7) = (running.await.unwrap(), queued.await.unwrap(), latest7.await.unwrap());
+    println!("all done after {:?}", t.elapsed());
+
+    assert_eq!(running["stop_type"], "none", "cancelled by a newer request: {running}");
+    assert!(running["tokens_predicted"].as_u64().unwrap() < 1500);
+    assert_eq!((queued["content"].clone(), queued["stop_type"].clone()), (json!(""), json!("none")), "{queued}");
+    assert_eq!(queued["tokens_predicted"], 0);
+    assert_eq!(latest7["tokens_predicted"], 4, "{latest7}");
+    assert_eq!(latest8["tokens_predicted"], 4, "{latest8}");
+    // 1500 tokens would take several seconds.
+    assert!(t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
+}

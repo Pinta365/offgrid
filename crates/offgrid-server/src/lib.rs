@@ -73,6 +73,7 @@ pub struct AppState {
     image: Option<images::ImageSlot>,
     api_key: Option<String>,
     created: u64,
+    supersede: completions::Supersede,
 }
 
 fn now() -> u64 {
@@ -152,6 +153,7 @@ impl AppState {
             image,
             api_key: config.api_key.clone().filter(|k| !k.is_empty()),
             created: now(),
+            supersede: Default::default(),
         }))
     }
 

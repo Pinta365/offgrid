@@ -1,15 +1,17 @@
 //! Text completion: `POST /v1/completions` (OpenAI legacy; `suffix` makes it
 //! fill-in-the-middle) and `POST /infill` (llama.cpp's format, used by llama.vscode).
 
+use std::collections::HashMap;
 use std::convert::Infallible;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
-use offgrid::{ChatResponse, ChatSession, FinishReason, InfillRequest};
+use offgrid::{ChatResponse, ChatSession, FinishReason, InfillRequest, RequestCancel, Usage};
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
@@ -34,6 +36,41 @@ impl Job {
         match self {
             Job::Infill(req) => session.infill(req, on_piece),
             Job::Raw { prompt, req } => session.generate(prompt, req.max_tokens, &req.stop, &req.sampling, on_piece),
+        }
+    }
+}
+
+/// Editors send a completion request per keystroke; only the latest one matters. A request
+/// supersedes earlier ones with the same key (llama.cpp's `id_slot`, which llama.vscode
+/// sends): a waiting one is answered empty, a running one is cancelled.
+#[derive(Default)]
+pub struct Supersede {
+    next: AtomicU64,
+    /// Per key: the latest request's number, and its canceller once it runs.
+    latest: Mutex<HashMap<i64, (u64, Option<RequestCancel>)>>,
+}
+
+impl Supersede {
+    /// Register a new request for `key`, cancelling the running one. Returns its ticket.
+    fn arrive(&self, key: i64) -> (i64, u64) {
+        let n = self.next.fetch_add(1, Ordering::Relaxed) + 1;
+        let previous = self.latest.lock().unwrap_or_else(|e| e.into_inner()).insert(key, (n, None));
+        if let Some((_, Some(cancel))) = previous {
+            log::debug!("request {n} supersedes a running one (id_slot {key})");
+            cancel.cancel();
+        }
+        (key, n)
+    }
+
+    /// About to run: `false` if a newer request arrived meanwhile. Cancellation is scoped to
+    /// one request, so a canceller left here after the request ends is harmless.
+    fn start(&self, (key, n): (i64, u64), cancel: &RequestCancel) -> bool {
+        match self.latest.lock().unwrap_or_else(|e| e.into_inner()).get_mut(&key) {
+            Some((latest, slot)) if *latest == n => {
+                *slot = Some(cancel.clone());
+                true
+            }
+            _ => false,
         }
     }
 }
@@ -144,13 +181,15 @@ pub async fn infill(State(state): State<Arc<AppState>>, body: Body) -> Response 
         }
         let (model, pool) = pool_for(&state, &body)?;
         require_infill(&model, &pool)?;
+        let id_slot = body.get("id_slot").and_then(Value::as_i64);
         // llama.cpp's sampler list: we only read whether it asks for the infill sampler.
         let infill_sampler = body.get("samplers").and_then(Value::as_array).map(|a| a.iter().any(|s| s == "infill"));
         let mut req = parse_request(body)?;
         if let Some(on) = infill_sampler {
             req.infill_sampler = on;
         }
-        Ok(serve(state.clone(), pool, Job::Infill(req), stream, Format::Llama { model }).await)
+        let ticket = id_slot.map(|key| state.supersede.arrive(key));
+        Ok(serve(state.clone(), pool, Job::Infill(req), stream, Format::Llama { model }, ticket).await)
     };
     run.await.unwrap_or_else(IntoResponse::into_response)
 }
@@ -202,7 +241,7 @@ pub async fn completions(State(state): State<Arc<AppState>>, body: Body) -> Resp
             None => Job::Raw { prompt, req },
         };
         let format = Format::OpenAi { meta: openai::Meta::text(model), include_usage };
-        Ok(serve(state.clone(), pool, job, stream, format).await)
+        Ok(serve(state.clone(), pool, job, stream, format, None).await)
     };
     run.await.unwrap_or_else(IntoResponse::into_response)
 }
@@ -242,9 +281,36 @@ fn log_result(resp: &ChatResponse, elapsed: std::time::Duration) {
     );
 }
 
+/// An empty, cancelled result for a request a newer one replaced while it waited.
+fn superseded(stream: bool, format: &Format) -> Response {
+    let resp = ChatResponse {
+        content: String::new(),
+        reasoning_content: None,
+        tool_calls: Vec::new(),
+        finish_reason: FinishReason::Cancelled,
+        usage: Usage::default(),
+    };
+    if !stream {
+        return Json(format.body(&resp)).into_response();
+    }
+    let mut events: Vec<Result<Event, Infallible>> =
+        format.finish(&resp).into_iter().map(|v| Ok(Event::default().data(v.to_string()))).collect();
+    if matches!(format, Format::OpenAi { .. }) {
+        events.push(Ok(Event::default().data("[DONE]")));
+    }
+    Sse::new(futures_util::stream::iter(events)).into_response()
+}
+
 /// Run `job` on a session from `pool`: one JSON body, or SSE events (OpenAI streams end
 /// with `[DONE]`, llama.cpp's with the final result).
-async fn serve(state: Arc<AppState>, pool: Arc<ChatPool>, job: Job, stream: bool, format: Format) -> Response {
+async fn serve(
+    state: Arc<AppState>,
+    pool: Arc<ChatPool>,
+    job: Job,
+    stream: bool,
+    format: Format,
+    ticket: Option<(i64, u64)>,
+) -> Response {
     let t0 = std::time::Instant::now();
     let lease = pool.acquire().await;
     // Requests that waited in the queue during shutdown must not start a generation.
@@ -252,7 +318,15 @@ async fn serve(state: Arc<AppState>, pool: Arc<ChatPool>, job: Job, stream: bool
         return ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "server_error", "server is shutting down")
             .into_response();
     }
-    let cancel = CancelOnDrop(lease.next_request_cancel());
+    let next = lease.next_request_cancel();
+    if ticket.is_some_and(|t| !state.supersede.start(t, &next)) {
+        // Answer without starting a request: a canceller for a request that never starts
+        // would cancel the session's next one.
+        log::debug!("skipping a superseded request");
+        drop(lease);
+        return superseded(stream, &format);
+    }
+    let cancel = CancelOnDrop(next);
 
     if stream {
         let (tx, rx) = mpsc::channel::<Result<Event, Infallible>>(64);
