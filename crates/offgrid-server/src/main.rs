@@ -184,7 +184,8 @@ fn main() {
     }
 
     for d in offgrid::devices() {
-        log::info!("device {} ({:?}): {}", d.name, d.kind, d.description);
+        let gib = d.memory_total as f64 / (1u64 << 30) as f64;
+        log::info!("device {} ({:?}): {} ({gib:.1} GiB)", d.name, d.kind, d.description);
     }
     let state = AppState::load(&config).unwrap_or_else(|e| fail(format!("startup failed: {e}")));
     let runtime = tokio::runtime::Runtime::new().unwrap_or_else(|e| fail(e.to_string()));
