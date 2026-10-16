@@ -34,6 +34,14 @@ struct Args {
     /// FIM model id reported to clients (default: file name).
     #[arg(long)]
     fim_alias: Option<String>,
+    /// Context size per FIM session (0 = same as --ctx). Code completion rarely needs more
+    /// than 8192, so a smaller value saves memory next to a large chat context.
+    #[arg(long, default_value_t = 0)]
+    fim_ctx: u32,
+    /// Shut down when stdin closes. A parent process (e.g. an editor extension) keeps a pipe
+    /// open, so the server exits with it even if it crashes.
+    #[arg(long)]
+    exit_on_stdin_close: bool,
     /// Address to bind. Keep the default (localhost) unless you set --api-key.
     #[arg(long, default_value = "127.0.0.1", env = "OFFGRID_HOST")]
     host: String,
@@ -114,6 +122,7 @@ fn main() {
         alias: args.alias,
         embedding_alias: args.embedding_alias,
         fim_alias: args.fim_alias,
+        fim_ctx: args.fim_ctx,
         mmproj: args.mmproj,
         model_params: ModelParams {
             gpu_layers: args.gpu_layers,
@@ -169,9 +178,16 @@ fn main() {
         let listener = tokio::net::TcpListener::bind(addr).await.unwrap_or_else(|e| fail(format!("bind {addr}: {e}")));
         log::info!("offgrid-server listening on http://{addr}");
         let shutdown_state = state.clone();
+        let stdin_closed = args.exit_on_stdin_close.then(stdin_closed);
         axum::serve(listener, router(state))
             .with_graceful_shutdown(async move {
-                shutdown_signal().await;
+                match stdin_closed {
+                    Some(closed) => tokio::select! {
+                        _ = shutdown_signal() => {},
+                        _ = closed => log::info!("stdin closed"),
+                    },
+                    None => shutdown_signal().await,
+                }
                 log::info!("shutting down (Ctrl-C again to exit immediately)");
                 shutdown_state.shutdown();
                 tokio::spawn(async {
@@ -183,6 +199,19 @@ fn main() {
             .await
             .unwrap_or_else(|e| fail(e.to_string()));
     });
+}
+
+/// Resolves when stdin reaches end-of-file (or fails): the parent closed the pipe or exited.
+fn stdin_closed() -> tokio::sync::oneshot::Receiver<()> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        use std::io::Read;
+        let mut buf = [0u8; 256];
+        let mut stdin = std::io::stdin();
+        while matches!(stdin.read(&mut buf), Ok(n) if n > 0) {}
+        let _ = tx.send(());
+    });
+    rx
 }
 
 async fn shutdown_signal() {

@@ -171,7 +171,9 @@ A request can pick either model by its `model` id. `/infill` requests with the s
 editor) replace each other: a newer one cancels the running one and skips queued ones.
 `--cache-reuse 256` shifts cached chunks of at least that many tokens into place when text before
 them was removed. It is off by default, as in llama-server; editor plugins such as llama.vscode
-recommend 256.
+recommend 256. `--fim-ctx N` gives the FIM model its own, usually smaller, context, and
+`--exit-on-stdin-close` makes the server exit with the process that started it (it keeps a pipe
+to the server's stdin open), for editor extensions that run it in the background.
 
 Compatibility has been checked with the official `openai` npm SDK (`scripts/openai-compat.ts`).
 The server binds to localhost by default; use `--api-key` before exposing it.

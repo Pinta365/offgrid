@@ -44,6 +44,8 @@ pub struct ServerConfig {
     pub alias: Option<String>,
     pub embedding_alias: Option<String>,
     pub fim_alias: Option<String>,
+    /// Context size for FIM sessions; 0 = `session.n_ctx`.
+    pub fim_ctx: u32,
     pub model_params: ModelParams,
     pub session: SessionParams,
     /// Concurrent chat sessions (each holds its own KV cache).
@@ -108,7 +110,9 @@ impl AppState {
                         path.display()
                     )));
                 }
-                let pool = ChatPool::new(model, &config.session, config.parallel)?;
+                let n_ctx = if config.fim_ctx > 0 { config.fim_ctx } else { config.session.n_ctx };
+                let session = SessionParams { n_ctx, ..config.session.clone() };
+                let pool = ChatPool::new(model, &session, config.parallel)?;
                 Some((model_id(path, &config.fim_alias), pool))
             }
             None => None,
