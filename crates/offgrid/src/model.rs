@@ -32,7 +32,18 @@ pub struct ModelParams {
     /// Multimodal projector (`mmproj-*.gguf`) shipped with a multimodal model; enables image
     /// and/or audio input, depending on the model.
     pub mmproj: Option<std::path::PathBuf>,
+    /// Keep the Mixture-of-Experts weights of the first N layers in RAM and run them on the
+    /// CPU, while attention and the KV cache stay on the GPU (llama.cpp's `--n-cpu-moe`). A
+    /// MoE model that doesn't fit the GPU stays fast at long contexts this way, unlike with
+    /// `gpu_layers`. A value of at least the layer count moves all expert weights. 0 = off;
+    /// dense models are unaffected.
+    pub n_cpu_moe: u32,
 }
+
+/// Expert tensors (llama.cpp's `LLM_FFN_EXPS_REGEX`), in layer `blk.N` when prefixed.
+const FFN_EXPS_REGEX: &str = r"\.ffn_(up|down|gate|gate_up)_(ch|)exps";
+/// More layers than any model has: one pattern for all expert tensors instead of one per layer.
+const ALL_LAYERS: u32 = 1024;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ModelInfo {
@@ -110,6 +121,24 @@ impl Model {
             }
             device_list.push(std::ptr::null_mut());
             mp.devices = device_list.as_mut_ptr();
+        }
+
+        // NULL-terminated buffer-type overrides; the patterns must outlive the load call.
+        let patterns: Vec<CString> =
+            cpu_moe_patterns(params.n_cpu_moe).into_iter().map(|p| CString::new(p).expect("no NUL")).collect();
+        let mut overrides: Vec<sys::llama_model_tensor_buft_override> = Vec::new();
+        if !patterns.is_empty() {
+            // The CPU backend may be a dynamically loaded plugin: ask its device for the buffer type.
+            let cpu = unsafe { sys::ggml_backend_dev_by_type(sys::ggml_backend_dev_type_GGML_BACKEND_DEVICE_TYPE_CPU) };
+            if cpu.is_null() {
+                return Err(Error::InvalidArgument("n_cpu_moe: no CPU backend".into()));
+            }
+            let buft = unsafe { sys::ggml_backend_dev_buffer_type(cpu) };
+            overrides
+                .extend(patterns.iter().map(|p| sys::llama_model_tensor_buft_override { pattern: p.as_ptr(), buft }));
+            overrides
+                .push(sys::llama_model_tensor_buft_override { pattern: std::ptr::null(), buft: std::ptr::null_mut() });
+            mp.tensor_buft_overrides = overrides.as_ptr();
         }
 
         let raw = {
@@ -294,6 +323,15 @@ impl Model {
     }
 }
 
+/// Tensor-name patterns for the expert weights of the first `n` layers (all when `n` is large).
+fn cpu_moe_patterns(n: u32) -> Vec<String> {
+    match n {
+        0 => Vec::new(),
+        n if n >= ALL_LAYERS => vec![format!(r"blk\.\d+{FFN_EXPS_REGEX}")],
+        n => (0..n).map(|i| format!(r"blk\.{i}{FFN_EXPS_REGEX}")).collect(),
+    }
+}
+
 fn find_device(name: &str) -> Result<sys::ggml_backend_dev_t> {
     let count = unsafe { sys::ggml_backend_dev_count() };
     for i in 0..count {
@@ -303,4 +341,18 @@ fn find_device(name: &str) -> Result<sys::ggml_backend_dev_t> {
         }
     }
     Err(Error::InvalidArgument(format!("unknown device '{name}'")))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn cpu_moe_patterns_match_llama_cpp() {
+        assert!(super::cpu_moe_patterns(0).is_empty());
+        // llama.cpp's llm_ffn_block_regex(i, LLM_FFN_EXPS_REGEX).
+        assert_eq!(
+            super::cpu_moe_patterns(2),
+            [r"blk\.0\.ffn_(up|down|gate|gate_up)_(ch|)exps", r"blk\.1\.ffn_(up|down|gate|gate_up)_(ch|)exps"]
+        );
+        assert_eq!(super::cpu_moe_patterns(u32::MAX), [r"blk\.\d+\.ffn_(up|down|gate|gate_up)_(ch|)exps"]);
+    }
 }

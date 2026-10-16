@@ -59,12 +59,20 @@ struct Args {
     /// device with flash attention (Vulkan, CUDA, CPU).
     #[arg(long, default_value = "f16")]
     cache_type: offgrid::CacheType,
+    /// Prompt tokens per decode call. Larger is faster for long prompts, especially with
+    /// --n-cpu-moe (expert weights are copied to the GPU once per batch), and uses more memory.
+    #[arg(long, default_value_t = 512)]
+    batch: u32,
     /// Concurrent chat sessions; each holds its own KV cache (VRAM).
     #[arg(long, default_value_t = 1)]
     parallel: usize,
     /// Layers to offload to GPU: all, none, or a number.
     #[arg(long, default_value = "all", value_parser = parse_gpu_layers)]
     gpu_layers: GpuLayers,
+    /// Keep the MoE expert weights of the first N layers on the CPU, attention on the GPU
+    /// (llama.cpp's --n-cpu-moe): for MoE models that don't fit the GPU. 0 = off.
+    #[arg(long, default_value_t = 0)]
+    n_cpu_moe: u32,
     /// Restrict to these devices (repeatable), e.g. --device Vulkan0.
     #[arg(long = "device")]
     devices: Vec<String>,
@@ -132,13 +140,14 @@ fn main() {
             gpu_layers: args.gpu_layers,
             devices: (!args.devices.is_empty()).then_some(args.devices),
             mmproj: None,
+            n_cpu_moe: args.n_cpu_moe,
         },
         session: SessionParams {
             n_ctx: args.ctx,
             n_threads: args.threads,
             cache_reuse: args.cache_reuse,
             cache_type: args.cache_type,
-            ..Default::default()
+            n_batch: args.batch,
         },
         parallel: args.parallel,
         api_key: args.api_key,
