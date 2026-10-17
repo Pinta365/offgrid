@@ -1,5 +1,6 @@
 //! Integration tests against real GGUF files.
-//! Set OFFGRID_TEST_MODEL (chat model) and/or OFFGRID_TEST_EMBED_MODEL; tests skip otherwise.
+//! Set OFFGRID_TEST_MODEL (chat model), OFFGRID_TEST_EMBED_MODEL and/or OFFGRID_TEST_HYBRID_MODEL
+//! (a hybrid model such as Qwen3.5 0.8B); tests skip otherwise.
 
 use std::sync::Arc;
 
@@ -140,4 +141,30 @@ fn embeddings_rank_similarity() {
     let long_doc = "The quick brown fox jumps over the lazy dog. ".repeat(150); // ~1500 tokens
     let long = emb.embed(&[long_doc.as_str(), "short"]).expect("long input embeds");
     assert_eq!(long[0].len(), emb.dim());
+}
+
+/// Hybrid models (recurrent layers) can't drop the tail of their state: a new conversation
+/// with the same system prompt restores a checkpoint instead of starting over, and answers
+/// exactly as a fresh session does.
+#[test]
+fn hybrid_model_restores_checkpoints() {
+    let Some(model) = env_model("OFFGRID_TEST_HYBRID_MODEL") else { return };
+    let params = SessionParams { n_ctx: 16384, ..Default::default() };
+    // ~9k tokens shared by both conversations: past two checkpoints (every 4096 tokens).
+    let system: String = (0..700).map(|i| format!("Rule {i}: item {i} costs {} coins.\n", i * 7 % 101)).collect();
+    let ask = |q: &str| {
+        let mut req = greedy(vec![ChatMessage::system(system.clone()), ChatMessage::user(q)], 24);
+        req.chat_template_kwargs = Some(serde_json::from_str(r#"{"enable_thinking": false}"#).unwrap());
+        req
+    };
+    let mut chat = ChatSession::new(model.clone(), &params).unwrap();
+    let first = chat.complete(&ask("What does item 12 cost? Answer with the number."), |_| true).unwrap();
+    assert_eq!(first.usage.cached_tokens, 0);
+    let second = chat.complete(&ask("Copy the rules for items 340 to 343, one per line."), |_| true).unwrap();
+    println!("first: {:?}\nsecond: {:?} ({:?})", first.content, second.content, second.usage);
+    assert!(second.usage.cached_tokens >= 8192, "restored a checkpoint: {:?}", second.usage);
+
+    let mut fresh = ChatSession::new(model, &params).unwrap();
+    let again = fresh.complete(&ask("Copy the rules for items 340 to 343, one per line."), |_| true).unwrap();
+    assert_eq!(second.content, again.content, "a restored checkpoint answers like a fresh session");
 }

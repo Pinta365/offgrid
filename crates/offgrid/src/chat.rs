@@ -478,7 +478,27 @@ pub struct ChatSession {
     media_memo: MediaMemo,
     /// Minimum chunk for KV-cache reuse by shifting (0 = off or unsupported).
     cache_reuse: usize,
+    /// Hybrid and recurrent models can't drop the tail of their state, so prompts that diverge
+    /// from the cache restart from the last snapshot before the divergence instead of from zero.
+    use_checkpoints: bool,
+    /// Snapshots of that state, ascending by `n_items` (text-only prompts).
+    checkpoints: Vec<Checkpoint>,
 }
+
+/// The part of a sequence's state that can't be rolled back (recurrent layers), after the first
+/// `n_items` cache items.
+struct Checkpoint {
+    n_items: usize,
+    data: Vec<u8>,
+}
+
+/// Spacing between checkpoints while evaluating a prompt. A checkpoint of Qwen3.5-4B is ~50 MiB of
+/// RAM; a restore re-evaluates at most this many tokens.
+const CHECKPOINT_STEP: usize = 4096;
+/// A checkpoint this many tokens before the end of each prompt, so the next turn of a
+/// conversation (which re-renders the reply) restarts close to where it diverges.
+const CHECKPOINT_TAIL: usize = 4;
+const MAX_CHECKPOINTS: usize = 16;
 
 /// Error text used internally when a placeholder media chunk would have to be evaluated;
 /// `complete_stream` then re-tokenizes with real data.
@@ -607,6 +627,8 @@ impl ChatSession {
         let ctx = NonNull::new(ctx).ok_or(Error::ContextCreate)?;
         let n_batch = unsafe { sys::llama_n_batch(ctx.as_ptr()) } as usize;
         let can_shift = unsafe { sys::llama_memory_can_shift(sys::llama_get_memory(ctx.as_ptr())) };
+        let use_checkpoints =
+            unsafe { sys::llama_model_is_hybrid(model.as_ptr()) || sys::llama_model_is_recurrent(model.as_ptr()) };
         if params.cache_reuse > 0 && !can_shift {
             log::debug!(target: "offgrid", "this model's KV cache can't shift: cache_reuse is off");
         }
@@ -621,6 +643,8 @@ impl ChatSession {
             n_past: 0,
             media_memo: MediaMemo::default(),
             cache_reuse: if can_shift { params.cache_reuse as usize } else { 0 },
+            use_checkpoints,
+            checkpoints: Vec::new(),
         })
     }
 
@@ -641,6 +665,7 @@ impl ChatSession {
     pub fn reset(&mut self) {
         unsafe { sys::llama_memory_clear(sys::llama_get_memory(self.ctx.as_ptr()), true) };
         self.cached.clear();
+        self.checkpoints.clear();
         self.n_past = 0;
     }
 
@@ -1064,6 +1089,72 @@ impl ChatSession {
         head_p
     }
 
+    /// Where to take the next checkpoint while evaluating up to `total` items, after `cur`: the
+    /// next step after the last checkpoint, or just before the end. Always leaves the last item
+    /// to evaluate (logits).
+    fn next_checkpoint(&self, cur: usize, total: usize) -> Option<usize> {
+        if !self.use_checkpoints {
+            return None;
+        }
+        let last = self.checkpoints.last().map_or(0, |c| c.n_items);
+        let mut step = last + CHECKPOINT_STEP;
+        while step <= cur {
+            step += CHECKPOINT_STEP;
+        }
+        let tail = total.saturating_sub(CHECKPOINT_TAIL);
+        [step, tail].into_iter().filter(|&p| p > cur && p > last && p < total).min()
+    }
+
+    /// Snapshot the state that can't be rolled back, after the cached items.
+    fn save_checkpoint(&mut self) {
+        let ctx = self.ctx.as_ptr();
+        let flags = sys::LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY;
+        let size = unsafe { sys::llama_state_seq_get_size_ext(ctx, 0, flags) };
+        let mut data = vec![0u8; size];
+        let n = unsafe { sys::llama_state_seq_get_data_ext(ctx, data.as_mut_ptr(), size, 0, flags) };
+        if n == 0 {
+            return;
+        }
+        data.truncate(n);
+        let n_items = self.cached.len();
+        log::debug!(target: "offgrid", "checkpoint at {n_items} ({:.1} MiB)", n as f64 / (1 << 20) as f64);
+        self.checkpoints.push(Checkpoint { n_items, data });
+        if self.checkpoints.len() > MAX_CHECKPOINTS {
+            // Drop the one whose neighbours are closest, keeping coverage even.
+            let i = (1..self.checkpoints.len() - 1)
+                .min_by_key(|&i| self.checkpoints[i + 1].n_items - self.checkpoints[i - 1].n_items)
+                .unwrap_or(0);
+            self.checkpoints.remove(i);
+        }
+    }
+
+    /// Go back to the last checkpoint at or before `keep` items: restore its state and drop the
+    /// rest of the cache. Returns the items now kept.
+    fn restore_checkpoint(&mut self, keep: usize) -> Option<usize> {
+        let i = self.checkpoints.iter().rposition(|c| c.n_items <= keep && c.n_items > 0)?;
+        let ctx = self.ctx.as_ptr();
+        let cp = &self.checkpoints[i];
+        let n_items = cp.n_items;
+        let read = unsafe {
+            sys::llama_state_seq_set_data_ext(
+                ctx,
+                cp.data.as_ptr(),
+                cp.data.len(),
+                0,
+                sys::LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY,
+            )
+        };
+        let mem = unsafe { sys::llama_get_memory(ctx) };
+        // The restored state ends at the checkpoint; the attention cache can now drop the rest.
+        if read == 0 || !unsafe { sys::llama_memory_seq_rm(mem, 0, n_items as i32, -1) } {
+            log::debug!(target: "offgrid", "checkpoint at {n_items} could not be restored");
+            return None;
+        }
+        self.cached.truncate(n_items);
+        log::debug!(target: "offgrid", "restored checkpoint at {n_items} (wanted {keep})");
+        Some(n_items)
+    }
+
     /// Content hashes (without `#k`) of media currently in the KV cache.
     fn cached_media_hashes(&self) -> std::collections::HashSet<String> {
         self.cached
@@ -1105,14 +1196,21 @@ impl ChatSession {
             let mem = unsafe { sys::llama_get_memory(self.ctx.as_ptr()) };
             if unsafe { sys::llama_memory_seq_rm(mem, 0, pos as i32, -1) } {
                 self.cached.truncate(keep);
+            } else if let Some(restored) = self.restore_checkpoint(keep) {
+                keep = restored;
             } else {
                 self.reset();
                 keep = 0;
             }
         }
+        // Checkpoints past the kept prefix describe a different continuation.
+        self.checkpoints.retain(|c| c.n_items <= keep);
         self.n_past = self.cached.iter().map(CacheItem::n_pos).sum();
         usage.cached_tokens = self.cached.iter().map(CacheItem::n_tokens).sum::<usize>() as u32;
 
+        // Positions equal item indices only for text: no checkpoints with media.
+        let text_only = items.iter().all(|c| matches!(c, CacheItem::Token(_)));
+        let mut checkpoint_at = if text_only { self.next_checkpoint(keep, items.len()) } else { None };
         let last = items.len() - 1;
         let mut index = 0;
         for seg in segments {
@@ -1123,20 +1221,29 @@ impl ChatSession {
                     if index <= keep {
                         continue;
                     }
-                    let from = keep.saturating_sub(start);
-                    for (ci, chunk) in tokens[from..].chunks(self.n_batch).enumerate() {
+                    // Item index of the next token to evaluate; chunks end at checkpoints.
+                    let mut item = start + keep.saturating_sub(start);
+                    while item < index {
                         if self.cancel.is_cancelled() {
                             return Ok(false);
                         }
+                        let mut end = (item + self.n_batch).min(index);
+                        if let Some(at) = checkpoint_at.filter(|&at| at > item && at < end) {
+                            end = at;
+                        }
                         self.batch.clear();
-                        for (j, &t) in chunk.iter().enumerate() {
-                            let item = start + from + ci * self.n_batch + j;
-                            self.batch.add(t, self.n_past as i32, &[0], item == last);
+                        for (i, &t) in tokens[item - start..end - start].iter().enumerate() {
+                            self.batch.add(t, self.n_past as i32, &[0], item + i == last);
                             self.n_past += 1;
                             self.cached.push(CacheItem::Token(t));
                         }
                         if !self.decode()? {
                             return Ok(false);
+                        }
+                        item = end;
+                        if checkpoint_at == Some(item) {
+                            self.save_checkpoint();
+                            checkpoint_at = self.next_checkpoint(item, items.len());
                         }
                     }
                 }

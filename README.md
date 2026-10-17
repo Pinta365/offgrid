@@ -38,7 +38,7 @@ flowchart TD
 
 | Capability | Details |
 |---|---|
-| **Chat** | Streaming generation with stop strings, token limits, sampling options and seeds. Requests follow the OpenAI format and are stateless; the session reuses the matching prefix of its KV cache, so follow-up turns only process new tokens. |
+| **Chat** | Streaming generation with stop strings, token limits, sampling options and seeds. Requests follow the OpenAI format and are stateless; the session reuses the matching prefix of its KV cache, so follow-up turns only process new tokens. Hybrid models (Qwen3.5 and later), whose recurrent layers can't drop the end of their state, keep checkpoints every 4096 tokens: a new conversation with the same system prompt restarts from the last one instead of from zero. |
 | **Chat templates** | Each model's own Jinja template (stored in the GGUF) is rendered with minijinja the way Hugging Face does it. 69 of the 72 real-world templates in llama.cpp's test corpus render; the other 3 refuse by design (for example, Gemma 2 has no system role). If a template can't be used, llama.cpp's built-in formats are the fallback. |
 | **Structured output** | OpenAI `response_format` (`json_object` or `json_schema`) is compiled into a llama.cpp grammar, so the output is valid by construction. The converter handles objects, arrays, enums, `anyOf` / `oneOf` / `allOf`, `$ref` / `$defs`, and string formats, patterns and lengths. Properties are generated in the order they are declared. |
 | **Tool calling** | OpenAI `tools`, `tool_choice` and `parallel_tool_calls`. Tool calls are parsed from the model's native format: Hermes/Qwen, Llama 3.x, Mistral, Qwen3-Coder XML, or generic JSON. If a model's template ignores tools (Gemma 3, for example), the tools and the call format are described in the system message instead, and earlier calls and results are written into the conversation as text. A grammar keeps the arguments valid against each tool's schema. Loop helpers (`run_tools`, `runTools`) handle the call, execute and feed-back cycle. |
@@ -201,6 +201,8 @@ Every model below was exercised end to end by the test suites on an RX 9070 XT (
 | Qwen3-0.6B Q8_0 | Reasoning streaming | Use temperature 0.6 in thinking mode; greedy decoding loops |
 | Qwen3-Embedding-0.6B Q8_0 | Embeddings | |
 | Qwen2.5-Coder-1.5B Q8_0 | Code completion (FIM) | Repo-level format with extra files; ~200 tokens/s on the RX 9070 XT |
+| Qwen3.5 0.8B / 2B / 4B / 9B | Chat, tools (hybrid: context checkpoints) | 4/5 on an agent benchmark from 2B up (Qwen3 1.7B: 0/5) with a smaller KV cache than Qwen3: 3.9 GB for 2B with a 32k q8_0 context and a code model |
+| Qwen3.6-35B-A3B UD-Q4_K_M | Tools, agent use (hybrid MoE) | 22 GB: on a 16 GB GPU with `--n-cpu-moe 28 --batch 2048`, ~37 tokens/s at a 26k context; 5/5 on the agent benchmark |
 | Qwen3-Coder-30B-A3B-Instruct Q4_K_M | Tools (Qwen3-Coder XML), agent use | 18.6 GB: on a 16 GB GPU with `--n-cpu-moe 24 --batch 2048`, ~35 tokens/s at a 26k context. Sometimes leaves out `<tool_call>` around a call; that is parsed too |
 | Qwen2.5-VL-3B + mmproj | Vision (M-RoPE) | Colors, counting, OCR, JPEG, multiple images |
 | Gemma 3 4B + mmproj | Vision, tools without template support | Template ignores tools; uses the system-message fallback |
@@ -298,6 +300,7 @@ Model-backed tests are enabled through environment variables pointing at GGUF fi
 | `OFFGRID_TEST_THINKING_MODEL` | reasoning |
 | `OFFGRID_TEST_EMBED_MODEL` | embeddings |
 | `OFFGRID_TEST_FIM_MODEL` | code completion (`/infill`, `/v1/completions`) |
+| `OFFGRID_TEST_HYBRID_MODEL` | context checkpoints of hybrid models (e.g. Qwen3.5 0.8B) |
 | `OFFGRID_TEST_VL_MODEL` / `OFFGRID_TEST_VL_MMPROJ` | vision |
 | `OFFGRID_TEST_VL2_MODEL` / `OFFGRID_TEST_VL2_MMPROJ` | vision, second model |
 | `OFFGRID_TEST_AUDIO_MODEL` / `OFFGRID_TEST_AUDIO_MMPROJ` | audio |
