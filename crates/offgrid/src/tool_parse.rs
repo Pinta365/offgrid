@@ -10,6 +10,8 @@ pub(crate) enum ToolFormat {
     MistralList,
     MistralArgs,
     Qwen3CoderXml,
+    /// Gemma 4: `<|tool_call>call:name{key:<|"|>text<|"|>,n:3}<tool_call|>`.
+    Gemma4,
     Generic,
     /// Hermes-style `<tool_call>` blocks described in the system message, for templates
     /// that ignore `tools` (see `tools::polyfill_messages`).
@@ -34,7 +36,9 @@ pub(crate) struct Parsed {
 
 /// Detect the tool format from a chat template. Rules are evaluated in order.
 pub(crate) fn detect_format(chat_template: &str) -> ToolFormat {
-    if chat_template.contains("<function=") && chat_template.contains("<parameter=") {
+    if chat_template.contains("<|tool_call>call:") {
+        ToolFormat::Gemma4
+    } else if chat_template.contains("<function=") && chat_template.contains("<parameter=") {
         ToolFormat::Qwen3CoderXml
     } else if chat_template.contains("[TOOL_CALLS]") && chat_template.contains("[ARGS]") {
         ToolFormat::MistralArgs
@@ -55,6 +59,7 @@ pub(crate) fn tool_call_start_markers(format: ToolFormat) -> &'static [&'static 
         ToolFormat::Hermes => &["<tool_call>"],
         // Qwen3-Coder sometimes leaves out `<tool_call>` and starts with the function block.
         ToolFormat::Qwen3CoderXml => &["<tool_call>", "<function="],
+        ToolFormat::Gemma4 => &["<|tool_call>"],
         ToolFormat::MistralList | ToolFormat::MistralArgs => &["[TOOL_CALLS]"],
         ToolFormat::Llama3Json => &["<|python_tag|>"],
         ToolFormat::Generic | ToolFormat::Polyfill => &["<tool_call>"],
@@ -93,6 +98,7 @@ fn parse_calls(format: ToolFormat, text: &str) -> (String, Vec<ParsedCall>) {
         ToolFormat::MistralList => parse_mistral_list(text),
         ToolFormat::MistralArgs => parse_mistral_args(text),
         ToolFormat::Qwen3CoderXml => parse_qwen3_xml(text),
+        ToolFormat::Gemma4 => parse_tagged(text, "<|tool_call>", "<tool_call|>", parse_gemma4_call),
         ToolFormat::Generic => parse_generic(text),
     };
     if !calls.is_empty() {
@@ -222,6 +228,95 @@ fn parse_qwen3_xml(text: &str) -> (String, Vec<ParsedCall>) {
         return (text.to_string(), calls);
     }
     (content.replace("</tool_call>", ""), calls)
+}
+
+/// Gemma 4's string delimiter (a control token).
+const GEMMA_QUOTE: &str = "<|\"|>";
+
+/// One Gemma 4 call: `call:name{key:value,...}`, the arguments in Gemma's notation (see
+/// `parse_gemma_value`).
+fn parse_gemma4_call(inner: &str) -> Option<ParsedCall> {
+    let rest = inner.trim_start().strip_prefix("call:")?;
+    let brace = rest.find('{')?;
+    let name = rest[..brace].trim();
+    if name.is_empty() || name.contains(char::is_whitespace) {
+        return None;
+    }
+    let mut args = &rest[brace..];
+    let value = parse_gemma_value(&mut args)?;
+    if !args.trim().is_empty() || !value.is_object() {
+        return None;
+    }
+    Some(ParsedCall { name: name.to_string(), arguments: value.to_string() })
+}
+
+/// A value in Gemma 4's notation, consumed from the front of `s`: `<|"|>text<|"|>`,
+/// `{key:value,...}` (keys bare or quoted), `[value,...]`, or a bare `null`/`true`/`false`/number.
+fn parse_gemma_value(s: &mut &str) -> Option<Value> {
+    *s = s.trim_start();
+    if let Some(rest) = s.strip_prefix(GEMMA_QUOTE) {
+        let end = rest.find(GEMMA_QUOTE)?;
+        let text = rest[..end].to_string();
+        *s = &rest[end + GEMMA_QUOTE.len()..];
+        return Some(Value::String(text));
+    }
+    if let Some(rest) = s.strip_prefix('{') {
+        *s = rest;
+        let mut map = Map::new();
+        loop {
+            *s = s.trim_start();
+            if let Some(rest) = s.strip_prefix('}') {
+                *s = rest;
+                return Some(Value::Object(map));
+            }
+            let key = if let Some(rest) = s.strip_prefix(GEMMA_QUOTE) {
+                let end = rest.find(GEMMA_QUOTE)?;
+                let key = rest[..end].to_string();
+                *s = &rest[end + GEMMA_QUOTE.len()..];
+                key
+            } else {
+                let end = s.find(':')?;
+                let key = s[..end].trim().to_string();
+                *s = &s[end..];
+                key
+            };
+            *s = s.trim_start().strip_prefix(':')?;
+            let value = parse_gemma_value(s)?;
+            map.insert(key, value);
+            *s = s.trim_start();
+            if let Some(rest) = s.strip_prefix(',') {
+                *s = rest;
+            } else if !s.starts_with('}') {
+                return None;
+            }
+        }
+    }
+    if let Some(rest) = s.strip_prefix('[') {
+        *s = rest;
+        let mut items = Vec::new();
+        loop {
+            *s = s.trim_start();
+            if let Some(rest) = s.strip_prefix(']') {
+                *s = rest;
+                return Some(Value::Array(items));
+            }
+            items.push(parse_gemma_value(s)?);
+            *s = s.trim_start();
+            if let Some(rest) = s.strip_prefix(',') {
+                *s = rest;
+            } else if !s.starts_with(']') {
+                return None;
+            }
+        }
+    }
+    // A bare literal runs to the next delimiter.
+    let end = s.find([',', '}', ']']).unwrap_or(s.len());
+    let raw = s[..end].trim();
+    *s = &s[end..];
+    if raw.is_empty() {
+        return None;
+    }
+    Some(serde_json::from_str(raw).unwrap_or_else(|_| Value::String(raw.to_string())))
 }
 
 /// Generic scanner for `<open> ... <close>` blocks; invalid blocks stay in content.
@@ -597,6 +692,49 @@ mod tests {
     }
 
     #[test]
+    fn detect_gemma4() {
+        for t in ["google-gemma-4-31B-it.jinja", "google-gemma-4-31B-it-interleaved.jinja"] {
+            assert_eq!(detect_format(&template(t)), ToolFormat::Gemma4, "{t}");
+        }
+    }
+
+    #[test]
+    fn gemma4_calls() {
+        // As Gemma 4 E4B writes it.
+        let text = "<|tool_call>call:read_file{filePath:<|\"|>/tmp/a.txt<|\"|>}<tool_call|>";
+        let p = parse_output(ToolFormat::Gemma4, text, false);
+        assert_eq!(p.content, "");
+        assert_eq!(p.calls.len(), 1);
+        assert_eq!(p.calls[0].name, "read_file");
+        assert_eq!(args(&p.calls[0]), json!({"filePath": "/tmp/a.txt"}));
+
+        // Content around several calls; every value kind of the template's format_argument.
+        let text = "Checking both.<|tool_call>call:search{query:<|\"|>a, b: {c}<|\"|>,max:5,exact:false,\
+                    filter:null,ratio:0.5,tags:[<|\"|>x<|\"|>,2],opts:{deep:true,<|\"|>k k<|\"|>:<|\"|>v<|\"|>}}<tool_call|>\
+                    <|tool_call>call:list_dir{path:<|\"|>src<|\"|>}<tool_call|>";
+        let p = parse_output(ToolFormat::Gemma4, text, false);
+        assert_eq!(p.content, "Checking both.");
+        assert_eq!(p.calls.len(), 2);
+        assert_eq!(
+            args(&p.calls[0]),
+            json!({"query": "a, b: {c}", "max": 5, "exact": false, "filter": null, "ratio": 0.5,
+                   "tags": ["x", 2], "opts": {"deep": true, "k k": "v"}})
+        );
+        assert_eq!(p.calls[1].name, "list_dir");
+
+        // No arguments; a call cut off by max_tokens keeps the arguments it has.
+        let p = parse_output(ToolFormat::Gemma4, "<|tool_call>call:now{}<tool_call|>", false);
+        assert_eq!((p.calls[0].name.as_str(), args(&p.calls[0])), ("now", json!({})));
+        let p = parse_output(ToolFormat::Gemma4, "<|tool_call>call:f{a:1}", false);
+        assert_eq!(args(&p.calls[0]), json!({"a": 1}));
+
+        // Not a call: stays text.
+        let p = parse_output(ToolFormat::Gemma4, "Use <|tool_call>call:f{a:<|\"|>unclosed}<tool_call|> later", false);
+        assert!(p.calls.is_empty());
+        assert!(p.content.contains("call:f"));
+    }
+
+    #[test]
     fn qwen3_xml_without_tool_call_wrapper() {
         // Seen from Qwen3-Coder-30B-A3B: no opening <tool_call>, a stray closing one.
         let text = "I need to find the default.\n\n<function=grep_search>\n<parameter=query>\nchatter.*threshold\n</parameter>\n</function>\n</tool_call>";
@@ -799,6 +937,7 @@ mod tests {
     fn start_markers_per_format() {
         assert_eq!(tool_call_start_markers(ToolFormat::Hermes), ["<tool_call>"]);
         assert_eq!(tool_call_start_markers(ToolFormat::Qwen3CoderXml), ["<tool_call>", "<function="]);
+        assert_eq!(tool_call_start_markers(ToolFormat::Gemma4), ["<|tool_call>"]);
         assert_eq!(tool_call_start_markers(ToolFormat::MistralList), ["[TOOL_CALLS]"]);
         assert_eq!(tool_call_start_markers(ToolFormat::MistralArgs), ["[TOOL_CALLS]"]);
         assert_eq!(tool_call_start_markers(ToolFormat::Llama3Json), ["<|python_tag|>"]);

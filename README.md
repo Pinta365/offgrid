@@ -41,7 +41,7 @@ flowchart TD
 | **Chat** | Streaming generation with stop strings, token limits, sampling options and seeds. Requests follow the OpenAI format and are stateless; the session reuses the matching prefix of its KV cache, so follow-up turns only process new tokens. Hybrid models (Qwen3.5 and later), whose recurrent layers can't drop the end of their state, keep checkpoints every 4096 tokens: a new conversation with the same system prompt restarts from the last one instead of from zero. |
 | **Chat templates** | Each model's own Jinja template (stored in the GGUF) is rendered with minijinja the way Hugging Face does it. 69 of the 72 real-world templates in llama.cpp's test corpus render; the other 3 refuse by design (for example, Gemma 2 has no system role). If a template can't be used, llama.cpp's built-in formats are the fallback. |
 | **Structured output** | OpenAI `response_format` (`json_object` or `json_schema`) is compiled into a llama.cpp grammar, so the output is valid by construction. The converter handles objects, arrays, enums, `anyOf` / `oneOf` / `allOf`, `$ref` / `$defs`, and string formats, patterns and lengths. Properties are generated in the order they are declared. |
-| **Tool calling** | OpenAI `tools`, `tool_choice` and `parallel_tool_calls`. Tool calls are parsed from the model's native format: Hermes/Qwen, Llama 3.x, Mistral, Qwen3-Coder XML, or generic JSON. If a model's template ignores tools (Gemma 3, for example), the tools and the call format are described in the system message instead, and earlier calls and results are written into the conversation as text. A grammar keeps the arguments valid against each tool's schema. Loop helpers (`run_tools`, `runTools`) handle the call, execute and feed-back cycle. |
+| **Tool calling** | OpenAI `tools`, `tool_choice` and `parallel_tool_calls`. Tool calls are parsed from the model's native format: Hermes/Qwen, Llama 3.x, Mistral, Qwen3-Coder XML, Gemma 4, or generic JSON. If a model's template ignores tools (Gemma 3, for example), the tools and the call format are described in the system message instead, and earlier calls and results are written into the conversation as text. A grammar keeps the arguments valid against each tool's schema. Loop helpers (`run_tools`, `runTools`) handle the call, execute and feed-back cycle. |
 | **Reasoning** | Thinking models' `<think>` blocks are separated into `reasoning_content` and streamed as their own events. |
 | **Vision and audio** | Images (PNG, JPEG, …) and audio (WAV, MP3, FLAC) are sent as OpenAI content parts. Several items per message and mixed image and audio both work. Encoded media is reused across turns from the KV cache and is not decoded again. |
 | **Code completion** | Fill-in-the-middle for code models with FIM tokens (Qwen2.5-Coder, ...), laid out like llama.cpp's `/infill`: extra context from other files, the code before and after the cursor, and stops at a time limit or at a less-indented line. llama.cpp's infill sampler (on by default) ends a completion once the model is unsure how to go on, which keeps suggestions short and fast. Completions that share a prefix reuse the KV cache, and chunks that moved up (an editor's window sliding down a file) are shifted into place instead of evaluated again (`cache_reuse`, as llama.cpp's `--cache-reuse`). |
@@ -202,6 +202,7 @@ Every model below was exercised end to end by the test suites on an RX 9070 XT (
 | Qwen3-Embedding-0.6B Q8_0 | Embeddings | |
 | Qwen2.5-Coder-1.5B Q8_0 | Code completion (FIM) | Repo-level format with extra files; ~200 tokens/s on the RX 9070 XT |
 | Qwen3.5 0.8B / 2B / 4B / 9B | Chat, tools (hybrid: context checkpoints) | 4/5 on an agent benchmark from 2B up (Qwen3 1.7B: 0/5) with a smaller KV cache than Qwen3: 3.9 GB for 2B with a 32k q8_0 context and a code model |
+| Gemma 4 E4B / 12B Q4_K_M | Tools (Gemma 4 format), agent use | 4/5 on the agent benchmark, no bad calls for E4B; E4B ~92 tokens/s, 6.7 GB with a 32k q8_0 context and a code model |
 | Qwen3.6-35B-A3B UD-Q4_K_M | Tools, agent use (hybrid MoE) | 22 GB: on a 16 GB GPU with `--n-cpu-moe 28 --batch 2048`, ~37 tokens/s at a 26k context; 5/5 on the agent benchmark |
 | Qwen3-Coder-30B-A3B-Instruct Q4_K_M | Tools (Qwen3-Coder XML), agent use | 18.6 GB: on a 16 GB GPU with `--n-cpu-moe 24 --batch 2048`, ~35 tokens/s at a 26k context. Sometimes leaves out `<tool_call>` around a call; that is parsed too |
 | Qwen2.5-VL-3B + mmproj | Vision (M-RoPE) | Colors, counting, OCR, JPEG, multiple images |
@@ -335,9 +336,9 @@ Model-backed tests are enabled through environment variables pointing at GGUF fi
 - macOS and ARM aren't built.
 - Tool calls stream as one complete fragment each, not argument by argument. That is valid
   OpenAI streaming.
-- Mistral and Qwen3-Coder tool formats are parsed but not grammar-constrained. Mistral's is
-  covered by unit tests only; Qwen3-Coder's was exercised with Qwen3-Coder-30B-A3B in an agent
-  benchmark, not by the test suite.
+- Mistral, Qwen3-Coder and Gemma 4 tool formats are parsed but not grammar-constrained. Mistral's
+  is covered by unit tests only; Qwen3-Coder's and Gemma 4's were exercised in an agent benchmark
+  (Qwen3-Coder-30B-A3B, Gemma 4 E4B and 12B), not by the test suite.
 - The JSON-schema converter doesn't support remote `$ref`, and it ignores numeric
   minimum/maximum.
 - Cached audio still pays mtmd's spectrogram computation on later turns (an upstream TODO).

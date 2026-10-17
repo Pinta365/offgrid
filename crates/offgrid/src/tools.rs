@@ -282,7 +282,7 @@ pub(crate) fn tool_grammar(
         // {"name": ..., "parameters": {...}} as the whole reply
         ToolFormat::Llama3Json => ("parameters", "root", r"^\s*(\{)[\s\S]*$"),
         // Control-token / XML formats: parse only.
-        ToolFormat::MistralList | ToolFormat::MistralArgs | ToolFormat::Qwen3CoderXml => {
+        ToolFormat::MistralList | ToolFormat::MistralArgs | ToolFormat::Qwen3CoderXml | ToolFormat::Gemma4 => {
             log::debug!(target: "offgrid", "tool calls for {format:?} are parsed but not grammar-constrained");
             return Ok(None);
         }
