@@ -250,28 +250,36 @@ resolve from inside it, a relocated copy runs, and the CPU fallback works.
 Pushing a tag that matches the crate version (`v0.1.0`) runs the release workflow: it builds and
 checks both packages and creates a draft GitHub release with them attached.
 
-## Code signing policy
+## Windows: unsigned binaries
 
-Windows code signing is being set up with [SignPath Foundation](https://signpath.org) (application
-pending). Until it is in place, the Windows binaries are **not signed**, and Windows' Smart App Control
-blocks them. This policy describes how signed releases will be made.
+The Windows binaries are **not code-signed** yet. Most machines run them without complaint, but
+Windows 11's **Smart App Control** blocks unsigned programs when it is turned on (the default on
+clean installs), with "part of this app has been blocked". It has no per-app exceptions: to run
+offgrid on such a machine, turn it off under Windows Security → App & browser control → Smart App
+Control settings. Since the April 2026 Windows update it can be turned back on later without
+reinstalling Windows. SmartScreen is not involved for packages you unzip yourself or that the VS Code
+extension unpacks.
 
-**What will be signed.** The Windows release packages (`offgrid-<version>-windows-x86_64.zip` and `.tar.gz`):
-`offgrid-server.exe`, `offgrid.dll`, and the llama.cpp, ggml, mtmd and stable-diffusion.cpp DLLs next to
-them. Every file is built from this repository's tagged sources by the [release workflow](.github/workflows/release.yml)
-on GitHub Actions; llama.cpp and stable-diffusion.cpp are compiled from the pinned submodules, not taken as
-prebuilt binaries. Nothing built outside that workflow will be signed.
+Signing is planned. The SignPath Foundation's free certificate for open-source projects requires more
+public adoption than this young project has yet, so it's on hold until then; a paid certificate is the
+other route.
 
-**Team roles.**
-- Committers and reviewers: [Pinta365](https://github.com/Pinta365)
-- Approvers: [Pinta365](https://github.com/Pinta365), who will approve each signing request by hand
+If and when releases are signed, this is how it will work:
 
-**Privacy.** This program will not transfer any information to other networked systems unless
-specifically requested by the user or the person installing or operating it. The library and
-`offgrid-server` make no outbound connections: models load from local files, images and audio are
-never fetched from URLs, and the server only answers requests on the address it is told to listen on
-(localhost by default). The only download in the project is the Deno binding's `Offgrid.load()`, which
-fetches the release package from GitHub when called (`Offgrid.open()` never does).
+- **What will be signed**: the Windows release packages (`offgrid-<version>-windows-x86_64.zip` and
+  `.tar.gz`): `offgrid-server.exe`, `offgrid.dll`, and the llama.cpp, ggml, mtmd and
+  stable-diffusion.cpp DLLs next to them, each carrying version information for offgrid. Every file
+  is built from this repository's tagged sources by the [release workflow](.github/workflows/release.yml)
+  on GitHub Actions; llama.cpp and stable-diffusion.cpp are compiled from the pinned submodules, not
+  taken as prebuilt binaries.
+- **Team roles**: committer, reviewer and approver of each signing request:
+  [Pinta365](https://github.com/Pinta365).
+- **Privacy**: this program will not transfer any information to other networked systems unless
+  specifically requested by the user or the person installing or operating it. The library and
+  `offgrid-server` make no outbound connections: models load from local files, images and audio are
+  never fetched from URLs, and the server only answers requests on the address it is told to listen on
+  (localhost by default). The only download in the project is the Deno binding's `Offgrid.load()`,
+  which fetches the release package from GitHub when called (`Offgrid.open()` never does).
 
 ## Building from source
 
