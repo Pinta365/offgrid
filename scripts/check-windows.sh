@@ -39,6 +39,22 @@ for f in "$BIN"/*.dll; do
 done
 shopt -u nullglob
 
+# Version resources (scripts/stamp-windows-version.mjs): code signing needs them in every file.
+VERSION="$(basename "$DIST" | sed -nE 's/^offgrid-([0-9]+\.[0-9]+\.[0-9]+)-windows-x86_64$/\1/p')"
+bad_version=0
+shopt -s nullglob
+for f in "$BIN"/*.exe "$BIN"/*.dll; do
+    strs="$(strings -el "$f")"
+    product="$(grep -A1 -x ProductName <<<"$strs" | tail -1)"
+    pversion="$(grep -A1 -x ProductVersion <<<"$strs" | tail -1)"
+    if [ "$product" != "offgrid" ] || { [ -n "$VERSION" ] && [ "$pversion" != "$VERSION" ]; }; then
+        fail "version resource: $(basename "$f") has product '$product' version '$pversion' (want offgrid $VERSION)"
+        bad_version=1
+    fi
+done
+shopt -u nullglob
+[ "$bad_version" -eq 0 ] && pass "every .exe/.dll says offgrid ${VERSION:-?}"
+
 bad_imports=0
 while IFS= read -r dll; do
     self="$(basename "$dll" | tr 'A-Z' 'a-z')"

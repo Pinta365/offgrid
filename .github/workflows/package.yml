@@ -94,6 +94,9 @@ jobs:
         with:
           key: windows-cross
           max-size: 2G
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22 # resedit (scripts/stamp-windows-version.mjs) needs 20.19.5+
       - name: Package (cross-compiled with llvm-mingw)
         run: scripts/package-windows.sh
       - name: Committed Windows bindings match llama.cpp

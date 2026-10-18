@@ -69,6 +69,19 @@ if [ "${#dlls[@]}" -eq 0 ]; then
 fi
 cp -L "${dlls[@]}" "$PKG/bin/"
 
+# Release binaries: drop the COFF symbol tables (debug leftovers; the export tables stay), then
+# write version resources (product name, version, description). Code signing needs consistent
+# product metadata in every signed file, and Windows shows it in the file properties.
+echo ">> stripping symbol tables and writing version info"
+for f in "$PKG"/bin/*.exe "$PKG"/bin/*.dll; do
+    llvm-strip --strip-all "$f"
+done
+RESEDIT="$ROOT/target/resedit"
+if [ ! -d "$RESEDIT/node_modules/resedit" ]; then
+    npm install --prefix "$RESEDIT" --no-save --no-audit --no-fund resedit@3.1.0 >/dev/null
+fi
+node "$ROOT/scripts/stamp-windows-version.mjs" "$RESEDIT" "$PKG/bin" "$VERSION"
+
 cp "$ROOT/crates/offgrid-ffi/include/offgrid.h" "$PKG/include/offgrid.h"
 
 # MSVC import library from the DLL's export table.
