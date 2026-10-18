@@ -250,6 +250,29 @@ resolve from inside it, a relocated copy runs, and the CPU fallback works.
 Pushing a tag that matches the crate version (`v0.1.0`) runs the release workflow: it builds and
 checks both packages and creates a draft GitHub release with them attached.
 
+## Code signing policy
+
+Windows code signing is being set up with [SignPath Foundation](https://signpath.org) (application
+pending). Until it is in place, the Windows binaries are **not signed**, and Windows' Smart App Control
+blocks them. This policy describes how signed releases will be made.
+
+**What will be signed.** The Windows release packages (`offgrid-<version>-windows-x86_64.zip` and `.tar.gz`):
+`offgrid-server.exe`, `offgrid.dll`, and the llama.cpp, ggml, mtmd and stable-diffusion.cpp DLLs next to
+them. Every file is built from this repository's tagged sources by the [release workflow](.github/workflows/release.yml)
+on GitHub Actions; llama.cpp and stable-diffusion.cpp are compiled from the pinned submodules, not taken as
+prebuilt binaries. Nothing built outside that workflow will be signed.
+
+**Team roles.**
+- Committers and reviewers: [Pinta365](https://github.com/Pinta365)
+- Approvers: [Pinta365](https://github.com/Pinta365), who will approve each signing request by hand
+
+**Privacy.** This program will not transfer any information to other networked systems unless
+specifically requested by the user or the person installing or operating it. The library and
+`offgrid-server` make no outbound connections: models load from local files, images and audio are
+never fetched from URLs, and the server only answers requests on the address it is told to listen on
+(localhost by default). The only download in the project is the Deno binding's `Offgrid.load()`, which
+fetches the release package from GitHub when called (`Offgrid.open()` never does).
+
 ## Building from source
 
 Requirements:
