@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.4.3"
+version = "0.4.4"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/Pinta365/offgrid"
@@ -11,8 +11,8 @@ repository = "https://github.com/Pinta365/offgrid"
 rust-version = "1.88"
 
 [workspace.dependencies]
-offgrid-sys = { path = "crates/offgrid-sys", version = "0.4.3", default-features = false }
-offgrid = { path = "crates/offgrid", version = "0.4.3", default-features = false }
+offgrid-sys = { path = "crates/offgrid-sys", version = "0.4.4", default-features = false }
+offgrid = { path = "crates/offgrid", version = "0.4.4", default-features = false }
 
 [profile.release]
 lto = "thin"

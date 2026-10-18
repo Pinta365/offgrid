@@ -79,6 +79,11 @@ Each version gets its own folder (`<cache>/<version>/<platform>/`); deleting it 
 **Supported platforms:** Linux x86_64 (glibc 2.28+, e.g. Ubuntu 20.04+, Debian 10+, RHEL 8+) and Windows x86_64. On
 other platforms, build the library from source and point `OFFGRID_LIB` at it.
 
+**Windows: the library isn't code-signed yet.** With Windows 11's Smart App Control turned on (the default on clean
+installs), loading `offgrid.dll` fails because it is unsigned, and there are no per-app exceptions; turn Smart App
+Control off under Windows Security → App & browser control (it can be turned back on later since the April 2026 update).
+See [Windows: unsigned binaries](https://github.com/Pinta365/offgrid#windows-unsigned-binaries).
+
 ### Permissions
 
 |                 | First run (download)                              | Later runs, or with `OFFGRID_LIB` |
